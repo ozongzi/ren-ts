@@ -17,9 +17,9 @@
 // gracefully at the decompile step (a warning is printed and they are
 // left untouched so the backup is still the source of truth).
 
-import { tokenize } from "./lexer.ts";
-import { parse } from "./parser.ts";
-import { compile } from "./codegen.ts";
+import { tokenize } from "../../shared/rrs/lexer.ts";
+import { parse } from "../../shared/rrs/parser.ts";
+import { compile } from "../../shared/rrs/codegen.ts";
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 

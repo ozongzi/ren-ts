@@ -32,6 +32,116 @@ export interface AssetMaps {
   tl?: Map<string, string>;
 }
 
+// ── Translation block parser ───────────────────────────────────────────────────
+
+/**
+ * Parse a Ren'Py translation `.rpy` file (e.g. `tl/chinese/day1.rpy`) and
+ * extract a map of English original text → translated text.
+ *
+ * Handles both the `old/new` block style and the comment-based style used
+ * in different versions of Ren'Py.
+ *
+ * @param content  Full text content of the translation .rpy file
+ * @returns        Map<originalText, translatedText>
+ */
+export function parseTranslationBlocks(content: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const lines = content.split("\n");
+  let i = 0;
+
+  while (i < lines.length) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+
+    // Start of a translate block: `translate LANG ID:`
+    if (/^translate\s+\w+\s+\w+\s*:/.test(trimmed)) {
+      i++;
+      let englishText: string | null = null;
+      let chineseText: string | null = null;
+
+      while (i < lines.length) {
+        const innerRaw = lines[i];
+        const inner = innerRaw.trim();
+
+        // Blank line ends the block only if we already found the English text
+        if (!inner) {
+          if (englishText !== null) break;
+          i++;
+          continue;
+        }
+
+        // Non-indented line means we've left the block
+        if (
+          innerRaw.length > 0 &&
+          innerRaw[0] !== " " &&
+          innerRaw[0] !== "\t"
+        ) {
+          break;
+        }
+
+        // Comment lines — may encode the original English text
+        if (inner.startsWith("#")) {
+          if (!inner.match(/^#\s+voice\b/)) {
+            const cm = inner.match(
+              /^#\s+[\w_]+\s+"((?:[^"\\]|\\.)*)"\s*(?:with\s+\S+)?\s*$/,
+            );
+            if (cm) englishText = cm[1];
+          }
+          i++;
+          continue;
+        }
+
+        // voice audio.xxx — skip
+        if (/^voice\s+audio\./.test(inner)) {
+          i++;
+          continue;
+        }
+
+        // old/new style
+        if (inner.startsWith("old ") || inner.startsWith("new ")) {
+          const om = inner.match(/^old\s+"((?:[^"\\]|\\.)*)"\s*$/);
+          if (om) {
+            englishText = om[1];
+            i++;
+            continue;
+          }
+          const nm = inner.match(/^new\s+"((?:[^"\\]|\\.)*)"\s*$/);
+          if (nm && englishText !== null) {
+            chineseText = nm[1];
+            if (!out.has(englishText)) out.set(englishText, chineseText);
+            englishText = null;
+            chineseText = null;
+            i++;
+            continue;
+          }
+          i++;
+          continue;
+        }
+
+        // Speaker "translated text"  — the Chinese line
+        const dm = inner.match(
+          /^[\w_]+\s+"((?:[^"\\]|\\.)*)"\s*(?:with\s+\S+)?\s*$/,
+        );
+        if (dm) {
+          chineseText = dm[1];
+          i++;
+          break;
+        }
+
+        break;
+      }
+
+      if (englishText !== null && chineseText !== null) {
+        if (!out.has(englishText)) out.set(englishText, chineseText);
+      }
+    } else {
+      i++;
+    }
+  }
+
+  return out;
+}
+
 export interface ConversionResult {
   /** Converted .rrs source text */
   rrs: string;
@@ -129,7 +239,9 @@ export function parseAssetMaps(scriptRpyText: string): AssetMaps {
     }
 
     // generic image NAME = "PATH"
-    const miscMatch = trimmed.match(/^image\s+([\w_]+(?:\s+[\w_]+)*)\s*=\s*"([^"]+\.(?:png|jpg|jpeg|webp))"/i);
+    const miscMatch = trimmed.match(
+      /^image\s+([\w_]+(?:\s+[\w_]+)*)\s*=\s*"([^"]+\.(?:png|jpg|jpeg|webp))"/i,
+    );
     if (miscMatch) {
       const key = miscMatch[1].replace(/\s+/g, "_");
       misc.set(key, normAssetPath(miscMatch[2]));
@@ -484,7 +596,10 @@ class Converter {
     if (elifMatch) {
       this.flushSpeak();
       const last = this.blockStack[this.blockStack.length - 1];
-      const expectedClose = last && (last.type === "if" || last.type === "elif") && last.rpyCol === indent;
+      const expectedClose =
+        last &&
+        (last.type === "if" || last.type === "elif") &&
+        last.rpyCol === indent;
       if (expectedClose) {
         this.blockStack.pop();
         this.emit(this.pad() + "}");
@@ -501,7 +616,9 @@ class Converter {
       this.flushSpeak();
       const last = this.blockStack[this.blockStack.length - 1];
       const expectedClose =
-        last && (last.type === "if" || last.type === "elif") && last.rpyCol === indent;
+        last &&
+        (last.type === "if" || last.type === "elif") &&
+        last.rpyCol === indent;
       if (expectedClose) {
         this.blockStack.pop();
         this.emit(this.pad() + "}");
@@ -525,7 +642,9 @@ class Converter {
     }
 
     // ── "CHOICE": [if COND] ──────────────────────────────────────────────────
-    const choiceMatch = line.match(/^"((?:[^"\\]|\\.)*)"\s*(?:if\s+(.+?))?\s*:/);
+    const choiceMatch = line.match(
+      /^"((?:[^"\\]|\\.)*)"\s*(?:if\s+(.+?))?\s*:/,
+    );
     const inMenu =
       this.blockStack.length > 0 &&
       this.blockStack[this.blockStack.length - 1].type === "menu";
@@ -592,9 +711,7 @@ class Converter {
     }
 
     // ── $ varName = expr  (Python assignment) ─────────────────────────────────
-    const pyAssignMatch = line.match(
-      /^\$\s*([\w.]+)\s*([\+\-\*\/]?=)\s*(.+)$/,
-    );
+    const pyAssignMatch = line.match(/^\$\s*([\w.]+)\s*([\+\-\*\/]?=)\s*(.+)$/);
     if (pyAssignMatch) {
       const varName = pyAssignMatch[1];
       const op = pyAssignMatch[2];
@@ -716,9 +833,7 @@ class Converter {
       if (bgPath) {
         this.emit(`${this.pad()}scene "${escStr(bgPath)}"${transPart};`);
       } else {
-        this.emit(
-          `${this.pad()}scene "<UNKNOWN: ${bgBase}>"${transPart};`,
-        );
+        this.emit(`${this.pad()}scene "<UNKNOWN: ${bgBase}>"${transPart};`);
       }
       return;
     }
@@ -790,7 +905,11 @@ class Converter {
     }
 
     // ── Python block markers ──────────────────────────────────────────────────
-    if (/^init\s/.test(line) || /^python:/.test(line) || /^init python:/.test(line)) {
+    if (
+      /^init\s/.test(line) ||
+      /^python:/.test(line) ||
+      /^init python:/.test(line)
+    ) {
       this.emit(`${this.pad()}// UNHANDLED: ${line}`);
       return;
     }
@@ -903,12 +1022,17 @@ export interface BatchResult {
  *
  * @param inputs       Array of { name, text } for each .rpy file to convert
  * @param scriptText   Optional content of script.rpy for asset/char map extraction
- * @param opts         Optional game name and start label for the manifest
+ * @param opts         Optional game name, start label, and per-file translation maps
  */
 export function convertBatch(
   inputs: BatchInput[],
   scriptText?: string,
-  opts?: { game?: string; start?: string },
+  opts?: {
+    game?: string;
+    start?: string;
+    /** Map of stem (e.g. "day1") → translation Map<english, chinese> */
+    translations?: Map<string, Map<string, string>>;
+  },
 ): BatchResult {
   const maps = scriptText ? parseAssetMaps(scriptText) : emptyAssetMaps();
 
@@ -916,7 +1040,10 @@ export function convertBatch(
   const skipped: string[] = [];
 
   for (const input of inputs) {
-    const result = convertRpyText(input.text, input.name, maps);
+    const stem = input.name.replace(/\.rpy$/i, "");
+    const tlMap = opts?.translations?.get(stem);
+    const effectiveMaps: AssetMaps = tlMap ? { ...maps, tl: tlMap } : maps;
+    const result = convertRpyText(input.text, input.name, effectiveMaps);
     if (!result.hasLabels) {
       skipped.push(input.name);
       continue;

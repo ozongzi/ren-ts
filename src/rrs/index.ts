@@ -3,9 +3,9 @@
 // Public API used by the loader to compile .rrs source text directly into
 // the engine's ScriptFile format, bypassing the offline JSON compilation step.
 
-import { tokenize } from "./lexer";
-import { parse } from "./parser";
-import { compile } from "./codegen";
+import { tokenize } from "../../shared/rrs/lexer.ts";
+import { parse } from "../../shared/rrs/parser.ts";
+import { compile } from "../../shared/rrs/codegen.ts";
 import type { ScriptFile } from "../types";
 
 // ─── Character map extraction ─────────────────────────────────────────────────

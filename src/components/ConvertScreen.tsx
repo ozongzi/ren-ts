@@ -1,58 +1,245 @@
-import React, { useState, useRef, useCallback } from "react";
-import { convertBatch, parseAssetMaps, type BatchResult } from "../converter";
+import React, { useState, useCallback, useEffect } from "react";
+import {
+  isTauri,
+  pickDirectory,
+  readDirectory,
+  readTextFileTauri,
+  pathExists,
+  makeDirTauri,
+  readBinaryFileTauri,
+  writeBinaryFileTauri,
+  writeTextFileTauri,
+} from "../tauri_bridge";
+import {
+  convertBatch,
+  parseAssetMaps,
+  parseTranslationBlocks,
+  type BatchResult,
+} from "../converter";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface FileEntry {
-  name: string;
-  text: string;
-}
-
 type ConvertPhase =
   | "idle"
-  | "files_selected"
+  | "scanning"
   | "converting"
+  | "copying"
   | "done"
   | "error";
 
+interface ScanResult {
+  rpyFiles: string[]; // absolute paths of .rpy files in game dir
+  scriptRpyPath: string | null;
+  tlChinesePath: string | null; // tl/chinese dir if it exists
+}
+
+interface LogEntry {
+  type: "info" | "ok" | "warn" | "error";
+  msg: string;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Read a File object as a UTF-8 string */
-function readFileText(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsText(file, "utf-8");
-  });
+const SKIP_FILES = new Set([
+  "options.rpy",
+  "screens.rpy",
+  "gui.rpy",
+  "definitions.rpy",
+  "customization.rpy",
+]);
+
+function basename(p: string): string {
+  return p.split("/").pop() ?? p;
 }
 
-/** Trigger a browser download for a text blob */
-function downloadText(filename: string, text: string): void {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+function stem(name: string): string {
+  return name.replace(/\.[^.]+$/, "");
 }
 
-/** Format bytes to human-readable string */
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** Extract all quoted asset paths from .rrs text */
+const ASSET_REF_RE = /"([^"]+\.(?:jpg|jpeg|png|webp|ogg|mp3|wav|webm))"/gi;
+
+/** Detects Python %-format or {name}-format placeholders in a path */
+const IS_TEMPLATE_RE = /%[sdifr%]|\{[^}]+\}/;
+
+function extractAssetRefs(rrsText: string): string[] {
+  const refs: string[] = [];
+  const re = new RegExp(ASSET_REF_RE.source, "gi");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(rrsText)) !== null) {
+    const p = m[1];
+    if (p.includes("<UNKNOWN")) continue;
+    refs.push(p);
+  }
+  return refs;
+}
+
+/**
+ * Convert a filename template (e.g. "sprite_%s.png" or "icon_{name}.png")
+ * into a RegExp that matches any concrete filename derived from it.
+ * Each format specifier becomes `.*` so the match is permissive.
+ */
+function templateToRegex(tmpl: string): RegExp {
+  // Split on format specifiers; escape the literal parts, join with .*
+  const parts = tmpl.split(IS_TEMPLATE_RE);
+  const escaped = parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp("^" + escaped.join(".*") + "$", "i");
+}
+
+/**
+ * List all files inside `dir` whose names match `pattern`.
+ * Returns absolute paths. Returns [] if the directory cannot be read.
+ */
+async function globDir(dir: string, pattern: RegExp): Promise<string[]> {
+  const entries = await readDirectory(dir);
+  return entries
+    .filter((e) => e.isFile && pattern.test(e.name))
+    .map((e) => `${dir}/${e.name}`);
+}
+
+/**
+ * Resolve an .rrs asset reference (as stored in the script) to a candidate
+ * absolute path inside the Ren'Py `game/` directory.
+ *
+ * Engine layout:
+ *   Audio/* refs → game/audio/…  (also try with original case)
+ *   everything else → game/images/…
+ */
+function resolveGamePath(gameDir: string, assetRef: string): string[] {
+  if (assetRef.startsWith("Audio/")) {
+    const rel = assetRef.slice("Audio/".length);
+    return [
+      `${gameDir}/audio/${rel}`,
+      `${gameDir}/Audio/${rel}`,
+      `${gameDir}/audio/${assetRef.slice("Audio/".length).toLowerCase()}`,
+    ];
+  }
+  return [`${gameDir}/images/${assetRef}`, `${gameDir}/${assetRef}`];
+}
+
+/**
+ * The output path inside the target assets directory.
+ *   Audio/* refs → outputDir/Audio/…
+ *   everything else → outputDir/images/…
+ */
+function resolveOutputPath(outputDir: string, assetRef: string): string {
+  if (assetRef.startsWith("Audio/")) {
+    return `${outputDir}/${assetRef}`;
+  }
+  return `${outputDir}/images/${assetRef}`;
+}
+
+/**
+ * Resolve the parent directory of a (possibly template) asset ref inside
+ * the Ren'Py game/ folder.  Returns candidate absolute directory paths.
+ */
+function resolveGameDir(gameDir: string, assetDirRef: string): string[] {
+  if (assetDirRef.startsWith("Audio/")) {
+    const rel = assetDirRef.slice("Audio/".length);
+    return [`${gameDir}/audio/${rel}`, `${gameDir}/Audio/${rel}`];
+  }
+  return [`${gameDir}/images/${assetDirRef}`, `${gameDir}/${assetDirRef}`];
+}
+
+/**
+ * Copy a single asset ref (literal or template) from gameDir into outputDir.
+ * For template refs (containing %s / {var}), globs the source directory and
+ * copies every matching file.
+ * Returns { copied, failed } counts.
+ */
+async function copyOneAssetRef(
+  ref: string,
+  gameDir: string,
+  outputDir: string,
+  addLog: (type: "info" | "ok" | "warn" | "error", msg: string) => void,
+): Promise<{ copied: number; failed: number }> {
+  const isTemplate = IS_TEMPLATE_RE.test(ref);
+
+  // ── Literal path ────────────────────────────────────────────────────────────
+  if (!isTemplate) {
+    const candidates = resolveGamePath(gameDir, ref);
+    let srcPath: string | null = null;
+    for (const c of candidates) {
+      if (await pathExists(c)) {
+        srcPath = c;
+        break;
+      }
+    }
+    if (!srcPath) {
+      addLog("warn", `  找不到资源：${ref}`);
+      return { copied: 0, failed: 1 };
+    }
+    const dstPath = resolveOutputPath(outputDir, ref);
+    const dstDir = dstPath.substring(0, dstPath.lastIndexOf("/"));
+    await makeDirTauri(dstDir);
+    const data = await readBinaryFileTauri(srcPath);
+    if (data && (await writeBinaryFileTauri(dstPath, data))) {
+      return { copied: 1, failed: 0 };
+    }
+    addLog("warn", `  写入失败：${ref}`);
+    return { copied: 0, failed: 1 };
+  }
+
+  // ── Template path — expand by globbing ─────────────────────────────────────
+  const lastSlash = ref.lastIndexOf("/");
+  const dirPart = lastSlash >= 0 ? ref.slice(0, lastSlash) : "";
+  const fileTmpl = lastSlash >= 0 ? ref.slice(lastSlash + 1) : ref;
+  const fileRegex = templateToRegex(fileTmpl);
+
+  // Candidate source directories
+  const srcDirs = resolveGameDir(gameDir, dirPart);
+
+  // Output directory (template placeholders don't affect directory structure)
+  const dstDir = ref.startsWith("Audio/")
+    ? `${outputDir}/${dirPart}`
+    : `${outputDir}/images/${dirPart}`;
+
+  let copied = 0;
+  let failed = 0;
+  let foundAny = false;
+
+  for (const srcDir of srcDirs) {
+    const matches = await globDir(srcDir, fileRegex);
+    if (matches.length === 0) continue;
+    foundAny = true;
+    await makeDirTauri(dstDir);
+    for (const srcPath of matches) {
+      const filename = srcPath.slice(srcPath.lastIndexOf("/") + 1);
+      const dstPath = `${dstDir}/${filename}`;
+      const data = await readBinaryFileTauri(srcPath);
+      if (data && (await writeBinaryFileTauri(dstPath, data))) {
+        copied++;
+      } else {
+        addLog("warn", `  写入失败：${filename}（来自 ${ref}）`);
+        failed++;
+      }
+    }
+    // Use first dir that has matches; don't double-copy from fallback dirs
+    break;
+  }
+
+  if (!foundAny) {
+    addLog("warn", `  找不到匹配资源：${ref}`);
+    return { copied: 0, failed: 1 };
+  }
+
+  return { copied, failed };
+}
+
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles: Record<string, React.CSSProperties> = {
+const s: Record<string, React.CSSProperties> = {
   overlay: {
     position: "fixed",
     inset: 0,
     zIndex: 200,
-    background: "rgba(0,0,0,0.92)",
+    background: "rgba(0,0,0,0.82)",
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
@@ -62,149 +249,166 @@ const styles: Record<string, React.CSSProperties> = {
   },
   card: {
     width: "100%",
-    maxWidth: 720,
-    background: "rgba(15,25,40,0.98)",
-    border: "1px solid rgba(100,160,255,0.2)",
-    borderRadius: 12,
-    padding: "2rem",
-    boxShadow: "0 8px 40px rgba(0,0,0,0.6)",
+    maxWidth: "760px",
+    background: "#161b22",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: "12px",
+    padding: "1.5rem",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
     display: "flex",
     flexDirection: "column",
-    gap: "1.5rem",
+    gap: "1.25rem",
   },
   header: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    borderBottom: "1px solid rgba(100,160,255,0.15)",
-    paddingBottom: "1rem",
+    borderBottom: "1px solid rgba(255,255,255,0.08)",
+    paddingBottom: "0.9rem",
   },
   title: {
-    fontSize: "1.3rem",
+    fontSize: "1.15rem",
     fontWeight: 700,
-    color: "#a0c8ff",
+    color: "#e6edf3",
     margin: 0,
-    letterSpacing: "0.04em",
+    letterSpacing: "0.02em",
   },
   closeBtn: {
     background: "none",
     border: "none",
-    color: "rgba(255,255,255,0.5)",
-    fontSize: "1.4rem",
+    color: "rgba(255,255,255,0.4)",
+    fontSize: "1.2rem",
     cursor: "pointer",
-    padding: "0.2rem 0.5rem",
-    borderRadius: 4,
+    padding: "0.2rem 0.4rem",
+    borderRadius: "4px",
     lineHeight: 1,
   },
   section: {
     display: "flex",
     flexDirection: "column",
-    gap: "0.75rem",
+    gap: "0.6rem",
   },
   sectionTitle: {
-    fontSize: "0.85rem",
+    fontSize: "0.72rem",
     fontWeight: 600,
-    color: "rgba(255,255,255,0.5)",
+    color: "rgba(255,255,255,0.4)",
     letterSpacing: "0.1em",
-    textTransform: "uppercase" as const,
+    textTransform: "uppercase",
     margin: 0,
   },
-  dropZone: {
-    border: "2px dashed rgba(100,160,255,0.3)",
-    borderRadius: 8,
-    padding: "2rem",
-    textAlign: "center" as const,
-    cursor: "pointer",
-    color: "rgba(255,255,255,0.5)",
-    fontSize: "0.9rem",
-    transition: "border-color 0.2s, background 0.2s",
-    background: "rgba(100,160,255,0.03)",
-  },
-  dropZoneActive: {
-    borderColor: "rgba(100,160,255,0.7)",
-    background: "rgba(100,160,255,0.08)",
-  },
-  fileInput: {
-    display: "none",
-  },
-  fileList: {
+  pathRow: {
     display: "flex",
-    flexDirection: "column",
-    gap: "0.4rem",
-    maxHeight: 200,
-    overflowY: "auto",
-    padding: "0.5rem",
-    background: "rgba(0,0,0,0.2)",
-    borderRadius: 6,
-    border: "1px solid rgba(255,255,255,0.08)",
-  },
-  fileItem: {
-    display: "flex",
-    alignItems: "center",
     gap: "0.5rem",
-    fontSize: "0.82rem",
-    color: "rgba(255,255,255,0.7)",
-    padding: "0.2rem 0.3rem",
+    alignItems: "center",
   },
-  fileIcon: {
-    fontSize: "0.9rem",
-    flexShrink: 0,
-  },
-  fileName: {
+  pathDisplay: {
     flex: 1,
+    background: "rgba(255,255,255,0.05)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: "6px",
+    padding: "0.45rem 0.75rem",
+    fontSize: "0.82rem",
+    color: "rgba(255,255,255,0.6)",
+    fontFamily: "monospace",
     overflow: "hidden",
     textOverflow: "ellipsis",
-    whiteSpace: "nowrap" as const,
+    whiteSpace: "nowrap",
+    minWidth: 0,
   },
-  fileSize: {
-    color: "rgba(255,255,255,0.3)",
-    flexShrink: 0,
-    fontSize: "0.75rem",
+  pathDisplaySet: {
+    color: "#e6edf3",
   },
-  inputRow: {
-    display: "flex",
-    gap: "0.75rem",
-    alignItems: "center",
-  },
-  label: {
-    fontSize: "0.85rem",
-    color: "rgba(255,255,255,0.6)",
-    flexShrink: 0,
-    minWidth: 80,
-  },
-  input: {
-    flex: 1,
-    background: "rgba(0,0,0,0.3)",
+  browseBtn: {
+    background: "rgba(255,255,255,0.07)",
     border: "1px solid rgba(255,255,255,0.15)",
-    borderRadius: 6,
-    color: "#fff",
-    fontSize: "0.9rem",
-    padding: "0.45rem 0.75rem",
+    borderRadius: "6px",
+    color: "rgba(255,255,255,0.8)",
+    fontSize: "0.82rem",
+    padding: "0.45rem 0.9rem",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  infoChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.35rem",
+    fontSize: "0.75rem",
+    background: "rgba(56,139,253,0.12)",
+    border: "1px solid rgba(56,139,253,0.25)",
+    borderRadius: "4px",
+    padding: "0.2rem 0.55rem",
+    color: "rgba(139,191,255,0.9)",
+  },
+  okChip: {
+    background: "rgba(63,185,80,0.12)",
+    border: "1px solid rgba(63,185,80,0.25)",
+    color: "rgba(126,231,135,0.9)",
+  },
+  warnChip: {
+    background: "rgba(210,153,34,0.12)",
+    border: "1px solid rgba(210,153,34,0.3)",
+    color: "rgba(255,213,100,0.9)",
+  },
+  optionRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "0.6rem",
+    padding: "0.5rem 0.7rem",
+    background: "rgba(255,255,255,0.03)",
+    borderRadius: "6px",
+    border: "1px solid rgba(255,255,255,0.06)",
+  },
+  optionLabel: {
+    flex: 1,
+    fontSize: "0.85rem",
+    color: "rgba(255,255,255,0.8)",
+    lineHeight: 1.4,
+  },
+  optionSub: {
+    fontSize: "0.75rem",
+    color: "rgba(255,255,255,0.35)",
+    marginTop: "0.15rem",
+    fontFamily: "monospace",
+  },
+  checkbox: {
+    marginTop: "2px",
+    cursor: "pointer",
+    accentColor: "#58a6ff",
+    flexShrink: 0,
+  },
+  textInput: {
+    flex: 1,
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: "5px",
+    color: "#e6edf3",
+    fontSize: "0.85rem",
+    padding: "0.4rem 0.65rem",
     outline: "none",
   },
   actionRow: {
     display: "flex",
-    gap: "0.75rem",
-    flexWrap: "wrap" as const,
+    gap: "0.6rem",
+    flexWrap: "wrap",
   },
   primaryBtn: {
-    background: "linear-gradient(135deg,#2563eb,#1d4ed8)",
+    background: "#238636",
     border: "none",
-    borderRadius: 8,
+    borderRadius: "6px",
     color: "#fff",
     fontSize: "0.9rem",
     fontWeight: 600,
-    padding: "0.6rem 1.4rem",
+    padding: "0.55rem 1.2rem",
     cursor: "pointer",
-    letterSpacing: "0.03em",
+    letterSpacing: "0.02em",
   },
   secondaryBtn: {
-    background: "rgba(255,255,255,0.06)",
+    background: "rgba(255,255,255,0.07)",
     border: "1px solid rgba(255,255,255,0.15)",
-    borderRadius: 8,
-    color: "rgba(255,255,255,0.7)",
-    fontSize: "0.9rem",
-    padding: "0.6rem 1.2rem",
+    borderRadius: "6px",
+    color: "rgba(255,255,255,0.75)",
+    fontSize: "0.85rem",
+    padding: "0.5rem 0.9rem",
     cursor: "pointer",
   },
   disabledBtn: {
@@ -212,616 +416,797 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: "not-allowed",
   },
   progressBar: {
-    height: 6,
+    height: "6px",
     background: "rgba(255,255,255,0.08)",
-    borderRadius: 3,
+    borderRadius: "3px",
     overflow: "hidden",
   },
   progressFill: {
     height: "100%",
-    background: "linear-gradient(90deg,#2563eb,#60a5fa)",
-    borderRadius: 3,
-    transition: "width 0.3s ease",
+    background: "#238636",
+    borderRadius: "3px",
+    transition: "width 0.2s ease",
+  },
+  progressLabel: {
+    fontSize: "0.8rem",
+    color: "rgba(255,255,255,0.45)",
+  },
+  logBox: {
+    background: "rgba(0,0,0,0.3)",
+    border: "1px solid rgba(255,255,255,0.07)",
+    borderRadius: "6px",
+    padding: "0.6rem 0.75rem",
+    maxHeight: "220px",
+    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.2rem",
+  },
+  logLine: {
+    fontSize: "0.78rem",
+    fontFamily: "monospace",
+    lineHeight: 1.5,
   },
   resultSummary: {
     display: "flex",
-    gap: "1rem",
-    flexWrap: "wrap" as const,
+    gap: "0.75rem",
+    flexWrap: "wrap",
   },
   stat: {
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
-    background: "rgba(0,0,0,0.25)",
-    borderRadius: 8,
+    background: "rgba(255,255,255,0.04)",
+    borderRadius: "8px",
     padding: "0.6rem 1rem",
-    minWidth: 80,
+    minWidth: "80px",
   },
   statNum: {
-    fontSize: "1.6rem",
+    fontSize: "1.5rem",
     fontWeight: 700,
-    color: "#60a5fa",
-    lineHeight: 1.1,
+    color: "#7ee787",
+    lineHeight: 1,
   },
   statLabel: {
-    fontSize: "0.72rem",
-    color: "rgba(255,255,255,0.45)",
-    letterSpacing: "0.05em",
-    marginTop: 2,
+    fontSize: "0.7rem",
+    color: "rgba(255,255,255,0.4)",
+    letterSpacing: "0.06em",
+    marginTop: "0.25rem",
   },
-  resultList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "0.4rem",
-    maxHeight: 220,
-    overflowY: "auto",
-    padding: "0.5rem",
-    background: "rgba(0,0,0,0.2)",
-    borderRadius: 6,
-    border: "1px solid rgba(255,255,255,0.08)",
+  warningBox: {
+    background: "rgba(210,153,34,0.08)",
+    border: "1px solid rgba(210,153,34,0.25)",
+    borderRadius: "6px",
+    padding: "0.65rem 0.8rem",
+    fontSize: "0.8rem",
+    color: "rgba(255,213,100,0.85)",
+    lineHeight: 1.6,
   },
-  resultItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.5rem",
+  errorBox: {
+    background: "rgba(248,81,73,0.08)",
+    border: "1px solid rgba(248,81,73,0.3)",
+    borderRadius: "6px",
+    padding: "0.65rem 0.8rem",
     fontSize: "0.82rem",
-    padding: "0.25rem 0.3rem",
+    color: "rgba(255,130,120,0.95)",
   },
   cliBox: {
-    background: "rgba(0,0,0,0.4)",
-    border: "1px solid rgba(100,160,255,0.15)",
-    borderRadius: 8,
-    padding: "1rem 1.25rem",
+    background: "rgba(255,255,255,0.02)",
+    border: "1px solid rgba(255,255,255,0.07)",
+    borderRadius: "8px",
+    padding: "0.9rem 1rem",
     display: "flex",
     flexDirection: "column",
-    gap: "0.75rem",
+    gap: "0.5rem",
   },
   cliTitle: {
-    fontSize: "0.82rem",
-    color: "#a0c8ff",
+    fontSize: "0.78rem",
+    color: "rgba(255,255,255,0.4)",
     fontWeight: 600,
     margin: 0,
   },
   cliCode: {
-    fontFamily: '"Fira Code","Cascadia Code",monospace',
+    fontFamily: "monospace",
     fontSize: "0.78rem",
-    color: "#7ee787",
+    color: "#a5d6ff",
     background: "rgba(0,0,0,0.3)",
-    borderRadius: 6,
-    padding: "0.6rem 0.9rem",
+    borderRadius: "5px",
+    padding: "0.6rem 0.75rem",
     margin: 0,
-    overflowX: "auto" as const,
-    lineHeight: 1.7,
+    overflowX: "auto",
+    lineHeight: 1.6,
   },
   cliNote: {
-    fontSize: "0.78rem",
-    color: "rgba(255,255,255,0.35)",
+    fontSize: "0.74rem",
+    color: "rgba(255,255,255,0.3)",
     margin: 0,
-    lineHeight: 1.5,
-  },
-  errorBox: {
-    background: "rgba(220,38,38,0.12)",
-    border: "1px solid rgba(220,38,38,0.3)",
-    borderRadius: 8,
-    padding: "0.75rem 1rem",
-    fontSize: "0.85rem",
-    color: "#fca5a5",
-  },
-  warningBox: {
-    background: "rgba(234,179,8,0.08)",
-    border: "1px solid rgba(234,179,8,0.2)",
-    borderRadius: 8,
-    padding: "0.75rem 1rem",
-    fontSize: "0.82rem",
-    color: "#fde68a",
     lineHeight: 1.5,
   },
 };
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
+/** Build the equivalent CLI command string for display */
+function buildCliCommand(
+  gameDirArg: string,
+  outputDirArg: string,
+  gameNameArg: string,
+  tlDirArg: string | null,
+): string {
+  let cmd = `# 基础批量转换\ndeno task rpy2rrs ${gameDirArg} -o ${outputDirArg} --manifest`;
+  if (gameNameArg.trim()) {
+    cmd += ` \\\n  --game "${gameNameArg.trim()}"`;
+  }
+  if (tlDirArg) {
+    cmd += ` \\\n  --tl ${tlDirArg}`;
+  }
+  return cmd;
+}
+
 interface ConvertScreenProps {
   onClose: () => void;
 }
 
 export const ConvertScreen: React.FC<ConvertScreenProps> = ({ onClose }) => {
-  // ── File state ──────────────────────────────────────────────────────────────
-  const [rpyFiles, setRpyFiles] = useState<FileEntry[]>([]);
-  const [scriptFile, setScriptFile] = useState<FileEntry | null>(null);
+  // ── Directory state ─────────────────────────────────────────────────────────
+  const [gameDir, setGameDir] = useState<string>("");
+  const [outputDir, setOutputDir] = useState<string>("");
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+
+  // ── Options ─────────────────────────────────────────────────────────────────
   const [gameName, setGameName] = useState("");
-  const [startLabel, setStartLabel] = useState("start");
+  const [includeTl, setIncludeTl] = useState(true);
+  const [copyAssets, setCopyAssets] = useState(false);
 
   // ── Conversion state ────────────────────────────────────────────────────────
   const [phase, setPhase] = useState<ConvertPhase>("idle");
   const [progress, setProgress] = useState(0);
+  const [progressLabel, setProgressLabel] = useState("");
+  const [log, setLog] = useState<LogEntry[]>([]);
   const [result, setResult] = useState<BatchResult | null>(null);
+  const [assetsCopied, setAssetsCopied] = useState(0);
+  const [assetsFailed, setAssetsFailed] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // ── Drag state ──────────────────────────────────────────────────────────────
-  const [dragging, setDragging] = useState(false);
-  const rpyInputRef = useRef<HTMLInputElement>(null);
-  const scriptInputRef = useRef<HTMLInputElement>(null);
+  const logRef = React.useRef<HTMLDivElement>(null);
 
-  // ── File reading helpers ────────────────────────────────────────────────────
-
-  const readFiles = useCallback(async (fileList: FileList | File[]) => {
-    const files = Array.from(fileList).filter(
-      (f) =>
-        f.name.toLowerCase().endsWith(".rpy") ||
-        f.name.toLowerCase().endsWith(".rpyc"),
-    );
-    if (files.length === 0) return;
-
-    const entries: FileEntry[] = await Promise.all(
-      files.map(async (f) => ({ name: f.name, text: await readFileText(f) })),
-    );
-
-    // Separate script.rpy from the rest
-    const scriptEntry = entries.find((e) =>
-      e.name.toLowerCase() === "script.rpy",
-    );
-    if (scriptEntry && !scriptFile) {
-      setScriptFile(scriptEntry);
+  // Auto-scroll log
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
     }
+  }, [log]);
 
-    setRpyFiles((prev) => {
-      const existing = new Set(prev.map((e) => e.name));
-      const fresh = entries.filter((e) => !existing.has(e.name));
-      return [...prev, ...fresh];
-    });
-    setPhase("files_selected");
-  }, [scriptFile]);
+  // ── Log helper ──────────────────────────────────────────────────────────────
+  const addLog = useCallback((type: LogEntry["type"], msg: string) => {
+    setLog((prev) => [...prev, { type, msg }]);
+  }, []);
 
-  // ── Drag & drop handlers ────────────────────────────────────────────────────
-
-  const onDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragging(true);
-  };
-  const onDragLeave = () => setDragging(false);
-  const onDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
-    if (e.dataTransfer.files.length > 0) {
-      await readFiles(e.dataTransfer.files);
-    }
-  };
-
-  const onRpyInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      await readFiles(e.target.files);
-    }
-    // Reset so the same files can be re-added
-    e.target.value = "";
-  };
-
-  const onScriptInputChange = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      const text = await readFileText(file);
-      setScriptFile({ name: file.name, text });
-    }
-    e.target.value = "";
-  };
-
-  // ── Conversion ──────────────────────────────────────────────────────────────
-
-  const runConversion = useCallback(async () => {
-    if (rpyFiles.length === 0) return;
-    setPhase("converting");
-    setProgress(0);
-    setErrorMsg(null);
+  // ── Scan game directory ─────────────────────────────────────────────────────
+  const scanGameDir = useCallback(async (dir: string) => {
+    setPhase("scanning");
+    setScanResult(null);
 
     try {
-      // Simulate progress ticks while conversion runs synchronously
+      const entries = await readDirectory(dir);
+      const rpyFiles: string[] = [];
+
+      for (const e of entries) {
+        if (e.isFile && e.name.endsWith(".rpy")) {
+          if (!SKIP_FILES.has(e.name)) {
+            rpyFiles.push(`${dir}/${e.name}`);
+          }
+        }
+      }
+      rpyFiles.sort();
+
+      // Auto-detect script.rpy
+      const scriptRpyPath = (await pathExists(`${dir}/script.rpy`))
+        ? `${dir}/script.rpy`
+        : null;
+
+      // Auto-detect tl/chinese
+      const tlChinesePath = (await pathExists(`${dir}/tl/chinese`))
+        ? `${dir}/tl/chinese`
+        : null;
+
+      setScanResult({ rpyFiles, scriptRpyPath, tlChinesePath });
+      setIncludeTl(tlChinesePath !== null);
+    } catch (e) {
+      setScanResult({ rpyFiles: [], scriptRpyPath: null, tlChinesePath: null });
+    }
+
+    setPhase("idle");
+  }, []);
+
+  // ── Pick directories ────────────────────────────────────────────────────────
+  const pickGameDir = useCallback(async () => {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setGameDir(dir);
+    setResult(null);
+    setLog([]);
+    setErrorMsg(null);
+    await scanGameDir(dir);
+  }, [scanGameDir]);
+
+  const pickOutputDir = useCallback(async () => {
+    const dir = await pickDirectory();
+    if (!dir) return;
+    setOutputDir(dir);
+  }, []);
+
+  // ── Run Conversion ──────────────────────────────────────────────────────────
+  const runConversion = useCallback(async () => {
+    if (!gameDir || !outputDir || !scanResult) return;
+    if (scanResult.rpyFiles.length === 0) return;
+
+    setPhase("converting");
+    setProgress(0);
+    setLog([]);
+    setResult(null);
+    setErrorMsg(null);
+    setAssetsCopied(0);
+    setAssetsFailed(0);
+
+    try {
+      // 1. Load script.rpy for asset maps
+      let scriptText: string | undefined;
+      if (scanResult.scriptRpyPath) {
+        addLog("info", `加载资源映射：${basename(scanResult.scriptRpyPath)}`);
+        scriptText =
+          (await readTextFileTauri(scanResult.scriptRpyPath)) ?? undefined;
+      } else {
+        addLog("warn", "未找到 script.rpy，角色名和资源路径可能无法解析");
+      }
+      const maps = scriptText
+        ? parseAssetMaps(scriptText)
+        : {
+            audio: new Map(),
+            bg: new Map(),
+            cg: new Map(),
+            sx: new Map(),
+            misc: new Map(),
+            charMap: new Map(),
+          };
+
+      // 2. Load Chinese translations if requested
+      const translations = new Map<string, Map<string, string>>();
+      const effectiveTlDir =
+        includeTl && scanResult.tlChinesePath ? scanResult.tlChinesePath : null;
+
+      if (effectiveTlDir) {
+        addLog("info", `加载中文翻译：${effectiveTlDir}`);
+        const tlEntries = await readDirectory(effectiveTlDir);
+        for (const e of tlEntries) {
+          if (e.isFile && e.name.endsWith(".rpy")) {
+            const fileStem = stem(e.name);
+            const content = await readTextFileTauri(
+              `${effectiveTlDir}/${e.name}`,
+            );
+            if (content) {
+              const tlMap = parseTranslationBlocks(content);
+              if (tlMap.size > 0) {
+                translations.set(fileStem, tlMap);
+                addLog("ok", `  翻译：${e.name}（${tlMap.size} 条）`);
+              }
+            }
+          }
+        }
+        addLog(
+          "info",
+          `翻译加载完成：${translations.size} 个文件，共 ${[...translations.values()].reduce((n, m) => n + m.size, 0)} 条`,
+        );
+      }
+
+      // 3. Read all .rpy files
+      addLog("info", `读取 ${scanResult.rpyFiles.length} 个 .rpy 文件…`);
+      const inputs: Array<{ name: string; text: string }> = [];
+
+      for (const filePath of scanResult.rpyFiles) {
+        const text = await readTextFileTauri(filePath);
+        if (text !== null) {
+          inputs.push({ name: basename(filePath), text });
+        } else {
+          addLog("warn", `  无法读取：${basename(filePath)}`);
+        }
+      }
+
+      // Also include script.rpy if not already included
+      if (scriptText && scanResult.scriptRpyPath) {
+        const scriptName = basename(scanResult.scriptRpyPath);
+        if (!inputs.some((i) => i.name === scriptName)) {
+          inputs.unshift({ name: scriptName, text: scriptText });
+        }
+      }
+
+      // 4. Convert
+      addLog("info", `开始转换 ${inputs.length} 个文件…`);
+      setProgressLabel(`转换中…`);
+
+      // Run conversion with a simulated progress tick
       const tickInterval = setInterval(() => {
-        setProgress((p) => Math.min(p + 5, 90));
-      }, 60);
+        setProgress((p) => Math.min(p + 3, 88));
+      }, 80);
+      await new Promise<void>((r) => setTimeout(r, 20));
 
-      // Yield to the event loop so the progress bar renders before the heavy work
-      await new Promise<void>((resolve) => setTimeout(resolve, 20));
-
-      const scriptText = scriptFile?.text;
-      const batchResult = convertBatch(rpyFiles, scriptText, {
+      const batchResult = convertBatch(inputs, scriptText, {
         game: gameName.trim() || undefined,
-        start: startLabel.trim() || "start",
+        start: "start",
+        translations: translations.size > 0 ? translations : undefined,
       });
 
       clearInterval(tickInterval);
-      setProgress(100);
+      setProgress(90);
+
+      addLog(
+        "ok",
+        `转换完成：${batchResult.files.length} 个文件，跳过 ${batchResult.skipped.length} 个`,
+      );
+      if (batchResult.skipped.length > 0) {
+        addLog(
+          "info",
+          `  已跳过（无 label）：${batchResult.skipped.join(", ")}`,
+        );
+      }
+
+      // Collect all warnings
+      const allWarnings = batchResult.files.flatMap((f) =>
+        f.warnings.map((w) => `[${f.name}] ${w}`),
+      );
+      for (const w of allWarnings.slice(0, 8)) {
+        addLog("warn", w);
+      }
+      if (allWarnings.length > 8) {
+        addLog("warn", `  …还有 ${allWarnings.length - 8} 条警告`);
+      }
+
+      // 5. Ensure output data directory exists
+      const dataDir = outputDir;
+      await makeDirTauri(dataDir);
+
+      // 6. Write .rrs files
+      setProgressLabel("写入 .rrs 文件…");
+      for (const f of batchResult.files) {
+        const outPath = `${dataDir}/${f.name}`;
+        await writeTextFileTauri(outPath, f.rrs);
+        addLog(
+          "ok",
+          `  ✓ ${f.name}（${fmtBytes(new TextEncoder().encode(f.rrs).length)}）`,
+        );
+      }
+
+      // 7. Write manifest.json
+      const manifestText = JSON.stringify(batchResult.manifest, null, 2) + "\n";
+      await writeTextFileTauri(`${dataDir}/manifest.json`, manifestText);
+      addLog("ok", `  ✓ manifest.json`);
+
+      setProgress(95);
       setResult(batchResult);
+
+      // 8. Copy assets (optional)
+      if (copyAssets) {
+        setPhase("copying");
+        setProgressLabel("复制资源文件…");
+        addLog("info", "开始收集和复制资源文件…");
+
+        // Collect unique asset refs from all converted files
+        const assetRefs = new Set<string>();
+        for (const f of batchResult.files) {
+          for (const ref of extractAssetRefs(f.rrs)) {
+            assetRefs.add(ref);
+          }
+        }
+        addLog("info", `  发现 ${assetRefs.size} 个资源引用`);
+
+        let copied = 0;
+        let failed = 0;
+        let idx = 0;
+
+        for (const ref of assetRefs) {
+          idx++;
+          setProgress(95 + Math.round((idx / assetRefs.size) * 4));
+          setProgressLabel(`复制资源 ${idx}/${assetRefs.size}…`);
+
+          const r = await copyOneAssetRef(ref, gameDir, outputDir, addLog);
+          copied += r.copied;
+          failed += r.failed;
+        }
+
+        setAssetsCopied(copied);
+        setAssetsFailed(failed);
+        addLog(
+          failed === 0 ? "ok" : "warn",
+          `资源复制完成：${copied} 成功，${failed} 失败`,
+        );
+      }
+
+      setProgress(100);
+      setProgressLabel("完成");
       setPhase("done");
+      addLog("ok", "🎉 全部完成！");
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMsg(msg);
+      addLog("error", `错误：${msg}`);
       setPhase("error");
     }
-  }, [rpyFiles, scriptFile, gameName, startLabel]);
+  }, [gameDir, outputDir, scanResult, gameName, includeTl, copyAssets, addLog]);
 
-  // ── Downloads ───────────────────────────────────────────────────────────────
-
-  const downloadAll = useCallback(() => {
-    if (!result) return;
-    for (const f of result.files) {
-      downloadText(f.name, f.rrs);
-    }
-    downloadText(
-      "manifest.json",
-      JSON.stringify(result.manifest, null, 2) + "\n",
-    );
-  }, [result]);
-
-  const downloadManifest = useCallback(() => {
-    if (!result) return;
-    downloadText(
-      "manifest.json",
-      JSON.stringify(result.manifest, null, 2) + "\n",
-    );
-  }, [result]);
-
-  // ── Reset ───────────────────────────────────────────────────────────────────
-  const reset = () => {
-    setRpyFiles([]);
-    setScriptFile(null);
+  // ── Reset ────────────────────────────────────────────────────────────────────
+  const reset = useCallback(() => {
     setResult(null);
+    setLog([]);
     setErrorMsg(null);
     setProgress(0);
-    setPhase("idle");
-  };
+    setProgressLabel("");
+    setPhase(scanResult ? "idle" : "idle");
+    setAssetsCopied(0);
+    setAssetsFailed(0);
+  }, [scanResult]);
 
-  // ── Render helpers ──────────────────────────────────────────────────────────
+  // ── Derived state ────────────────────────────────────────────────────────────
+  const isRunning =
+    phase === "converting" || phase === "copying" || phase === "scanning";
+  const isDone = phase === "done";
+  const canConvert =
+    !isRunning &&
+    !isDone &&
+    !!gameDir &&
+    !!outputDir &&
+    !!scanResult &&
+    scanResult.rpyFiles.length > 0;
 
   const allWarnings = result
     ? result.files.flatMap((f) => f.warnings.map((w) => `[${f.name}] ${w}`))
     : [];
 
-  const isConverting = phase === "converting";
-  const isDone = phase === "done";
-  const hasFiles = rpyFiles.length > 0;
+  // ─── Non-Tauri fallback ──────────────────────────────────────────────────────
+  if (!isTauri) {
+    return (
+      <div
+        style={s.overlay}
+        onClick={(e) => e.target === e.currentTarget && onClose()}
+      >
+        <div style={s.card}>
+          <div style={s.header}>
+            <h2 style={s.title}>🔄 Ren'Py → .rrs 批量转换</h2>
+            <button style={s.closeBtn} onClick={onClose}>
+              ✕
+            </button>
+          </div>
+          <div style={s.errorBox}>
+            此功能需要在 Tauri
+            桌面端运行，浏览器环境不支持直接读写本地文件系统。
+          </div>
+          <div style={s.cliBox}>
+            <p style={s.cliTitle}>💡 请使用命令行工具进行批量转换：</p>
+            <pre
+              style={s.cliCode}
+            >{`deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest
+# 带中文翻译
+deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest
+# 指定游戏名称
+deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest --game "MyGame"`}</pre>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-  // ── Render ──────────────────────────────────────────────────────────────────
-
+  // ─── Main render ─────────────────────────────────────────────────────────────
   return (
-    <div style={styles.overlay} onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div style={styles.card}>
-        {/* Header */}
-        <div style={styles.header}>
-          <h2 style={styles.title}>🔄 Ren'Py → .rrs 转换器</h2>
-          <button style={styles.closeBtn} onClick={onClose} aria-label="关闭">
+    <div
+      style={s.overlay}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div style={s.card}>
+        {/* ── Header ── */}
+        <div style={s.header}>
+          <h2 style={s.title}>🔄 Ren'Py → .rrs 批量转换</h2>
+          <button style={s.closeBtn} onClick={onClose} aria-label="关闭">
             ✕
           </button>
         </div>
 
-        {/* ── Step 1: File selection ── */}
-        <div style={styles.section}>
-          <p style={styles.sectionTitle}>第一步 · 选择 .rpy 文件</p>
-
-          {/* Drop zone */}
-          <div
-            style={{
-              ...styles.dropZone,
-              ...(dragging ? styles.dropZoneActive : {}),
-            }}
-            onDragOver={onDragOver}
-            onDragLeave={onDragLeave}
-            onDrop={onDrop}
-            onClick={() => rpyInputRef.current?.click()}
-            role="button"
-            tabIndex={0}
-            aria-label="选择 .rpy 文件"
-            onKeyDown={(e) => e.key === "Enter" && rpyInputRef.current?.click()}
-          >
-            <div style={{ fontSize: "1.8rem", marginBottom: "0.4rem" }}>📂</div>
-            <div>
-              点击选择或拖放 <code>.rpy</code> 文件（可多选）
-            </div>
+        {/* ── Step 1: Game Directory ── */}
+        <div style={s.section}>
+          <p style={s.sectionTitle}>第一步 · 选择 game 目录</p>
+          <div style={s.pathRow}>
             <div
               style={{
-                fontSize: "0.75rem",
-                marginTop: "0.3rem",
-                opacity: 0.5,
+                ...s.pathDisplay,
+                ...(gameDir ? s.pathDisplaySet : {}),
               }}
+              title={gameDir || undefined}
             >
-              如包含 script.rpy，会自动提取角色定义和资源映射
+              {gameDir || "未选择目录（点击右侧按钮选择 game/ 文件夹）"}
             </div>
+            <button
+              style={s.browseBtn}
+              onClick={pickGameDir}
+              disabled={isRunning}
+            >
+              📂 浏览…
+            </button>
           </div>
 
-          <input
-            ref={rpyInputRef}
-            type="file"
-            accept=".rpy"
-            multiple
-            style={styles.fileInput}
-            onChange={onRpyInputChange}
-          />
-
-          {/* File list */}
-          {rpyFiles.length > 0 && (
-            <div style={styles.fileList}>
-              {rpyFiles.map((f) => (
-                <div key={f.name} style={styles.fileItem}>
-                  <span style={styles.fileIcon}>
-                    {f.name.toLowerCase() === "script.rpy" ? "⚙️" : "📄"}
-                  </span>
-                  <span style={styles.fileName}>{f.name}</span>
-                  <span style={styles.fileSize}>
-                    {fmtBytes(new TextEncoder().encode(f.text).length)}
-                  </span>
-                  {!isDone && (
-                    <button
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "rgba(255,255,255,0.3)",
-                        cursor: "pointer",
-                        padding: "0 0.2rem",
-                        fontSize: "0.8rem",
-                      }}
-                      onClick={() =>
-                        setRpyFiles((prev) =>
-                          prev.filter((x) => x.name !== f.name),
-                        )
-                      }
-                      aria-label={`移除 ${f.name}`}
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              ))}
+          {/* Scan info chips */}
+          {scanResult && (
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              <span
+                style={{
+                  ...s.infoChip,
+                  ...(scanResult.rpyFiles.length > 0 ? s.okChip : s.warnChip),
+                }}
+              >
+                {scanResult.rpyFiles.length > 0
+                  ? `✓ ${scanResult.rpyFiles.length} 个 .rpy 文件`
+                  : "⚠ 未找到 .rpy 文件"}
+              </span>
+              <span
+                style={{
+                  ...s.infoChip,
+                  ...(scanResult.scriptRpyPath ? s.okChip : s.warnChip),
+                }}
+              >
+                {scanResult.scriptRpyPath
+                  ? "✓ script.rpy"
+                  : "⚠ 未找到 script.rpy"}
+              </span>
+              <span
+                style={{
+                  ...s.infoChip,
+                  ...(scanResult.tlChinesePath ? s.okChip : {}),
+                }}
+              >
+                {scanResult.tlChinesePath
+                  ? "✓ tl/chinese 翻译目录"
+                  : "— 无 tl/chinese"}
+              </span>
             </div>
           )}
         </div>
 
-        {/* ── Step 2: Script.rpy (optional) ── */}
-        <div style={styles.section}>
-          <p style={styles.sectionTitle}>第二步 · 指定 script.rpy（可选）</p>
-          <div style={styles.inputRow}>
-            <span style={styles.label}>script.rpy</span>
-            {scriptFile ? (
-              <span
-                style={{
-                  flex: 1,
-                  fontSize: "0.85rem",
-                  color: "#7ee787",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                ✓ {scriptFile.name}
-              </span>
-            ) : (
-              <span
-                style={{
-                  flex: 1,
-                  fontSize: "0.82rem",
-                  color: "rgba(255,255,255,0.3)",
-                }}
-              >
-                未指定（角色名和资源路径将无法解析）
-              </span>
-            )}
-            <button
-              style={styles.secondaryBtn}
-              onClick={() => scriptInputRef.current?.click()}
-              disabled={isDone}
+        {/* ── Step 2: Output Directory ── */}
+        <div style={s.section}>
+          <p style={s.sectionTitle}>第二步 · 选择输出目录</p>
+          <div style={s.pathRow}>
+            <div
+              style={{
+                ...s.pathDisplay,
+                ...(outputDir ? s.pathDisplaySet : {}),
+              }}
+              title={outputDir || undefined}
             >
-              {scriptFile ? "更换" : "选择"}
+              {outputDir || "未选择输出目录（.rrs 和 manifest.json 写入此处）"}
+            </div>
+            <button
+              style={s.browseBtn}
+              onClick={pickOutputDir}
+              disabled={isRunning}
+            >
+              📂 浏览…
             </button>
           </div>
-          <input
-            ref={scriptInputRef}
-            type="file"
-            accept=".rpy"
-            style={styles.fileInput}
-            onChange={onScriptInputChange}
-          />
         </div>
 
         {/* ── Step 3: Options ── */}
-        <div style={styles.section}>
-          <p style={styles.sectionTitle}>第三步 · 选项</p>
-          <div style={styles.inputRow}>
-            <span style={styles.label}>游戏名称</span>
+        <div style={s.section}>
+          <p style={s.sectionTitle}>第三步 · 转换选项</p>
+
+          {/* Game name */}
+          <div style={s.optionRow}>
+            <div style={s.optionLabel}>
+              游戏名称
+              <div style={s.optionSub}>
+                写入 manifest.json 的 game 字段（可留空）
+              </div>
+            </div>
             <input
-              style={styles.input}
+              style={{ ...s.textInput, maxWidth: "240px" }}
               type="text"
-              placeholder="写入 manifest.json 的 game 字段（可留空）"
+              placeholder="例：My VN Game"
               value={gameName}
               onChange={(e) => setGameName(e.target.value)}
-              disabled={isDone}
+              disabled={isRunning || isDone}
             />
           </div>
-          <div style={styles.inputRow}>
-            <span style={styles.label}>起始 label</span>
+
+          {/* Chinese TL toggle */}
+          <div style={s.optionRow}>
             <input
-              style={styles.input}
-              type="text"
-              placeholder="start"
-              value={startLabel}
-              onChange={(e) => setStartLabel(e.target.value)}
-              disabled={isDone}
+              id="opt-tl"
+              type="checkbox"
+              style={s.checkbox}
+              checked={includeTl}
+              onChange={(e) => setIncludeTl(e.target.checked)}
+              disabled={isRunning || isDone || !scanResult?.tlChinesePath}
             />
+            <label
+              htmlFor="opt-tl"
+              style={{
+                ...s.optionLabel,
+                cursor: scanResult?.tlChinesePath ? "pointer" : "not-allowed",
+                opacity: scanResult?.tlChinesePath ? 1 : 0.45,
+              }}
+            >
+              合并中文翻译
+              <div style={s.optionSub}>
+                {scanResult?.tlChinesePath
+                  ? `自动检测到：${scanResult.tlChinesePath}`
+                  : "未检测到 tl/chinese 目录，选项不可用"}
+              </div>
+            </label>
+          </div>
+
+          {/* Copy assets */}
+          <div style={s.optionRow}>
+            <input
+              id="opt-assets"
+              type="checkbox"
+              style={s.checkbox}
+              checked={copyAssets}
+              onChange={(e) => setCopyAssets(e.target.checked)}
+              disabled={isRunning || isDone}
+            />
+            <label
+              htmlFor="opt-assets"
+              style={{ ...s.optionLabel, cursor: "pointer" }}
+            >
+              一键复制依赖资源
+              <div style={s.optionSub}>
+                扫描转换结果中引用的图片 / 音频，从 game/
+                目录复制到输出目录，保留目录结构
+              </div>
+            </label>
           </div>
         </div>
 
-        {/* ── Convert button ── */}
+        {/* ── Action buttons ── */}
         {!isDone && (
-          <div style={styles.actionRow}>
+          <div style={s.actionRow}>
             <button
               style={{
-                ...styles.primaryBtn,
-                ...(!hasFiles || isConverting ? styles.disabledBtn : {}),
+                ...s.primaryBtn,
+                ...(!canConvert || isRunning ? s.disabledBtn : {}),
               }}
               onClick={runConversion}
-              disabled={!hasFiles || isConverting}
+              disabled={!canConvert || isRunning}
             >
-              {isConverting ? "⏳ 转换中…" : "▶ 开始转换"}
+              {isRunning ? "⏳ 处理中…" : "▶ 开始转换"}
             </button>
-            {hasFiles && (
-              <button style={styles.secondaryBtn} onClick={reset}>
-                清除
+            {(gameDir || result) && !isRunning && (
+              <button style={s.secondaryBtn} onClick={reset}>
+                重置
               </button>
             )}
           </div>
         )}
 
         {/* ── Progress ── */}
-        {isConverting && (
-          <div style={styles.section}>
-            <div style={styles.progressBar}>
-              <div
-                style={{ ...styles.progressFill, width: `${progress}%` }}
-              />
+        {(isRunning || (progress > 0 && progress < 100)) && (
+          <div style={s.section}>
+            <div style={s.progressBar}>
+              <div style={{ ...s.progressFill, width: `${progress}%` }} />
             </div>
-            <span
-              style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.4)" }}
-            >
-              正在转换 {rpyFiles.length} 个文件…
-            </span>
+            <span style={s.progressLabel}>{progressLabel}</span>
+          </div>
+        )}
+
+        {/* ── Log ── */}
+        {log.length > 0 && (
+          <div style={s.logBox} ref={logRef}>
+            {log.map((entry, i) => (
+              <div
+                key={i}
+                style={{
+                  ...s.logLine,
+                  color:
+                    entry.type === "ok"
+                      ? "#7ee787"
+                      : entry.type === "warn"
+                        ? "#e3b341"
+                        : entry.type === "error"
+                          ? "#ff7b72"
+                          : "rgba(255,255,255,0.55)",
+                }}
+              >
+                {entry.msg}
+              </div>
+            ))}
           </div>
         )}
 
         {/* ── Error ── */}
         {phase === "error" && errorMsg && (
-          <div style={styles.errorBox}>
+          <div style={s.errorBox}>
             <strong>转换出错：</strong> {errorMsg}
           </div>
         )}
 
         {/* ── Results ── */}
         {isDone && result && (
-          <div style={styles.section}>
-            <p style={styles.sectionTitle}>转换结果</p>
-
-            {/* Stats */}
-            <div style={styles.resultSummary}>
-              <div style={styles.stat}>
-                <span style={styles.statNum}>{result.files.length}</span>
-                <span style={styles.statLabel}>已转换</span>
+          <div style={s.section}>
+            <p style={s.sectionTitle}>转换结果</p>
+            <div style={s.resultSummary}>
+              <div style={s.stat}>
+                <span style={s.statNum}>{result.files.length}</span>
+                <span style={s.statLabel}>已转换</span>
               </div>
-              <div style={styles.stat}>
-                <span style={styles.statNum}>{result.skipped.length}</span>
-                <span style={styles.statLabel}>已跳过</span>
+              <div style={s.stat}>
+                <span style={s.statNum}>{result.skipped.length}</span>
+                <span style={s.statLabel}>已跳过</span>
               </div>
-              <div style={styles.stat}>
-                <span style={{ ...styles.statNum, color: "#7ee787" }}>
-                  {result.files.length + 1}
-                </span>
-                <span style={styles.statLabel}>可下载</span>
-              </div>
-            </div>
-
-            {/* File list */}
-            <div style={styles.resultList}>
-              {result.files.map((f) => (
-                <div key={f.name} style={styles.resultItem}>
-                  <span style={{ color: "#7ee787" }}>✓</span>
+              {copyAssets && (
+                <div style={s.stat}>
                   <span
                     style={{
-                      flex: 1,
-                      fontSize: "0.82rem",
-                      color: "rgba(255,255,255,0.75)",
-                      fontFamily: "monospace",
+                      ...s.statNum,
+                      color: assetsFailed > 0 ? "#e3b341" : "#7ee787",
                     }}
                   >
-                    {f.name}
+                    {assetsCopied}
                   </span>
-                  <span
-                    style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.3)" }}
-                  >
-                    {fmtBytes(new TextEncoder().encode(f.rrs).length)}
-                  </span>
-                  <button
-                    style={{
-                      ...styles.secondaryBtn,
-                      padding: "0.2rem 0.6rem",
-                      fontSize: "0.75rem",
-                    }}
-                    onClick={() => downloadText(f.name, f.rrs)}
-                  >
-                    ↓
-                  </button>
+                  <span style={s.statLabel}>资源已复制</span>
                 </div>
-              ))}
-              {/* manifest.json entry */}
-              <div style={styles.resultItem}>
-                <span style={{ color: "#7ee787" }}>✓</span>
-                <span
-                  style={{
-                    flex: 1,
-                    fontSize: "0.82rem",
-                    color: "rgba(255,255,255,0.75)",
-                    fontFamily: "monospace",
-                  }}
-                >
-                  manifest.json
-                </span>
-                <span />
-                <button
-                  style={{
-                    ...styles.secondaryBtn,
-                    padding: "0.2rem 0.6rem",
-                    fontSize: "0.75rem",
-                  }}
-                  onClick={downloadManifest}
-                >
-                  ↓
-                </button>
-              </div>
+              )}
+              {copyAssets && assetsFailed > 0 && (
+                <div style={s.stat}>
+                  <span style={{ ...s.statNum, color: "#ff7b72" }}>
+                    {assetsFailed}
+                  </span>
+                  <span style={s.statLabel}>资源缺失</span>
+                </div>
+              )}
             </div>
 
-            {/* Warnings */}
             {allWarnings.length > 0 && (
-              <div style={styles.warningBox}>
-                <strong>⚠ {allWarnings.length} 条警告：</strong>
+              <div style={s.warningBox}>
+                <strong>⚠ {allWarnings.length} 条转换警告</strong>
                 <ul
                   style={{
-                    margin: "0.4rem 0 0 1rem",
+                    margin: "0.35rem 0 0 1rem",
                     padding: 0,
                     lineHeight: 1.7,
                   }}
                 >
-                  {allWarnings.slice(0, 10).map((w, i) => (
-                    <li key={i}>{w}</li>
+                  {allWarnings.slice(0, 6).map((w, i) => (
+                    <li key={i} style={{ fontSize: "0.77rem" }}>
+                      {w}
+                    </li>
                   ))}
-                  {allWarnings.length > 10 && (
-                    <li>…以及 {allWarnings.length - 10} 条更多</li>
+                  {allWarnings.length > 6 && (
+                    <li style={{ fontSize: "0.77rem" }}>
+                      …还有 {allWarnings.length - 6} 条
+                    </li>
                   )}
                 </ul>
               </div>
             )}
 
-            {/* Download all button */}
-            <div style={styles.actionRow}>
-              <button style={styles.primaryBtn} onClick={downloadAll}>
-                ⬇ 全部下载（{result.files.length} 个 .rrs + manifest.json）
-              </button>
-              <button style={styles.secondaryBtn} onClick={reset}>
-                重新开始
+            <div style={s.actionRow}>
+              <button style={s.primaryBtn} onClick={reset}>
+                🔄 重新转换
               </button>
             </div>
           </div>
         )}
 
-        {/* ── CLI instructions ── */}
-        <div style={styles.cliBox}>
-          <p style={styles.cliTitle}>💡 批量转换推荐使用命令行工具</p>
-          <pre style={styles.cliCode}>{`# 批量转换整个游戏目录（含资源路径解析）
-deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest
-
-# 带中文翻译合并
-deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest \\
-  --tl /path/to/game/tl/chinese/
-
-# 指定游戏名称
-deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest \\
-  --game "My VN Game"`}</pre>
-          <p style={styles.cliNote}>
-            命令行工具支持完整的资源路径解析、多文件角色映射、翻译合并等功能。
-            浏览器内转换器适合快速预览单个文件，无法解析跨文件资源引用。
+        {/* ── CLI reference ── */}
+        <div style={s.cliBox}>
+          <p style={s.cliTitle}>💡 对应命令行等效操作</p>
+          <pre style={s.cliCode}>
+            {buildCliCommand(
+              gameDir || "/path/to/game/",
+              outputDir || "assets/data/",
+              gameName,
+              includeTl ? (scanResult?.tlChinesePath ?? null) : null,
+            )}
+          </pre>
+          <p style={s.cliNote}>
+            命令行工具支持更多高级选项（--skip、--stub-exit、--dry-run）。资源复制请使用操作系统的
+            cp -r 命令。
           </p>
         </div>
       </div>

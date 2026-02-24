@@ -12,9 +12,9 @@
 //   --verbose     Print the generated JSON to stdout as well
 //   --help        Show this help message
 
-import { tokenize } from "./lexer.ts";
-import { parse } from "./parser.ts";
-import { compile } from "./codegen.ts";
+import { tokenize } from "../../shared/rrs/lexer.ts";
+import { parse } from "../../shared/rrs/parser.ts";
+import { compile } from "../../shared/rrs/codegen.ts";
 
 // ── ANSI colour helpers ───────────────────────────────────────────────────────
 

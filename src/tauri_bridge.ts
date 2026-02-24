@@ -257,3 +257,134 @@ export async function writeTextFileTauri(
   const { writeTextFile } = await import("@tauri-apps/plugin-fs");
   await writeTextFile(filePath, text);
 }
+
+// ─── Directory & binary file helpers (used by game-dir batch converter) ───────
+
+export interface DirEntry {
+  name: string;
+  isFile: boolean;
+  isDirectory: boolean;
+}
+
+/**
+ * List the immediate children of a directory.
+ * Returns [] if the directory doesn't exist or can't be read.
+ */
+export async function readDirectory(dirPath: string): Promise<DirEntry[]> {
+  if (!isTauri) return [];
+  try {
+    // @ts-ignore
+    const { readDir } = await import("@tauri-apps/plugin-fs");
+    const entries = await readDir(dirPath);
+    return (
+      entries as Array<{ name: string; isFile: boolean; isDirectory: boolean }>
+    ).map((e) => ({
+      name: e.name ?? "",
+      isFile: e.isFile,
+      isDirectory: e.isDirectory,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read a file as a Uint8Array (binary).  Returns null on error.
+ */
+export async function readBinaryFileTauri(
+  filePath: string,
+): Promise<Uint8Array | null> {
+  if (!isTauri) return null;
+  try {
+    // @ts-ignore
+    const { readFile } = await import("@tauri-apps/plugin-fs");
+    return (await readFile(filePath)) as Uint8Array;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write a Uint8Array to a file path.  Creates parent directories if needed.
+ */
+export async function writeBinaryFileTauri(
+  filePath: string,
+  data: Uint8Array,
+): Promise<boolean> {
+  if (!isTauri) return false;
+  try {
+    // @ts-ignore
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    await writeFile(filePath, data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Create a directory (and all parent directories) at the given path.
+ */
+export async function makeDirTauri(dirPath: string): Promise<boolean> {
+  if (!isTauri) return false;
+  try {
+    // @ts-ignore
+    const { mkdir } = await import("@tauri-apps/plugin-fs");
+    await mkdir(dirPath, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check whether a path exists on the filesystem.
+ */
+export async function pathExists(p: string): Promise<boolean> {
+  if (!isTauri) return false;
+  try {
+    // @ts-ignore
+    const { exists } = await import("@tauri-apps/plugin-fs");
+    return await exists(p);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read a text file at a known native path.  Returns null on error.
+ */
+export async function readTextFileTauri(
+  filePath: string,
+): Promise<string | null> {
+  if (!isTauri) return null;
+  try {
+    // @ts-ignore
+    const { readTextFile } = await import("@tauri-apps/plugin-fs");
+    return await readTextFile(filePath);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recursively collect all file paths under a directory that match a predicate.
+ * Returns paths as absolute strings.
+ */
+export async function walkDir(
+  dir: string,
+  predicate: (name: string) => boolean,
+): Promise<string[]> {
+  const results: string[] = [];
+  const entries = await readDirectory(dir);
+  for (const e of entries) {
+    const full = `${dir}/${e.name}`;
+    if (e.isFile && predicate(e.name)) {
+      results.push(full);
+    } else if (e.isDirectory) {
+      const nested = await walkDir(full, predicate);
+      results.push(...nested);
+    }
+  }
+  return results;
+}

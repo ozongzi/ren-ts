@@ -19,11 +19,12 @@ import type {
   ExprStmt,
   HideStmt,
   IfStmt,
-  JumpStmt,
   JsonFile,
   JsonLabel,
   JsonStep,
+  JumpStmt,
   LabelDecl,
+  LabelStmt,
   MenuStmt,
   MusicStmt,
   Program,
@@ -35,7 +36,7 @@ import type {
   Stmt,
   WaitStmt,
   WithStmt,
-} from "./types.ts";
+} from "./ast.ts";
 
 // ── Define maps ───────────────────────────────────────────────────────────────
 
@@ -53,8 +54,9 @@ export function buildDefineMaps(
   charMap: Map<string, string>;
   audioMap: Map<string, string>;
 } {
-  // Start from the global char map so story files without define declarations
-  // can still resolve speaker abbreviations.
+  // Start from the global char map (populated from script.rrs) so that
+  // story files which carry no define declarations can still resolve
+  // speaker abbreviations.
   const charMap = new Map<string, string>(globalCharMap);
   const audioMap = new Map<string, string>();
 
@@ -62,8 +64,8 @@ export function buildDefineMaps(
     if (d.key.startsWith("audio.")) {
       audioMap.set(d.key.slice("audio.".length), d.value);
     } else {
-      // All non-audio defines are character/speaker name entries.
-      // Format: define k = "Keitaro";  (no char. prefix)
+      // All other defines are character/speaker name entries.
+      // Format: define k = "Keitaro";   (no char. prefix needed)
       // File-local definitions override the global map.
       charMap.set(d.key, d.value);
     }
@@ -74,11 +76,24 @@ export function buildDefineMaps(
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/**
+ * Compile a parsed .rrs program into a ScriptFile.
+ *
+ * @param program       Parsed AST
+ * @param sourceName    Filename used for the `source` field and error messages
+ * @param globalCharMap Optional character map pre-populated from script.rrs.
+ *                      Story files carry no `define` declarations of their own,
+ *                      so without this map all speaker abbreviations would pass
+ *                      through unresolved.
+ */
 export function compile(
   program: Program,
   sourceName: string,
   globalCharMap?: Map<string, string>,
 ): JsonFile {
+  // Hoist nested label declarations to top-level before code generation.
+  program = hoistNestedLabels(program);
+
   const labels: Record<string, JsonLabel> = {};
   const { charMap, audioMap } = buildDefineMaps(program.defines, globalCharMap);
 
@@ -88,6 +103,57 @@ export function compile(
   }
 
   return { source: sourceName, labels };
+}
+
+/**
+ * Walk the program AST and lift any nested LabelStmt nodes out of label
+ * bodies into the top-level labels list.  This makes every label a
+ * first-class entry in the compiled output, matching how RenPy treats
+ * nested label declarations.
+ */
+function hoistNestedLabels(prog: Program): Program {
+  const extraLabels: LabelDecl[] = [];
+
+  function walkStmts(stmts: Stmt[]): Stmt[] {
+    const out: Stmt[] = [];
+    for (const stmt of stmts) {
+      if (stmt.kind === "Label") {
+        // Recursively hoist any nested labels inside this one too
+        extraLabels.push({ name: stmt.name, body: walkStmts(stmt.body) });
+        // Remove from current body (the caller jumps to it explicitly)
+        continue;
+      }
+      if (stmt.kind === "If") {
+        out.push({
+          ...stmt,
+          branches: stmt.branches.map((b) => ({
+            ...b,
+            body: walkStmts(b.body),
+          })),
+        });
+        continue;
+      }
+      if (stmt.kind === "Menu") {
+        out.push({
+          ...stmt,
+          choices: stmt.choices.map((c) => ({
+            ...c,
+            body: walkStmts(c.body),
+          })),
+        });
+        continue;
+      }
+      out.push(stmt);
+    }
+    return out;
+  }
+
+  const newLabels = prog.labels.map((lbl) => ({
+    ...lbl,
+    body: walkStmts(lbl.body),
+  }));
+
+  return { ...prog, labels: [...newLabels, ...extraLabels] };
 }
 
 // ── Sprite-state tracking ─────────────────────────────────────────────────────
@@ -174,7 +240,16 @@ class CodegenContext {
         return this.genCall(stmt);
       case "Return":
         return this.genReturn(stmt);
+      case "Label":
+        // Already hoisted to top-level by hoistNestedLabels(); nothing to emit inline.
+        return this.genNestedLabel(stmt);
     }
+  }
+
+  private genNestedLabel(_stmt: LabelStmt): JsonStep[] {
+    // Nested labels are hoisted before codegen runs; this branch is a safety
+    // fallback that should never be reached in practice.
+    return [];
   }
 
   // ── Individual generators ─────────────────────────────────────────────────
@@ -463,7 +538,6 @@ class CodegenContext {
     return [{ type: "call", target: stmt.target }];
   }
 
-  // deno-lint-ignore no-unused-vars
   private genReturn(_stmt: ReturnStmt): JsonStep[] {
     return [{ type: "return" }];
   }

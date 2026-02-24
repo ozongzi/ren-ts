@@ -11,16 +11,18 @@ export type Program = {
  * Top-level define declaration.  May appear before (or interleaved with)
  * label blocks, but never *inside* a label body.
  *
- * Three flavours:
- *   define char.<abbr>  = "Full Name";   → character alias
+ * Two flavours:
+ *   define <abbr>        = "Full Name";   → character/speaker alias (e.g. define k = "Keitaro")
  *   define audio.<alias> = "path/to.ogg"; → audio path alias
- *   define <VAR>        = <value>;        → generic constant
+ *
+ * No `char.` prefix is used for character names — the only namespaced keys
+ * are `audio.*`.  All other defines are treated as character name entries.
  */
 export type DefineDecl = {
   kind: "Define";
-  /** Full dotted key exactly as written, e.g. "char.k", "audio.bgm_main", "CAMP_NAME" */
+  /** Full key exactly as written, e.g. "k", "mys_hiro", "audio.bgm_main" */
   key: string;
-  /** Raw value string (unquoted for strings, numeric literal for numbers, etc.) */
+  /** Raw value string (the quoted string content, numeric literal, or bare identifier) */
   value: string;
 };
 
@@ -46,7 +48,28 @@ export type Stmt =
   | MenuStmt
   | JumpStmt
   | CallStmt
-  | ReturnStmt;
+  | ReturnStmt
+  | LabelStmt;
+
+/**
+ * A nested label declaration found inside a label body.
+ * These are hoisted to top-level labels by the codegen's hoistNestedLabels()
+ * pre-pass, so the engine sees them as ordinary top-level labels.
+ *
+ * Example:
+ *   label day30_hiro {
+ *     ...
+ *     jump foreplay;
+ *     label afterforeplay_day30_hiro {   ← LabelStmt
+ *       ...
+ *     }
+ *   }
+ */
+export type LabelStmt = {
+  kind: "Label";
+  name: string;
+  body: Stmt[];
+};
 
 /** Variable assignment: name op value ;
  *  e.g.  day_num = "Day 1";
@@ -251,9 +274,13 @@ export type ReturnStmt = {
   kind: "Return";
 };
 
+// Re-export LabelStmt so callers can import it directly from ast.
+// (The type is defined above near the Stmt union.)
+
 // ── JSON output types (must match engine Step expectations) ───────────────────
 
 // deno-lint-ignore no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type JsonStep = Record<string, any>;
 
 export type JsonLabel = JsonStep[];

@@ -6,6 +6,9 @@ export type TokenKind =
   | "Num"
   | "Ident"
   | "HexColor"
+  // Brackets
+  | "["
+  | "]"
   // Namespace / member access
   | "::"
   | ":"
@@ -124,8 +127,8 @@ class Lexer {
     const line = this.line;
     const ch = this.peek();
 
-    // ── String literal "..." ──────────────────────────────────────────────────
-    if (ch === '"') return this.readString(line);
+    // ── String literal "..." or '...' ────────────────────────────────────────
+    if (ch === '"' || ch === "'") return this.readString(line, ch);
 
     // ── Numeric literal ───────────────────────────────────────────────────────
     if (ch >= "0" && ch <= "9") return this.readNumber(line);
@@ -249,6 +252,8 @@ class Lexer {
       "}": "}",
       "(": "(",
       ")": ")",
+      "[": "[",
+      "]": "]",
       "*": "*",
       ":": ":",
       ".": ".",
@@ -275,14 +280,14 @@ class Lexer {
 
   // ── Literal readers ───────────────────────────────────────────────────────
 
-  private readString(line: number): Token {
-    this.advance(); // consume opening "
+  private readString(line: number, quote = '"'): Token {
+    this.advance(); // consume opening quote
     let value = "";
 
     while (this.pos < this.src.length) {
       const ch = this.peek();
-      if (ch === '"') {
-        this.advance(); // consume closing "
+      if (ch === quote) {
+        this.advance(); // consume closing quote
         break;
       }
       if (ch === "\\") {

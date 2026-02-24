@@ -11,7 +11,7 @@ import type {
   Program,
   SpeakLine,
   Stmt,
-} from "./types.ts";
+} from "./ast.ts";
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -56,8 +56,12 @@ class Parser {
     while (!this.check("EOF")) {
       if (this.checkIdent("define")) {
         defines.push(this.parseDefine());
-      } else {
+      } else if (this.checkIdent("label")) {
         labels.push(this.parseLabel());
+      } else {
+        // Top-level statement outside any label (e.g. top-level `if` or `let`
+        // in init scripts like always_allow_skip.rrs).  Parse and discard.
+        this.parseStmt();
       }
     }
     return { defines, labels };
@@ -188,8 +192,12 @@ class Parser {
         this.advance();
         this.eatSemi();
         return { kind: "Return" };
-      case "label":
-        throw this.err("Nested 'label' declarations are not allowed");
+      case "label": {
+        // Nested label — parse it and wrap as a LabelStmt so that
+        // codegen's hoistNestedLabels() can lift it to the top level.
+        const nested = this.parseLabel();
+        return { kind: "Label", name: nested.name, body: nested.body };
+      }
     }
 
     // ── Dotted variable assignment: a.b.c op value ;
@@ -302,7 +310,18 @@ class Parser {
   //    show cg_name | dissolve { src: "CGs/foo.jpg" }
 
   private parseShow(): Stmt {
-    const bodyKey = this.expectKind("Ident").value;
+    // Accept either a bare identifier or a quoted string path
+    // e.g.  show "BGs/obstacle_rain.jpg"  (legacy verbatim path)
+    let bodyKey: string;
+    let impliedSrc: string | undefined;
+    if (this.check("Str")) {
+      impliedSrc = this.advance().value;
+      // Derive a sprite key from the filename: "BGs/obstacle_rain.jpg" → "obstacle_rain"
+      const base = impliedSrc.split("/").pop() ?? impliedSrc;
+      bodyKey = base.replace(/\.[^.]+$/, "");
+    } else {
+      bodyKey = this.expectKind("Ident").value;
+    }
 
     // Optional ::face (or ::* though * makes no sense in show, we accept it)
     let faceExpr: string | undefined;
@@ -332,7 +351,7 @@ class Parser {
     }
 
     // Optional { src: "..." ; src_face: "..." ; src_body: "..." ; key: "..." } block
-    let src: string | undefined;
+    let src: string | undefined = impliedSrc;
     let faceSrc: string | undefined;
     let spriteKeyOverride: string | undefined;
     if (this.check("{")) {
@@ -563,6 +582,7 @@ class Parser {
   }
 
   // ── menu { "text" => { body } ... }
+  //    "text" if condition => { body }   (conditional menu choice)
 
   private parseMenu(): Stmt {
     this.expectKind("{");
@@ -570,11 +590,19 @@ class Parser {
 
     while (!this.check("}") && !this.check("EOF")) {
       const text = this.expectKind("Str").value;
+
+      // Optional `if <condition>` guard before `=>`
+      let condition: string | undefined;
+      if (this.checkIdent("if")) {
+        this.advance(); // consume 'if'
+        condition = this.parseRawUntilArrow();
+      }
+
       this.expectKind("=>");
       this.expectKind("{");
       const body = this.parseBody();
       this.expectKind("}");
-      choices.push({ text, body });
+      choices.push({ text, condition, body });
     }
 
     this.expectKind("}");
@@ -671,13 +699,39 @@ class Parser {
    * Used for multi-word face expressions like "sick normal1", "surprised1 sepia".
    */
   private parseMultiWordIdent(): string {
-    const first = this.expectKind("Ident").value;
+    // First token may be Ident or Num (e.g. face expression "1" in hide sx::1)
+    const firstTok = this.peek();
+    if (firstTok.kind !== "Ident" && firstTok.kind !== "Num") {
+      throw this.err(
+        `Expected face expression (Ident or Num), got '${firstTok.kind}' ('${firstTok.value}')`,
+      );
+    }
+    const first = this.advance().value;
     const parts: string[] = [first];
     // Accept consecutive Ident or Num tokens (e.g. "sick normal1", "yoichi8head1 1")
     while (this.peek().kind === "Ident" || this.peek().kind === "Num") {
       parts.push(this.advance().value);
     }
     return parts.join(" ");
+  }
+
+  /**
+   * Collect tokens as a raw string until the next top-level `=>`.
+   * Used for menu choice `if` conditions.
+   */
+  private parseRawUntilArrow(): string {
+    const parts: string[] = [];
+    let depth = 0;
+
+    while (!this.check("EOF")) {
+      const tok = this.peek();
+      if (tok.kind === "=>" && depth === 0) break;
+      if (tok.kind === "{" || tok.kind === "(") depth++;
+      if (tok.kind === "}" || tok.kind === ")") depth--;
+      parts.push(this.tokToRaw(this.advance()));
+    }
+
+    return parts.join(" ").trim();
   }
 
   // ── Token helpers ────────────────────────────────────────────────────────────
