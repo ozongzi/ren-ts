@@ -6,8 +6,6 @@ import {
   readTextFileTauri,
   pathExists,
   makeDirTauri,
-  readBinaryFileTauri,
-  writeBinaryFileTauri,
   writeTextFileTauri,
 } from "../tauri_bridge";
 import {
@@ -19,13 +17,7 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ConvertPhase =
-  | "idle"
-  | "scanning"
-  | "converting"
-  | "copying"
-  | "done"
-  | "error";
+type ConvertPhase = "idle" | "scanning" | "converting" | "done" | "error";
 
 interface ScanResult {
   rpyFiles: string[]; // absolute paths of .rpy files in game dir
@@ -60,176 +52,6 @@ function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/** Extract all quoted asset paths from .rrs text */
-const ASSET_REF_RE = /"([^"]+\.(?:jpg|jpeg|png|webp|ogg|mp3|wav|webm))"/gi;
-
-/** Detects Python %-format or {name}-format placeholders in a path */
-const IS_TEMPLATE_RE = /%[sdifr%]|\{[^}]+\}/;
-
-function extractAssetRefs(rrsText: string): string[] {
-  const refs: string[] = [];
-  const re = new RegExp(ASSET_REF_RE.source, "gi");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(rrsText)) !== null) {
-    const p = m[1];
-    if (p.includes("<UNKNOWN")) continue;
-    refs.push(p);
-  }
-  return refs;
-}
-
-/**
- * Convert a filename template (e.g. "sprite_%s.png" or "icon_{name}.png")
- * into a RegExp that matches any concrete filename derived from it.
- * Each format specifier becomes `.*` so the match is permissive.
- */
-function templateToRegex(tmpl: string): RegExp {
-  // Split on format specifiers; escape the literal parts, join with .*
-  const parts = tmpl.split(IS_TEMPLATE_RE);
-  const escaped = parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  return new RegExp("^" + escaped.join(".*") + "$", "i");
-}
-
-/**
- * List all files inside `dir` whose names match `pattern`.
- * Returns absolute paths. Returns [] if the directory cannot be read.
- */
-async function globDir(dir: string, pattern: RegExp): Promise<string[]> {
-  const entries = await readDirectory(dir);
-  return entries
-    .filter((e) => e.isFile && pattern.test(e.name))
-    .map((e) => `${dir}/${e.name}`);
-}
-
-/**
- * Resolve an .rrs asset reference (as stored in the script) to a candidate
- * absolute path inside the Ren'Py `game/` directory.
- *
- * Engine layout:
- *   Audio/* refs → game/audio/…  (also try with original case)
- *   everything else → game/images/…
- */
-function resolveGamePath(gameDir: string, assetRef: string): string[] {
-  if (assetRef.startsWith("Audio/")) {
-    const rel = assetRef.slice("Audio/".length);
-    return [
-      `${gameDir}/audio/${rel}`,
-      `${gameDir}/Audio/${rel}`,
-      `${gameDir}/audio/${assetRef.slice("Audio/".length).toLowerCase()}`,
-    ];
-  }
-  return [`${gameDir}/images/${assetRef}`, `${gameDir}/${assetRef}`];
-}
-
-/**
- * The output path inside the target assets directory.
- *   Audio/* refs → outputDir/Audio/…
- *   everything else → outputDir/images/…
- */
-function resolveOutputPath(outputDir: string, assetRef: string): string {
-  if (assetRef.startsWith("Audio/")) {
-    return `${outputDir}/${assetRef}`;
-  }
-  return `${outputDir}/images/${assetRef}`;
-}
-
-/**
- * Resolve the parent directory of a (possibly template) asset ref inside
- * the Ren'Py game/ folder.  Returns candidate absolute directory paths.
- */
-function resolveGameDir(gameDir: string, assetDirRef: string): string[] {
-  if (assetDirRef.startsWith("Audio/")) {
-    const rel = assetDirRef.slice("Audio/".length);
-    return [`${gameDir}/audio/${rel}`, `${gameDir}/Audio/${rel}`];
-  }
-  return [`${gameDir}/images/${assetDirRef}`, `${gameDir}/${assetDirRef}`];
-}
-
-/**
- * Copy a single asset ref (literal or template) from gameDir into outputDir.
- * For template refs (containing %s / {var}), globs the source directory and
- * copies every matching file.
- * Returns { copied, failed } counts.
- */
-async function copyOneAssetRef(
-  ref: string,
-  gameDir: string,
-  outputDir: string,
-  addLog: (type: "info" | "ok" | "warn" | "error", msg: string) => void,
-): Promise<{ copied: number; failed: number }> {
-  const isTemplate = IS_TEMPLATE_RE.test(ref);
-
-  // ── Literal path ────────────────────────────────────────────────────────────
-  if (!isTemplate) {
-    const candidates = resolveGamePath(gameDir, ref);
-    let srcPath: string | null = null;
-    for (const c of candidates) {
-      if (await pathExists(c)) {
-        srcPath = c;
-        break;
-      }
-    }
-    if (!srcPath) {
-      addLog("warn", `  找不到资源：${ref}`);
-      return { copied: 0, failed: 1 };
-    }
-    const dstPath = resolveOutputPath(outputDir, ref);
-    const dstDir = dstPath.substring(0, dstPath.lastIndexOf("/"));
-    await makeDirTauri(dstDir);
-    const data = await readBinaryFileTauri(srcPath);
-    if (data && (await writeBinaryFileTauri(dstPath, data))) {
-      return { copied: 1, failed: 0 };
-    }
-    addLog("warn", `  写入失败：${ref}`);
-    return { copied: 0, failed: 1 };
-  }
-
-  // ── Template path — expand by globbing ─────────────────────────────────────
-  const lastSlash = ref.lastIndexOf("/");
-  const dirPart = lastSlash >= 0 ? ref.slice(0, lastSlash) : "";
-  const fileTmpl = lastSlash >= 0 ? ref.slice(lastSlash + 1) : ref;
-  const fileRegex = templateToRegex(fileTmpl);
-
-  // Candidate source directories
-  const srcDirs = resolveGameDir(gameDir, dirPart);
-
-  // Output directory (template placeholders don't affect directory structure)
-  const dstDir = ref.startsWith("Audio/")
-    ? `${outputDir}/${dirPart}`
-    : `${outputDir}/images/${dirPart}`;
-
-  let copied = 0;
-  let failed = 0;
-  let foundAny = false;
-
-  for (const srcDir of srcDirs) {
-    const matches = await globDir(srcDir, fileRegex);
-    if (matches.length === 0) continue;
-    foundAny = true;
-    await makeDirTauri(dstDir);
-    for (const srcPath of matches) {
-      const filename = srcPath.slice(srcPath.lastIndexOf("/") + 1);
-      const dstPath = `${dstDir}/${filename}`;
-      const data = await readBinaryFileTauri(srcPath);
-      if (data && (await writeBinaryFileTauri(dstPath, data))) {
-        copied++;
-      } else {
-        addLog("warn", `  写入失败：${filename}（来自 ${ref}）`);
-        failed++;
-      }
-    }
-    // Use first dir that has matches; don't double-copy from fallback dirs
-    break;
-  }
-
-  if (!foundAny) {
-    addLog("warn", `  找不到匹配资源：${ref}`);
-    return { copied: 0, failed: 1 };
-  }
-
-  return { copied, failed };
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -556,7 +378,6 @@ export const ConvertScreen: React.FC<ConvertScreenProps> = ({ onClose }) => {
   // ── Options ─────────────────────────────────────────────────────────────────
   const [gameName, setGameName] = useState("");
   const [includeTl, setIncludeTl] = useState(true);
-  const [copyAssets, setCopyAssets] = useState(false);
 
   // ── Conversion state ────────────────────────────────────────────────────────
   const [phase, setPhase] = useState<ConvertPhase>("idle");
@@ -564,8 +385,6 @@ export const ConvertScreen: React.FC<ConvertScreenProps> = ({ onClose }) => {
   const [progressLabel, setProgressLabel] = useState("");
   const [log, setLog] = useState<LogEntry[]>([]);
   const [result, setResult] = useState<BatchResult | null>(null);
-  const [assetsCopied, setAssetsCopied] = useState(0);
-  const [assetsFailed, setAssetsFailed] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const logRef = React.useRef<HTMLDivElement>(null);
@@ -646,8 +465,6 @@ export const ConvertScreen: React.FC<ConvertScreenProps> = ({ onClose }) => {
     setLog([]);
     setResult(null);
     setErrorMsg(null);
-    setAssetsCopied(0);
-    setAssetsFailed(0);
 
     try {
       // 1. Load script.rpy for asset maps
@@ -762,7 +579,7 @@ export const ConvertScreen: React.FC<ConvertScreenProps> = ({ onClose }) => {
       }
 
       // 5. Ensure output data directory exists
-      const dataDir = outputDir;
+      const dataDir = `${outputDir}/data`;
       await makeDirTauri(dataDir);
 
       // 6. Write .rrs files
@@ -784,43 +601,6 @@ export const ConvertScreen: React.FC<ConvertScreenProps> = ({ onClose }) => {
       setProgress(95);
       setResult(batchResult);
 
-      // 8. Copy assets (optional)
-      if (copyAssets) {
-        setPhase("copying");
-        setProgressLabel("复制资源文件…");
-        addLog("info", "开始收集和复制资源文件…");
-
-        // Collect unique asset refs from all converted files
-        const assetRefs = new Set<string>();
-        for (const f of batchResult.files) {
-          for (const ref of extractAssetRefs(f.rrs)) {
-            assetRefs.add(ref);
-          }
-        }
-        addLog("info", `  发现 ${assetRefs.size} 个资源引用`);
-
-        let copied = 0;
-        let failed = 0;
-        let idx = 0;
-
-        for (const ref of assetRefs) {
-          idx++;
-          setProgress(95 + Math.round((idx / assetRefs.size) * 4));
-          setProgressLabel(`复制资源 ${idx}/${assetRefs.size}…`);
-
-          const r = await copyOneAssetRef(ref, gameDir, outputDir, addLog);
-          copied += r.copied;
-          failed += r.failed;
-        }
-
-        setAssetsCopied(copied);
-        setAssetsFailed(failed);
-        addLog(
-          failed === 0 ? "ok" : "warn",
-          `资源复制完成：${copied} 成功，${failed} 失败`,
-        );
-      }
-
       setProgress(100);
       setProgressLabel("完成");
       setPhase("done");
@@ -831,7 +611,7 @@ export const ConvertScreen: React.FC<ConvertScreenProps> = ({ onClose }) => {
       addLog("error", `错误：${msg}`);
       setPhase("error");
     }
-  }, [gameDir, outputDir, scanResult, gameName, includeTl, copyAssets, addLog]);
+  }, [gameDir, outputDir, scanResult, gameName, includeTl, addLog]);
 
   // ── Reset ────────────────────────────────────────────────────────────────────
   const reset = useCallback(() => {
@@ -840,14 +620,11 @@ export const ConvertScreen: React.FC<ConvertScreenProps> = ({ onClose }) => {
     setErrorMsg(null);
     setProgress(0);
     setProgressLabel("");
-    setPhase(scanResult ? "idle" : "idle");
-    setAssetsCopied(0);
-    setAssetsFailed(0);
-  }, [scanResult]);
+    setPhase("idle");
+  }, []);
 
   // ── Derived state ────────────────────────────────────────────────────────────
-  const isRunning =
-    phase === "converting" || phase === "copying" || phase === "scanning";
+  const isRunning = phase === "converting" || phase === "scanning";
   const isDone = phase === "done";
   const canConvert =
     !isRunning &&
@@ -1039,28 +816,6 @@ deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest --game "MyGame"`}</p
               </div>
             </label>
           </div>
-
-          {/* Copy assets */}
-          <div style={s.optionRow}>
-            <input
-              id="opt-assets"
-              type="checkbox"
-              style={s.checkbox}
-              checked={copyAssets}
-              onChange={(e) => setCopyAssets(e.target.checked)}
-              disabled={isRunning || isDone}
-            />
-            <label
-              htmlFor="opt-assets"
-              style={{ ...s.optionLabel, cursor: "pointer" }}
-            >
-              一键复制依赖资源
-              <div style={s.optionSub}>
-                扫描转换结果中引用的图片 / 音频，从 game/
-                目录复制到输出目录，保留目录结构
-              </div>
-            </label>
-          </div>
         </div>
 
         {/* ── Action buttons ── */}
@@ -1138,27 +893,6 @@ deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest --game "MyGame"`}</p
                 <span style={s.statNum}>{result.skipped.length}</span>
                 <span style={s.statLabel}>已跳过</span>
               </div>
-              {copyAssets && (
-                <div style={s.stat}>
-                  <span
-                    style={{
-                      ...s.statNum,
-                      color: assetsFailed > 0 ? "#e3b341" : "#7ee787",
-                    }}
-                  >
-                    {assetsCopied}
-                  </span>
-                  <span style={s.statLabel}>资源已复制</span>
-                </div>
-              )}
-              {copyAssets && assetsFailed > 0 && (
-                <div style={s.stat}>
-                  <span style={{ ...s.statNum, color: "#ff7b72" }}>
-                    {assetsFailed}
-                  </span>
-                  <span style={s.statLabel}>资源缺失</span>
-                </div>
-              )}
             </div>
 
             {allWarnings.length > 0 && (

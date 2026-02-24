@@ -198,14 +198,20 @@ export function parseAssetMaps(scriptRpyText: string): AssetMaps {
       continue;
     }
 
-    // define ABBR = Character("Full Name", ...)
+    // Character definitions — four forms found in the wild:
+    //   define abbr = Character("Name", ...)       standard Ren'Py define
+    //   define $abbr = Character("Name", ...)      dollar-prefixed define
+    //   $abbr = Character("Name", ...)             Python assignment (init block)
+    //   $ abbr = Character("Name", ...)            Python assignment with space
     const charMatch = trimmed.match(
-      /^define\s+(\w+)\s*=\s*Character\s*\(\s*(?:_\()?["']([^"']+)["']/,
+      /^(?:define\s+\$?|\$\s*)(\w+)\s*=\s*Character\s*\(\s*(?:_\()?(['"])([^"']+)\2/,
     );
     if (charMatch) {
       const abbr = charMatch[1];
-      const fullName = charMatch[2];
-      charMap.set(abbr, fullName);
+      const fullName = charMatch[3];
+      if (abbr !== "narrator" && abbr !== "nvl" && abbr !== "k_foreplay") {
+        charMap.set(abbr, fullName === "empty" ? "" : fullName);
+      }
       continue;
     }
 
@@ -678,26 +684,26 @@ class Converter {
     }
 
     // ── CHAR "text" ──────────────────────────────────────────────────────────
+    // Process dialog for any character key that looks like an identifier,
+    // regardless of whether it appears in the charMap. The reader resolves
+    // display names at runtime from the charMap in the manifest/script.rrs.
     const dialogMatch = line.match(
       /^([\w]+(?:_[\w]+)*)\s*"((?:[^"\\]|\\.)*)"\s*(?:with\s+\S+)?\s*$/,
     );
     if (dialogMatch) {
       const charKey = dialogMatch[1].trimEnd();
-      const charName = this.charMap.get(charKey);
-      if (charName !== undefined) {
-        if (this.menuPreamble) return;
-        if (this.wouldCloseBlocks(indent)) {
-          this.flushSpeak();
-          this.closeBlocksAt(indent);
-        }
-        const rawText = dialogMatch[2];
-        const stripped = stripRpyTags(rawText);
-        const text = this.translate(stripped);
-        const voice = this.pendingVoice;
-        this.pendingVoice = null;
-        this.addSpeakLine(charKey, text, voice);
-        return;
+      if (this.menuPreamble) return;
+      if (this.wouldCloseBlocks(indent)) {
+        this.flushSpeak();
+        this.closeBlocksAt(indent);
       }
+      const rawText = dialogMatch[2];
+      const stripped = stripRpyTags(rawText);
+      const text = this.translate(stripped);
+      const voice = this.pendingVoice;
+      this.pendingVoice = null;
+      this.addSpeakLine(charKey, text, voice);
+      return;
     }
 
     // For all other statements: flush speak buffer then close deeper blocks

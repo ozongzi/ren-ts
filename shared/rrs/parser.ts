@@ -188,6 +188,13 @@ class Parser {
       case "let":
         this.advance();
         return this.parseLetAssign();
+      // `define` inside a label body (e.g. inside if/elif/else blocks in
+      // script.rrs) – treat the same as `let` (variable assignment).
+      // At the top level, `define` is handled by parse() → parseDefine();
+      // here we just need it not to throw so script.rrs can load.
+      case "define":
+        this.advance();
+        return this.parseLetAssign();
       case "return":
         this.advance();
         this.eatSemi();
