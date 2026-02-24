@@ -46,33 +46,41 @@ import type {
  * audioMap  : alias → path        (from `define audio.<alias> = "path"`)
  * constMap  : name  → value       (from `define <NAME> = value`)
  */
-export function buildDefineMaps(defines: DefineDecl[]): {
+export function buildDefineMaps(
+  defines: DefineDecl[],
+  globalCharMap?: Map<string, string>,
+): {
   charMap: Map<string, string>;
   audioMap: Map<string, string>;
-  constMap: Map<string, string>;
 } {
-  const charMap = new Map<string, string>();
+  // Start from the global char map so story files without define declarations
+  // can still resolve speaker abbreviations.
+  const charMap = new Map<string, string>(globalCharMap);
   const audioMap = new Map<string, string>();
-  const constMap = new Map<string, string>();
 
   for (const d of defines) {
-    if (d.key.startsWith("char.")) {
-      charMap.set(d.key.slice("char.".length), d.value);
-    } else if (d.key.startsWith("audio.")) {
+    if (d.key.startsWith("audio.")) {
       audioMap.set(d.key.slice("audio.".length), d.value);
     } else {
-      constMap.set(d.key, d.value);
+      // All non-audio defines are character/speaker name entries.
+      // Format: define k = "Keitaro";  (no char. prefix)
+      // File-local definitions override the global map.
+      charMap.set(d.key, d.value);
     }
   }
 
-  return { charMap, audioMap, constMap };
+  return { charMap, audioMap };
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-export function compile(program: Program, sourceName: string): JsonFile {
+export function compile(
+  program: Program,
+  sourceName: string,
+  globalCharMap?: Map<string, string>,
+): JsonFile {
   const labels: Record<string, JsonLabel> = {};
-  const { charMap, audioMap } = buildDefineMaps(program.defines);
+  const { charMap, audioMap } = buildDefineMaps(program.defines, globalCharMap);
 
   for (const label of program.labels) {
     const ctx = new CodegenContext(charMap, audioMap);

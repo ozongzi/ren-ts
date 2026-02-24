@@ -11,14 +11,16 @@ export type Program = {
  * Top-level define declaration.  May appear before (or interleaved with)
  * label blocks, but never *inside* a label body.
  *
- * Three flavours:
- *   define char.<abbr>  = "Full Name";   → character alias
+ * Two flavours:
+ *   define <abbr>        = "Full Name";   → character/speaker alias (e.g. define k = "Keitaro")
  *   define audio.<alias> = "path/to.ogg"; → audio path alias
- *   define <VAR>        = <value>;        → generic constant
+ *
+ * No `char.` prefix is used for character names — the only namespaced keys
+ * are `audio.*`.  All other defines are treated as character name entries.
  */
 export type DefineDecl = {
   kind: "Define";
-  /** Full dotted key exactly as written, e.g. "char.k", "audio.bgm_main", "CAMP_NAME" */
+  /** Full key exactly as written, e.g. "k", "mys_hiro", "audio.bgm_main" */
   key: string;
   /** Raw value string (the quoted string content, numeric literal, or bare identifier) */
   value: string;

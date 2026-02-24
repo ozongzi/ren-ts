@@ -1,5 +1,5 @@
 import type { Step, ScriptFile, Manifest } from "./types";
-import { parseScript } from "./rrs/index";
+import { parseScript, extractCharMap } from "./rrs/index";
 import { isTauri, getActiveAssetsDir } from "./tauri_bridge";
 
 // ─── Label registry ───────────────────────────────────────────────────────────
@@ -10,6 +10,11 @@ let loadedFiles: Set<string> = new Set();
 let manifestFiles: string[] = [];
 let manifestStart: string = "start";
 let manifestGame: string | undefined = undefined;
+
+// Global character abbreviation → display name map, populated from script.rrs.
+// All other files are compiled with this map so `speak k "text"` resolves to
+// speaker "Keitaro" even though story files carry no `define` declarations.
+let globalCharMap: Map<string, string> = new Map();
 
 // ─── Data file reader ─────────────────────────────────────────────────────────
 
@@ -76,8 +81,37 @@ export async function loadAll(): Promise<void> {
       `First 3: ${manifest.files.slice(0, 3).join(", ")}`,
   );
 
-  // Load all script files in parallel
-  await Promise.all(manifest.files.map(loadFile));
+  // ── Two-pass loading ───────────────────────────────────────────────────────
+  // Pass 1: load script.rrs first (if present) and extract the global
+  //         character map from its `define k = "Keitaro";` declarations.
+  //         Story files carry no define declarations and rely on this map.
+  // Pass 2: load all remaining files in parallel, passing the global charMap
+  //         so speaker abbreviations are resolved correctly.
+
+  const SCRIPT_FILE = "script.rrs";
+  if (manifest.files.includes(SCRIPT_FILE)) {
+    await loadFile(SCRIPT_FILE);
+
+    // Extract character definitions from the already-loaded raw source.
+    // We re-fetch the text here rather than threading the raw source through
+    // loadFile() — the file is tiny and the cost is negligible.
+    try {
+      const scriptSrc = await readDataFile(SCRIPT_FILE);
+      globalCharMap = extractCharMap(scriptSrc);
+      console.info(
+        `[loader] Extracted ${globalCharMap.size} character definition(s) from ${SCRIPT_FILE}`,
+      );
+    } catch {
+      console.warn(
+        `[loader] Could not re-read ${SCRIPT_FILE} for charMap extraction`,
+      );
+    }
+  }
+
+  // Load all remaining files in parallel (script.rrs is already loaded above)
+  await Promise.all(
+    manifest.files.filter((f) => f !== SCRIPT_FILE).map(loadFile),
+  );
 
   // Summary log — visible in browser DevTools / Tauri WebView console
   const labelCount = labelIndex.size;
@@ -131,7 +165,7 @@ export async function loadFile(filename: string): Promise<void> {
 
   let script: ScriptFile;
   try {
-    script = parseScript(src, filename);
+    script = parseScript(src, filename, globalCharMap);
   } catch (e) {
     console.warn(`[loader] Parse error in ${filename}:`, e);
     return;
@@ -210,4 +244,5 @@ export function reset(): void {
   manifestFiles = [];
   manifestStart = "start";
   manifestGame = undefined;
+  globalCharMap = new Map();
 }

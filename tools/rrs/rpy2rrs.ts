@@ -885,25 +885,21 @@ class Converter {
     );
     if (dialogMatch) {
       const charKey = dialogMatch[1].trimEnd();
-      // Look up the character abbreviation in the dynamically-built charMap.
-      // We emit the abbreviation as the speaker; the codegen resolves it via
-      // the `define char.*` statements we write at the top of the .rrs file.
-      const charName = this.charMap.get(charKey);
-      if (charName !== undefined) {
-        if (this.menuPreamble) return;
-        if (this.wouldCloseBlocks(indent)) {
-          this.flushSpeak();
-          this.closeBlocksAt(indent);
-        }
-        const rawText = dialogMatch[2];
-        const stripped = stripRpyTags(rawText);
-        const text = this.translate(stripped);
-        const voice = this.pendingVoice;
-        this.pendingVoice = null;
-        // Emit the abbreviation as the speaker — the define header will map it.
-        this.addSpeakLine(charKey, text, voice);
-        return;
+      // Always emit speak using the raw abbreviation as speaker key.
+      // The codegen resolves abbr → full name at compile time via the global
+      // charMap extracted from script.rrs — no charMap lookup needed here.
+      if (this.menuPreamble) return;
+      if (this.wouldCloseBlocks(indent)) {
+        this.flushSpeak();
+        this.closeBlocksAt(indent);
       }
+      const rawText = dialogMatch[2];
+      const stripped = stripRpyTags(rawText);
+      const text = this.translate(stripped);
+      const voice = this.pendingVoice;
+      this.pendingVoice = null;
+      this.addSpeakLine(charKey, text, voice);
+      return;
     }
 
     // ── For all other statements: flush speak buffer then close deeper blocks ──
@@ -1441,6 +1437,28 @@ class Converter {
       return;
     }
 
+    // ── $abbr = Character("Name", ...) → define abbr = "Name"; ───────────────
+    // Character definitions appear in script.rpy inside  init: / python:  blocks.
+    // We translate them directly into .rrs define declarations so that
+    // script.rrs becomes the single source of truth for speaker names.
+    // Story files use `speak k "text"` with no defines of their own; the loader
+    // reads script.rrs first and passes the resulting charMap to all other files.
+    const charDefMatch = line.match(
+      /^\$\s*(\w+)\s*=\s*Character\s*\(\s*(['"])([^'"]+)\2/,
+    );
+    if (charDefMatch) {
+      const abbr = charDefMatch[1];
+      const fullName = charDefMatch[3];
+      // Skip internal / re-used slots that are not real story characters.
+      if (abbr !== "narrator" && abbr !== "nvl" && abbr !== "k_foreplay") {
+        // "empty" is a placeholder used by the emp (silent narrator) variable;
+        // store it as "" so it renders without a nameplate.
+        const name = fullName === "empty" ? "" : fullName;
+        this.emit(`define ${abbr} = "${name}";`);
+      }
+      return;
+    }
+
     // ── $ VAR op VALUE (Python assignment) ────────────────────────────────────
     const assignMatch = line.match(
       /^\$\s*([\w.]+)\s*([+\-*/]?=)\s*([\s\S]+?)\s*$/,
@@ -1575,15 +1593,6 @@ class Converter {
   convert(): string {
     this.emit(`// Source: data/${this.filename}`);
     this.emit("");
-
-    // Emit define char.* declarations so the runtime codegen can resolve
-    // speaker abbreviations to full character names without hardcoding.
-    for (const [abbr, fullName] of this.charMap) {
-      this.emit(`define char.${abbr} = "${fullName}";`);
-    }
-    if (this.charMap.size > 0) {
-      this.emit("");
-    }
 
     // Pre-process to join multi-line strings and normalize line endings
     this.lines = this.preprocessLines(this.lines);
@@ -1829,82 +1838,25 @@ async function main(): Promise<void> {
   // Track successfully converted story files for manifest
   const manifestEntries: string[] = [];
 
-  // ── Helper: compute output path for a given input ──────────────────────────
-  function outPathFor(inputPath: string): string {
-    const baseName = inputPath
-      .split("/")
-      .pop()!
-      .replace(/\.rpy$/, ".rrs");
-    if (outputIsDir && outputArg) {
-      return `${outputArg.replace(/\/$/, "")}/${baseName}`;
-    } else if (outputArg && !outputIsDir) {
-      return outputArg;
-    } else {
-      return inputPath.replace(/\.rpy$/, ".rrs");
-    }
-  }
-
-  // ── Two-pass strategy ──────────────────────────────────────────────────────
-  //
-  // Pass 1: Convert script.rpy first (if present in the input list).
-  //         The Converter writes `define char.ABBR = "Name";` at the top of
-  //         every .rrs file.  After script.rrs is on disk we read those lines
-  //         back to obtain the definitive character name table.
-  //
-  // Pass 2: Merge the table into maps.charMap, then convert every remaining
-  //         file with the now-complete character map.
-  //
-  // Why two passes?  The character definitions in CB/most games live inside an
-  //   init:
-  //       $abbr = Character("Name", ...)
-  // block in script.rpy.  loadAssetMaps already handles this form (fixed
-  // above), but a second read from the generated .rrs acts as a safety net and
-  // keeps the character table in a single canonical place.
-
-  const scriptInputPath = inputFiles.find(
-    (p) => p.split("/").pop() === "script.rpy",
-  );
-
-  if (scriptInputPath) {
-    const scriptOutPath = outPathFor(scriptInputPath);
-    console.log(`[pass 1] Converting script.rpy → ${scriptOutPath} …`);
-    const r = await convertFile(scriptInputPath, scriptOutPath, maps, {
-      dryRun,
-      verbose,
-      tlDir: noTl ? undefined : tlDir,
-    });
-    if (r.ok) {
-      succeeded++;
-      if (r.hasLabels) manifestEntries.push("script.rrs");
-
-      if (!dryRun) {
-        // Read back the generated script.rrs to build the definitive char map.
-        const rrsCharMap = await loadCharMapFromRrs(scriptOutPath);
-        if (rrsCharMap.size > 0) {
-          console.log(
-            `[pass 1] Read ${rrsCharMap.size} character definition(s) from script.rrs`,
-          );
-          // Merge: rrs definitions take precedence (they went through the
-          // normalisation in loadAssetMaps already).
-          for (const [abbr, name] of rrsCharMap) {
-            maps.charMap.set(abbr, name);
-          }
-        }
-      }
-    } else {
-      failed++;
-    }
-  }
-
-  // Pass 2: all remaining files (skip script.rpy — already handled above).
+  // Character definitions are now emitted inline by processLine() when it
+  // encounters  $abbr = Character("Name", ...)  in script.rpy.  The resulting
+  // script.rrs is the single source of truth; the runtime loader reads it
+  // first and passes the extracted charMap to all other files.
+  // No two-pass strategy is needed here — every file is converted in one go.
   for (const inputPath of inputFiles) {
-    if (inputPath === scriptInputPath) continue;
-
-    const outPath = outPathFor(inputPath);
     const baseName = inputPath
       .split("/")
       .pop()!
       .replace(/\.rpy$/, ".rrs");
+
+    let outPath: string;
+    if (outputIsDir && outputArg) {
+      outPath = `${outputArg.replace(/\/$/, "")}/${baseName}`;
+    } else if (outputArg && !outputIsDir) {
+      outPath = outputArg;
+    } else {
+      outPath = inputPath.replace(/\.rpy$/, ".rrs");
+    }
 
     const result = await convertFile(inputPath, outPath, maps, {
       dryRun,
