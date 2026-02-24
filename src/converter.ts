@@ -402,7 +402,7 @@ class Converter {
   private blockStack: BlockInfo[] = [];
   private pendingVoice: string | null = null;
   private speakBuf: SpeakBuffer | null = null;
-  private charMap: Map<string, string>;
+
   private menuPreamble = false;
   private menuOpen = false;
   private menuPreambleCol = -1;
@@ -415,7 +415,6 @@ class Converter {
     private readonly warnings: string[],
   ) {
     this.lines = lines;
-    this.charMap = maps.charMap;
   }
 
   private translate(text: string): string {
@@ -526,11 +525,27 @@ class Converter {
   }
 
   private resolveSx(key: string): string | null {
-    // Try exact match, then underscore-prefix variant
-    if (this.maps.sx.has(key)) return this.maps.sx.get(key)!;
-    const underKey = key.replace(/^sfx_/, "");
-    if (this.maps.sx.has(underKey)) return this.maps.sx.get(underKey)!;
-    return null;
+    const underKey = key.startsWith("sx_") ? key : "sx_" + key;
+    return this.maps.sx.get(underKey) ?? this.maps.sx.get(key) ?? null;
+  }
+
+  private resolveBareName(name: string): string | null {
+    const bgPath = this.maps.bg.get("bg_" + name);
+    if (bgPath) return bgPath;
+    const cgPath = this.resolveCg("cg_" + name);
+    if (cgPath) return cgPath;
+    return this.maps.misc.get(name) ?? null;
+  }
+
+  private peekNextFaceLine(charBase: string, fromIdx: number): number {
+    for (let i = fromIdx; i < Math.min(fromIdx + 3, this.lines.length); i++) {
+      const l = this.lines[i].trim();
+      const m = l.match(
+        /^show\s+(\w+)\s+(\w+)(?:\s+sepia)?(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
+      );
+      if (m && m[1] === charBase) return i;
+    }
+    return -1;
   }
 
   private wouldCloseBlocks(indent: number): boolean {
@@ -541,64 +556,89 @@ class Converter {
   }
 
   private processLine(rawLine: string): void {
-    // Strip comments
     const indent = getIndent(rawLine);
     let line = rawLine.trim();
 
-    // Strip inline Python comments (but not inside strings)
+    // ── Blank / comment ───────────────────────────────────────────────────────
+    if (!line || line.startsWith("#")) return;
+
+    // Strip inline Ren'Py comments: find # not inside a string
     {
       let inStr = false;
       let strChar = "";
-      let out = "";
       for (let ci = 0; ci < line.length; ci++) {
         const ch = line[ci];
-        if (!inStr && (ch === '"' || ch === "'")) {
-          inStr = true;
-          strChar = ch;
-          out += ch;
-        } else if (inStr && ch === strChar && line[ci - 1] !== "\\") {
-          inStr = false;
-          out += ch;
-        } else if (!inStr && ch === "#") {
-          break;
+        if (inStr) {
+          if (ch === "\\") {
+            ci++;
+            continue;
+          }
+          if (ch === strChar) inStr = false;
         } else {
-          out += ch;
+          if (ch === '"' || ch === "'") {
+            inStr = true;
+            strChar = ch;
+          } else if (ch === "#") {
+            line = line.slice(0, ci).trim();
+            break;
+          }
         }
       }
-      line = out.trim();
+      if (!line) return;
+      if (line === '"' || line === "'") return;
     }
 
-    if (!line) return;
+    // ── Statements we always skip ─────────────────────────────────────────────
+    if (
+      line.startsWith("$renpy.free_memory") ||
+      line.startsWith("$ renpy.free_memory") ||
+      line.startsWith("$persistent.sx_unlocked") ||
+      line.startsWith("$ persistent.sx_unlocked") ||
+      line.startsWith("show screen ") ||
+      line.startsWith("hide screen ") ||
+      line.startsWith("$shuffle_menu") ||
+      line.startsWith("$ shuffle_menu") ||
+      line === "window hide" ||
+      line === "window show" ||
+      (line.startsWith("image ") &&
+        (line.includes(" = Movie(") || line.includes(' = "'))) ||
+      line.startsWith("define ") ||
+      line === "init:" ||
+      line.startsWith("init ") ||
+      line.startsWith("default ") ||
+      line.startsWith("python:") ||
+      /^(zoom|xalign|yalign|xpos|ypos|alpha|ease|linear)\s/.test(line) ||
+      line.match(/^\$\s*working\s*=/) !== null ||
+      line.match(/^\$\s*time_transition_\w+\s*\(/) !== null ||
+      line.match(/^\$\s*renpy\.save_persistent\s*\(/) !== null ||
+      line.match(/^\$\s*renpy\.movie_cutscene\s*\(/) !== null
+    ) {
+      return;
+    }
 
     // ── label NAME: ──────────────────────────────────────────────────────────
     const labelMatch = line.match(/^label\s+([\w.]+)\s*(?:\(.*\))?\s*:/);
     if (labelMatch) {
       this.flushSpeak();
       this.closeBlocksAt(indent);
-      const rpyCol = indent;
-      const type = "label" as const;
       const labelName = labelMatch[1];
-      this.blockStack.push({ type, rpyCol, labelName });
+      this.blockStack.push({ type: "label", rpyCol: indent, labelName });
       this.emit(`label ${labelName} {`);
       return;
     }
 
     // ── if COND: ─────────────────────────────────────────────────────────────
-    const ifMatch = line.match(/^if\s+(.+):/);
+    const ifMatch = line.match(/^if\s+(.*?)\s*:$/);
     if (ifMatch) {
       this.flushSpeak();
-      if (this.wouldCloseBlocks(indent)) {
-        this.closeBlocksAt(indent);
-      }
-      const rpyCol = indent;
-      const type = "if" as const;
-      this.blockStack.push({ type, rpyCol });
+      this.closeBlocksAt(indent);
+      this.blockStack.push({ type: "if", rpyCol: indent });
       this.emit(`${this.pad()}if ${normCondition(ifMatch[1])} {`);
       return;
     }
 
     // ── elif COND: ───────────────────────────────────────────────────────────
-    const elifMatch = line.match(/^elif\s+(.+):/);
+    const elifMatch = line.match(/^elif\s+(.*?)\s*:$/);
     if (elifMatch) {
       this.flushSpeak();
       const last = this.blockStack[this.blockStack.length - 1];
@@ -649,44 +689,68 @@ class Converter {
 
     // ── "CHOICE": [if COND] ──────────────────────────────────────────────────
     const choiceMatch = line.match(
-      /^"((?:[^"\\]|\\.)*)"\s*(?:if\s+(.+?))?\s*:/,
+      /^("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*(?:if\s+(.*?))?\s*:$/,
     );
     const inMenu =
-      this.blockStack.length > 0 &&
-      this.blockStack[this.blockStack.length - 1].type === "menu";
+      this.menuPreamble || this.blockStack.some((b) => b.type === "menu");
     if (choiceMatch && inMenu) {
-      if (this.menuPreamble) {
-        // First choice: open the menu block
-        this.menuPreamble = false;
+      this.flushSpeak();
+      if (!this.menuOpen) {
         this.menuOpen = true;
-        this.emit(`${this.pad()}menu {`);
+        this.menuPreamble = false;
+        const col =
+          this.menuPreambleCol >= 0
+            ? this.menuPreambleCol
+            : this.blockStack.length > 0
+              ? this.blockStack[this.blockStack.length - 1].rpyCol + 4
+              : indent - 4;
+        this.blockStack.push({ type: "menu", rpyCol: col });
+        const menuDepth = this.blockStack.length - 1;
+        this.emit("  ".repeat(menuDepth) + "menu {");
+        this.menuPreambleCol = -1;
       } else {
-        // Subsequent choices: close previous choice block
-        if (this.blockStack[this.blockStack.length - 1].type === "choice") {
-          this.blockStack.pop();
-          this.emit(this.pad() + "}");
-        }
+        this.closeSiblingAt(indent);
       }
       const rawText = choiceMatch[1];
-      const rawCond = choiceMatch[2];
-      const choiceText = stripRpyTags(rawText);
+      const rawCond = choiceMatch[2] ?? null;
+      const choiceText = this.translate(
+        extractPyStr(
+          rawText.startsWith("'")
+            ? '"' + rawText.slice(1, -1).replace(/"/g, '\\"') + '"'
+            : rawText,
+        ),
+      );
       const condPart = rawCond ? ` if ${normCondition(rawCond)}` : "";
-      this.blockStack.push({ type: "choice", rpyCol: indent });
       this.emit(`${this.pad()}"${escStr(choiceText)}"${condPart} => {`);
+      this.blockStack.push({ type: "choice", rpyCol: indent });
       return;
     }
 
-    // ── voice EXPR ───────────────────────────────────────────────────────────
-    const voiceMatch = line.match(/^voice\s+"([^"]+)"/);
+    // ── voice audio.VAR  /  play voice audio.VAR ──────────────────────────────
+    const voiceMatch = line.match(/^(?:play\s+)?voice\s+audio\.\s*(\w+)/);
     if (voiceMatch) {
+      if (this.menuPreamble) return;
+      if (this.wouldCloseBlocks(indent)) {
+        this.flushSpeak();
+        this.closeBlocksAt(indent);
+      }
       this.pendingVoice = this.resolveAudio(voiceMatch[1]);
       return;
     }
 
+    // ── voice "literal_path" ─────────────────────────────────────────────────
+    const voiceLitMatch = line.match(/^(?:play\s+)?voice\s+"([^"]+)"/);
+    if (voiceLitMatch) {
+      if (this.menuPreamble) return;
+      if (this.wouldCloseBlocks(indent)) {
+        this.flushSpeak();
+        this.closeBlocksAt(indent);
+      }
+      this.pendingVoice = voiceLitMatch[1];
+      return;
+    }
+
     // ── CHAR "text" ──────────────────────────────────────────────────────────
-    // Process dialog for any character key that looks like an identifier,
-    // regardless of whether it appears in the charMap. The reader resolves
-    // display names at runtime from the charMap in the manifest/script.rrs.
     const dialogMatch = line.match(
       /^([\w]+(?:_[\w]+)*)\s*"((?:[^"\\]|\\.)*)"\s*(?:with\s+\S+)?\s*$/,
     );
@@ -710,41 +774,85 @@ class Converter {
     this.flushSpeak();
     this.closeBlocksAt(indent);
 
-    // ── $ python expression statements (skip) ────────────────────────────────
-    if (/^\$\s*\w[\w.]*\s*[+\-*/%]/.test(line) && !line.includes("=")) {
-      this.emit(`${this.pad()}// UNHANDLED: ${line}`);
+    // ── $ abbr = Character("Name", ...) → define abbr = "Name"; ─────────────
+    const charDefMatch = line.match(
+      /^\$\s*(\w+)\s*=\s*Character\s*\(\s*(['"])([^'"]+)\2/,
+    );
+    if (charDefMatch) {
+      const abbr = charDefMatch[1];
+      const fullName = charDefMatch[3];
+      if (abbr !== "narrator" && abbr !== "nvl" && abbr !== "k_foreplay") {
+        const name = fullName === "empty" ? "" : fullName;
+        this.emit(`define ${abbr} = "${name}";`);
+      }
       return;
     }
 
-    // ── $ varName = expr  (Python assignment) ─────────────────────────────────
-    const pyAssignMatch = line.match(/^\$\s*([\w.]+)\s*([\+\-\*\/]?=)\s*(.+)$/);
-    if (pyAssignMatch) {
-      const varName = pyAssignMatch[1];
-      const op = pyAssignMatch[2];
-      const rawVal = pyAssignMatch[3].trim().replace(/\s*#.*$/, "");
-      this.emit(`${this.pad()}${varName} ${op} ${rawVal};`);
+    // ── $ score_X + 1  (bare expression statements, no assignment) ───────────
+    if (/^\$\s*\w[\w.]*\s*[+\-*/%]/.test(line) && !line.includes("=")) {
+      return;
+    }
+
+    // ── $ renpy.jump(VAR) / $ renpy.call(VAR) → dynamic jump/call ────────────
+    const rpyDynJump = line.match(/^\$\s*renpy\.jump\s*\(\s*(\w+)\s*\)/);
+    if (rpyDynJump) {
+      this.emit(`${this.pad()}jump ${rpyDynJump[1]};`);
+      return;
+    }
+    const rpyDynCall = line.match(/^\$\s*renpy\.call\s*\(\s*(\w+)\s*\)/);
+    if (rpyDynCall) {
+      this.emit(`${this.pad()}call ${rpyDynCall[1]};`);
+      return;
+    }
+
+    // ── $ renpy.pause(X) → wait(X) ───────────────────────────────────────────
+    const rpyPause = line.match(/^\$\s*renpy\.pause\s*\(\s*([\d.]+)/);
+    if (rpyPause) {
+      this.emit(`${this.pad()}wait(${fmtFloat(parseFloat(rpyPause[1]))});`);
+      return;
+    }
+    if (/^\$\s*renpy\.pause\s*\(/.test(line)) return; // keyword-args only → skip
+
+    // ── $ renpy.music.stop(...) ───────────────────────────────────────────────
+    const rpyMusicStop = line.match(
+      /^\$\s*renpy\.music\.stop\s*\(.*?fadeout\s*=\s*([\d.]+)/,
+    );
+    if (rpyMusicStop) {
+      this.emit(
+        `${this.pad()}music::stop() | fadeout(${fmtFloat(parseFloat(rpyMusicStop[1]))});`,
+      );
+      return;
+    }
+    if (/^\$\s*renpy\.music\.stop\s*\(/.test(line)) {
+      this.emit(`${this.pad()}music::stop();`);
+      return;
+    }
+
+    // ── $persistent.routes_completed.append("ROUTE") ─────────────────────────
+    const routeMatch = line.match(
+      /^\$\s*persistent\.routes_completed\.append\s*\(\s*["'](\w+)["']\s*\)/,
+    );
+    if (routeMatch) {
+      this.emit(`${this.pad()}// route_complete: ${routeMatch[1]};`);
       return;
     }
 
     // ── jump LABEL ───────────────────────────────────────────────────────────
-    const rpyJumpMatch = line.match(/^jump\s+([\w.]+)/);
+    const rpyJumpMatch = line.match(/^jump\s+(\w+)\s*$/);
     if (rpyJumpMatch) {
       this.emit(`${this.pad()}jump ${rpyJumpMatch[1]};`);
       return;
     }
 
     // ── call LABEL ───────────────────────────────────────────────────────────
-    const rpyCallMatch = line.match(/^call\s+([\w.]+)/);
+    const rpyCallMatch = line.match(/^call\s+(\w+)\s*$/);
     if (rpyCallMatch) {
       this.emit(`${this.pad()}call ${rpyCallMatch[1]};`);
       return;
     }
 
     // ── return ───────────────────────────────────────────────────────────────
-    if (/^return(\s|$)/.test(line)) {
-      this.emit(`${this.pad()}return;`);
-      return;
-    }
+    if (line === "return") return;
 
     // ── pause N ──────────────────────────────────────────────────────────────
     const pauseMatch = line.match(/^pause\s+([\d.]+)/);
@@ -753,93 +861,176 @@ class Converter {
       return;
     }
 
-    // ── stop music [fadeout N] ───────────────────────────────────────────────
-    const musicStopMatch = line.match(
-      /^stop\s+(music|audio)\s*(?:fadeout\s+([\d.]+))?/,
-    );
-    if (musicStopMatch) {
-      const fo = musicStopMatch[2]
-        ? ` | fadeout(${fmtFloat(parseFloat(musicStopMatch[2]))})`
-        : "";
-      this.emit(`${this.pad()}music::stop()${fo};`);
-      return;
-    }
-
-    // ── stop sound ───────────────────────────────────────────────────────────
-    if (/^stop\s+sound/.test(line)) {
-      this.emit(`${this.pad()}sound::stop();`);
-      return;
-    }
-
-    // ── play music "path" [fadein N] ─────────────────────────────────────────
+    // ── play music NAME [fadein X] [loop] ─────────────────────────────────────
     const playMusicMatch = line.match(
-      /^play\s+(?:music|audio)\s+"([^"]+)"(?:\s+fadein\s+([\d.]+))?/,
+      /^play\s+music\s+(\S+)(?:\s+fadein\s+([\d.]+))?(?:\s+loop)?(?:\s+fadein\s+([\d.]+))?/,
     );
     if (playMusicMatch) {
-      const path = playMusicMatch[1];
-      const fadein = playMusicMatch[2]
-        ? ` | fadein(${fmtFloat(parseFloat(playMusicMatch[2]))})`
-        : "";
-      this.emit(`${this.pad()}music::play("${escStr(path)}")${fadein};`);
+      const varName = playMusicMatch[1];
+      const fadein = playMusicMatch[2] ?? playMusicMatch[3];
+      const path = this.resolveAudio(varName);
+      if (fadein) {
+        this.emit(
+          `${this.pad()}music::play("${escStr(path)}") | fadein(${fmtFloat(parseFloat(fadein))});`,
+        );
+      } else {
+        this.emit(`${this.pad()}music::play("${escStr(path)}");`);
+      }
       return;
     }
 
-    // ── play music audio.VAR ─────────────────────────────────────────────────
-    const playMusicVarMatch = line.match(
-      /^play\s+(?:music|audio)\s+audio\.([\w]+)(?:\s+fadein\s+([\d.]+))?/,
-    );
-    if (playMusicVarMatch) {
-      const resolved = this.resolveAudio(playMusicVarMatch[1]);
-      const fadein = playMusicVarMatch[2]
-        ? ` | fadein(${fmtFloat(parseFloat(playMusicVarMatch[2]))})`
-        : "";
-      this.emit(`${this.pad()}music::play("${escStr(resolved)}")${fadein};`);
-      return;
-    }
-
-    // ── play sound "path" ────────────────────────────────────────────────────
-    const playSoundMatch = line.match(/^play\s+sound\s+"([^"]+)"/);
-    if (playSoundMatch) {
-      this.emit(`${this.pad()}sound::play("${escStr(playSoundMatch[1])}");`);
-      return;
-    }
-
-    // ── play voice "path" ────────────────────────────────────────────────────
-    const playVoiceMatch = line.match(/^play\s+voice\s+"([^"]+)"/);
-    if (playVoiceMatch) {
-      this.pendingVoice = playVoiceMatch[1];
-      return;
-    }
-
-    // ── scene "PATH" [with TRANS] ─────────────────────────────────────────────
-    const sceneLiteralMatch = line.match(
-      /^scene\s+"([^"]+)"\s*(?:with\s+(\S+))?/,
-    );
-    if (sceneLiteralMatch) {
-      const trans = sceneLiteralMatch[2]
-        ? normTransition(sceneLiteralMatch[2])
-        : "";
-      const transPart = trans ? ` | ${trans}` : "";
+    // ── play audio NAME [loop] ────────────────────────────────────────────────
+    const playAudioMatch = line.match(/^play\s+audio\s+(\S+)/);
+    if (playAudioMatch) {
       this.emit(
-        `${this.pad()}scene "${escStr(normAssetPath(sceneLiteralMatch[1]))}"${transPart};`,
+        `${this.pad()}sound::play("${escStr(this.resolveAudio(playAudioMatch[1]))}");`,
       );
       return;
     }
 
-    // ── scene bg NAME [with TRANS] ────────────────────────────────────────────
-    const sceneBgMatch = line.match(
+    // ── play sound NAME ───────────────────────────────────────────────────────
+    const playSoundMatch = line.match(/^play\s+sound\s+(\S+)/);
+    if (playSoundMatch) {
+      this.emit(
+        `${this.pad()}sound::play("${escStr(this.resolveAudio(playSoundMatch[1]))}");`,
+      );
+      return;
+    }
+
+    // ── play bgsound / bgsound2 NAME ─────────────────────────────────────────
+    const playBgsoundMatch = line.match(/^play\s+bgsound2?\s+(\S+)/);
+    if (playBgsoundMatch) {
+      this.emit(
+        `${this.pad()}music::play("${escStr(this.resolveAudio(playBgsoundMatch[1]))}");`,
+      );
+      return;
+    }
+
+    // ── stop music / bgsound / bgsound2 / sound / audio [fadeout N] ──────────
+    const stopMatch = line.match(
+      /^stop\s+(music|bgsound2?|sound|audio)(?:\s+fadeout\s+([\d.]+))?/,
+    );
+    if (stopMatch) {
+      const isSound = stopMatch[1] === "sound" || stopMatch[1] === "audio";
+      const fadeout = stopMatch[2];
+      if (isSound) {
+        this.emit(`${this.pad()}sound::stop();`);
+      } else if (fadeout) {
+        this.emit(
+          `${this.pad()}music::stop() | fadeout(${fmtFloat(parseFloat(fadeout))});`,
+        );
+      } else {
+        this.emit(`${this.pad()}music::stop();`);
+      }
+      return;
+    }
+
+    // ── scene cg black / white / NAME [with TRANS] ────────────────────────────
+    const sceneCgMatch = line.match(
+      /^scene\s+cg\s+(\S+?)(?::)?(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (sceneCgMatch) {
+      const cgName = sceneCgMatch[1].replace(/:$/, "");
+      const trans = sceneCgMatch[2] ? normTransition(sceneCgMatch[2]) : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      if (cgName === "black") {
+        this.emit(`${this.pad()}scene #000000${transPart};`);
+      } else if (cgName === "white") {
+        this.emit(`${this.pad()}scene #ffffff${transPart};`);
+      } else {
+        const path =
+          this.resolveCg("cg_" + cgName) ?? `<UNKNOWN: cg_${cgName}>`;
+        if (path.startsWith("#")) {
+          this.emit(`${this.pad()}scene ${path}${transPart};`);
+        } else {
+          this.emit(`${this.pad()}scene "${path}"${transPart};`);
+        }
+      }
+      return;
+    }
+
+    // ── scene bg_NAME [modifier] [with TRANS] ─────────────────────────────────
+    const sceneBgUnderMatch = line.match(
+      /^scene\s+(bg_\S+)(?:\s+(\w+))?(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (sceneBgUnderMatch) {
+      const bgBase = sceneBgUnderMatch[1];
+      const modifier = sceneBgUnderMatch[2];
+      const transRaw = sceneBgUnderMatch[3];
+      const isTransition =
+        modifier && /^(dissolve|fade|flash|move|with)$/i.test(modifier);
+      const isFilter = modifier && /^(sepia)$/i.test(modifier);
+      const bgKey =
+        modifier && !isTransition && !isFilter
+          ? bgBase + "_" + modifier
+          : bgBase;
+      const bgPath =
+        this.maps.bg.get(bgKey) ??
+        (modifier && !isTransition && !isFilter
+          ? this.maps.bg.get(bgBase + " " + modifier)
+          : undefined) ??
+        this.resolveBg(bgKey) ??
+        `<UNKNOWN: ${bgKey}>`;
+      const trans = transRaw
+        ? normTransition(transRaw)
+        : modifier && isTransition
+          ? normTransition(modifier)
+          : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      this.emit(`${this.pad()}scene "${bgPath}"${transPart};`);
+      return;
+    }
+
+    // ── scene bg NAME [with TRANS]  (space form) ──────────────────────────────
+    const sceneBgSpaceMatch = line.match(
       /^scene\s+bg\s+([\w_]+(?:\s+[\w_]+)*)\s*(?:with\s+(\S+))?/,
     );
-    if (sceneBgMatch) {
-      const bgBase = "bg_" + sceneBgMatch[1].trim().replace(/\s+/g, "_");
-      const transRaw = sceneBgMatch[2] ?? "";
+    if (sceneBgSpaceMatch) {
+      const bgBase = "bg_" + sceneBgSpaceMatch[1].trim().replace(/\s+/g, "_");
+      const transRaw = sceneBgSpaceMatch[2] ?? "";
       const trans = transRaw ? normTransition(transRaw) : "";
       const transPart = trans ? ` | ${trans}` : "";
-      const bgPath = this.resolveBg(bgBase);
-      if (bgPath) {
-        this.emit(`${this.pad()}scene "${escStr(bgPath)}"${transPart};`);
+      const bgPath = this.resolveBg(bgBase) ?? `<UNKNOWN: ${bgBase}>`;
+      this.emit(`${this.pad()}scene "${escStr(bgPath)}"${transPart};`);
+      return;
+    }
+
+    // ── scene sx NAME... [with TRANS] ─────────────────────────────────────────
+    if (/^scene\s+sx\s+/.test(line)) {
+      const withIdx = line.indexOf(" with ");
+      const afterSx = (withIdx === -1 ? line : line.slice(0, withIdx))
+        .replace(/^scene\s+sx\s+/, "")
+        .trim();
+      const transRaw = withIdx === -1 ? "" : line.slice(withIdx + 6).trim();
+      const trans = transRaw ? normTransition(transRaw) : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      const lookupKey = afterSx.replace(/\s+/g, "_");
+      const sxPath =
+        this.maps.sx.get("sx_" + lookupKey) ?? this.maps.sx.get(lookupKey);
+      if (sxPath) {
+        this.emit(`${this.pad()}scene "${escStr(sxPath)}"${transPart};`);
       } else {
-        this.emit(`${this.pad()}scene "<UNKNOWN: ${bgBase}>"${transPart};`);
+        this.emit(`${this.pad()}expr sx::${lookupKey}${transPart};`);
+      }
+      return;
+    }
+
+    // ── scene sx_NAME FRAME [with TRANS] ──────────────────────────────────────
+    const sceneSxUnderMatch = line.match(
+      /^scene\s+(sx_\S+)\s+(\d+)(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (sceneSxUnderMatch) {
+      const sxKey = sceneSxUnderMatch[1] + "_" + sceneSxUnderMatch[2];
+      const trans = sceneSxUnderMatch[3]
+        ? normTransition(sceneSxUnderMatch[3])
+        : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      const sxPath =
+        this.maps.sx.get(sxKey) ?? this.maps.sx.get(sceneSxUnderMatch[1]);
+      if (sxPath) {
+        this.emit(`${this.pad()}scene "${escStr(sxPath)}"${transPart};`);
+      } else {
+        this.emit(`${this.pad()}expr sx::${sxKey}${transPart};`);
       }
       return;
     }
@@ -857,21 +1048,220 @@ class Converter {
       return;
     }
 
-    // ── show SPRITE [at POS] [with TRANS] ─────────────────────────────────────
-    const showMatch = line.match(
-      /^show\s+([\w_]+(?:\s+[\w_]+)*)\s*(?:at\s+([\w]+))?\s*(?:with\s+(\S+))?/,
+    // ── scene "PATH" [with TRANS]  (literal quoted path) ─────────────────────
+    const sceneLiteralMatch = line.match(
+      /^scene\s+"([^"]+)"\s*(?:with\s+(\S+))?/,
     );
-    if (showMatch) {
-      const spriteName = showMatch[1].trim().replace(/\s+/g, "_");
-      const at = showMatch[2] ?? "";
-      const trans = showMatch[3] ? normTransition(showMatch[3]) : "";
-      const atPart = at ? ` @ ${at}` : "";
+    if (sceneLiteralMatch) {
+      const trans = sceneLiteralMatch[2]
+        ? normTransition(sceneLiteralMatch[2])
+        : "";
       const transPart = trans ? ` | ${trans}` : "";
-      this.emit(`${this.pad()}show ${spriteName}${atPart}${transPart};`);
+      this.emit(
+        `${this.pad()}scene "${escStr(normAssetPath(sceneLiteralMatch[1]))}"${transPart};`,
+      );
       return;
     }
 
-    // ── expr CHAR FACE [at POS] [with TRANS] ─────────────────────────────────
+    // ── scene NAME [with TRANS]  (bare name fallback — bg/cg/misc lookup) ─────
+    const sceneBareName = line.match(
+      /^scene\s+([a-zA-Z][a-zA-Z0-9_]*)(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (sceneBareName) {
+      const name = sceneBareName[1];
+      const trans = sceneBareName[2] ? normTransition(sceneBareName[2]) : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      if (name === "cg_black") {
+        this.emit(`${this.pad()}scene #000000${transPart};`);
+        return;
+      }
+      if (name === "cg_white") {
+        this.emit(`${this.pad()}scene #ffffff${transPart};`);
+        return;
+      }
+      const resolved = this.resolveBareName(name);
+      if (resolved) {
+        this.emit(`${this.pad()}scene "${escStr(resolved)}"${transPart};`);
+      } else {
+        this.emit(`${this.pad()}scene "<UNKNOWN:${name}>"${transPart};`);
+      }
+      return;
+    }
+
+    // ── show sx NAME... [with TRANS] ──────────────────────────────────────────
+    if (/^show\s+sx\s+/.test(line)) {
+      const withIdx = line.indexOf(" with ");
+      const afterSx = (withIdx === -1 ? line : line.slice(0, withIdx))
+        .replace(/^show\s+sx\s+/, "")
+        .trim();
+      const transRaw = withIdx === -1 ? "" : line.slice(withIdx + 6).trim();
+      const trans = transRaw ? normTransition(transRaw) : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      const lookupKey = afterSx.replace(/\s+/g, "_");
+      const sxPath =
+        this.maps.sx.get("sx_" + lookupKey) ?? this.maps.sx.get(lookupKey);
+      if (sxPath) {
+        this.emit(`${this.pad()}show sx_${lookupKey}${transPart} {`);
+        this.emit(`${this.pad(1)}src: "${escStr(sxPath)}";`);
+        this.emit(`${this.pad()}};`);
+      } else {
+        this.emit(`${this.pad()}expr sx::${lookupKey}${transPart};`);
+      }
+      return;
+    }
+
+    // ── hide sx NAME... ───────────────────────────────────────────────────────
+    if (/^hide\s+sx\s+/.test(line)) {
+      const afterSx = line.replace(/^hide\s+sx\s+/, "").trim();
+      const lookupKey = afterSx.replace(/\s+/g, "_");
+      this.emit(`${this.pad()}hide sx_${lookupKey};`);
+      return;
+    }
+
+    // ── show cg NAME [with TRANS]  (space form) ────────────────────────────────
+    const showCgSpaceMatch = line.match(
+      /^show\s+cg\s+(\S+?)(?::)?(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (showCgSpaceMatch) {
+      const cgKey = "cg_" + showCgSpaceMatch[1].replace(/:$/, "");
+      const cgPath = this.resolveCg(cgKey) ?? `<UNKNOWN: ${cgKey}>`;
+      const trans = showCgSpaceMatch[2]
+        ? normTransition(showCgSpaceMatch[2])
+        : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      this.emit(`${this.pad()}show ${cgKey}${transPart} {`);
+      this.emit(`${this.pad(1)}src: "${escStr(cgPath)}";`);
+      this.emit(`${this.pad()}};`);
+      return;
+    }
+
+    // ── show cg_NAME [at POS] [with TRANS]  (underscore form) ────────────────
+    const showCgUnderMatch = line.match(
+      /^show\s+(cg_\S+)(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (showCgUnderMatch) {
+      const cgKey = showCgUnderMatch[1];
+      const cgPath = this.resolveCg(cgKey);
+      const at = showCgUnderMatch[2] ? ` @ ${showCgUnderMatch[2]}` : "";
+      const trans = showCgUnderMatch[3]
+        ? normTransition(showCgUnderMatch[3])
+        : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      if (cgPath && !cgPath.includes("<UNKNOWN")) {
+        this.emit(`${this.pad()}show ${cgKey}${transPart} {`);
+        this.emit(`${this.pad(1)}src: "${escStr(cgPath)}";`);
+        this.emit(`${this.pad()}};`);
+      } else {
+        this.emit(`${this.pad()}show ${cgKey}${at}${transPart};`);
+      }
+      return;
+    }
+
+    // ── show bg_NAME [at POS] [with TRANS] ────────────────────────────────────
+    const showBgMatch = line.match(
+      /^show\s+(bg_\S+)(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (showBgMatch) {
+      const bgPath =
+        this.resolveBg(showBgMatch[1]) ?? `<UNKNOWN: ${showBgMatch[1]}>`;
+      const at = showBgMatch[2] ? ` @ ${showBgMatch[2]}` : "";
+      const trans = showBgMatch[3] ? normTransition(showBgMatch[3]) : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      this.emit(`${this.pad()}show "${escStr(bgPath)}"${at}${transPart};`);
+      return;
+    }
+
+    // ── show CHAR_BODY [sepia] [at POS] [with TRANS]  (with face lookahead) ───
+    const showBodyMatch = line.match(
+      /^show\s+(\w+_\w+)(?:\s+sepia)?(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (showBodyMatch) {
+      const bodyKey = showBodyMatch[1];
+      const at = showBodyMatch[2];
+      const trans = showBodyMatch[3] ? normTransition(showBodyMatch[3]) : "";
+      const charBase = bodyKey.split("_")[0];
+      const nextFaceIdx = this.peekNextFaceLine(charBase, this.pos);
+      if (nextFaceIdx !== -1) {
+        const faceRaw = this.lines[nextFaceIdx];
+        const faceLine = faceRaw.trim();
+        const faceM = faceLine.match(
+          /^show\s+(\w+)\s+(\w+)(?:\s+sepia)?(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
+        );
+        if (faceM) {
+          const faceExpr = faceM[2];
+          const faceAt = faceM[3] ?? at;
+          const faceTrans = faceM[4] ? normTransition(faceM[4]) : trans;
+          this.lines[nextFaceIdx] = "";
+          const atPart = faceAt ? ` @ ${faceAt}` : "";
+          const transPart = faceTrans ? ` | ${faceTrans}` : "";
+          this.emit(
+            `${this.pad()}show ${bodyKey}::${faceExpr}${atPart}${transPart};`,
+          );
+          return;
+        }
+      }
+      const atPart = at ? ` @ ${at}` : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      this.emit(`${this.pad()}show ${bodyKey}${atPart}${transPart};`);
+      return;
+    }
+
+    // ── show CHAR MODIFIER EXPR [at POS] [with TRANS]  (three-word) ───────────
+    const show3WordMatch = line.match(
+      /^show\s+(\w+)\s+(\w+)\s+(\w+)(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (show3WordMatch) {
+      const char = show3WordMatch[1];
+      const modifier = show3WordMatch[2];
+      const expr = show3WordMatch[3];
+      const at = show3WordMatch[4];
+      const trans = show3WordMatch[5] ? normTransition(show3WordMatch[5]) : "";
+      const atPart = at ? ` @ ${at}` : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      if (expr === "sepia") {
+        this.emit(
+          `${this.pad()}show ${char}_${modifier}${atPart}${transPart};`,
+        );
+      } else {
+        this.emit(
+          `${this.pad()}expr ${char}_${modifier}::${expr}${atPart}${transPart};`,
+        );
+      }
+      return;
+    }
+
+    // ── show CHAR EXPR [sepia] [at POS] [with TRANS]  (two-word face) ─────────
+    const showFaceMatch = line.match(
+      /^show\s+(\w+)\s+(\w+)(?:\s+sepia)?(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
+    );
+    if (showFaceMatch) {
+      const char = showFaceMatch[1];
+      const expr = showFaceMatch[2];
+      const at = showFaceMatch[3];
+      const trans = showFaceMatch[4] ? normTransition(showFaceMatch[4]) : "";
+      const atPart = at ? ` @ ${at}` : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      if (expr === "sepia") {
+        this.emit(`${this.pad()}show ${char}${atPart}${transPart};`);
+      } else {
+        this.emit(`${this.pad()}expr ${char}::${expr}${atPart}${transPart};`);
+      }
+      return;
+    }
+
+    // ── show NAME [with TRANS]  (simple / fallback) ───────────────────────────
+    const showSimpleMatch = line.match(/^show\s+(\S+)(?:\s+with\s+(\S+.*))?$/);
+    if (showSimpleMatch) {
+      const name = showSimpleMatch[1];
+      const trans = showSimpleMatch[2]
+        ? normTransition(showSimpleMatch[2])
+        : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      this.emit(`${this.pad()}show ${name}${transPart};`);
+      return;
+    }
+
+    // ── expr CHAR FACE [at POS] [with TRANS]  (rrs-native expr) ──────────────
     const exprMatch = line.match(
       /^expr\s+([\w_]+)\s+([\w_]+)\s*(?:at\s+([\w]+))?\s*(?:with\s+(\S+))?/,
     );
@@ -886,44 +1276,84 @@ class Converter {
       return;
     }
 
-    // ── hide NAME ────────────────────────────────────────────────────────────
-    const hideMatch = line.match(/^hide\s+([\w_]+(?:\s+[\w_]+)*)/);
-    if (hideMatch) {
-      const key = hideMatch[1].trim().replace(/\s+/g, "_");
-      this.emit(`${this.pad()}hide ${key};`);
-      return;
-    }
-
-    // ── with TRANS ───────────────────────────────────────────────────────────
-    const withMatch = line.match(/^with\s+(\S+)/);
-    if (withMatch) {
-      const trans = normTransition(withMatch[1]);
-      if (trans) {
-        this.emit(`${this.pad()}with ${trans};`);
+    // ── hide CHAR MODIFIER EXPR [with TRANS]  (three-word) ────────────────────
+    const hide3WordMatch = line.match(
+      /^hide\s+(\w+)\s+(\w+)\s+(\w+)(?:\s+with\s+\S+)?\s*$/,
+    );
+    if (hide3WordMatch) {
+      const char = hide3WordMatch[1];
+      const modifier = hide3WordMatch[2];
+      const expr = hide3WordMatch[3];
+      if (expr === "sepia") {
+        this.emit(`${this.pad()}hide ${char}::${modifier};`);
+      } else {
+        this.emit(`${this.pad()}hide ${char}_${modifier}::${expr};`);
       }
       return;
     }
 
-    // ── define / default (top-level variable assignment in labels) ────────────
-    if (/^define\s/.test(line) || /^default\s/.test(line)) {
-      // Skip top-level Ren'Py define/default (already handled in asset maps)
+    // ── hide CHAR EXPR [sepia] / hide cg NAME / hide bg NAME  (two-word) ──────
+    const hide2WordMatch = line.match(
+      /^hide\s+(\w+)\s+(\w+)(?:\s+sepia)?(?:\s+with\s+\S+)?\s*$/,
+    );
+    if (hide2WordMatch) {
+      const ns = hide2WordMatch[1];
+      const ex = hide2WordMatch[2];
+      if (ns === "cg" || ns === "bg") {
+        this.emit(`${this.pad()}hide ${ns}_${ex};`);
+      } else if (ex === "sepia") {
+        this.emit(`${this.pad()}hide ${ns};`);
+      } else {
+        this.emit(`${this.pad()}hide ${ns}::${ex};`);
+      }
       return;
     }
 
-    // ── Python block markers ──────────────────────────────────────────────────
-    if (
-      /^init\s/.test(line) ||
-      /^python:/.test(line) ||
-      /^init python:/.test(line)
-    ) {
-      this.emit(`${this.pad()}// UNHANDLED: ${line}`);
+    // ── hide NAME [with TRANS] ────────────────────────────────────────────────
+    const hideMatch = line.match(/^hide\s+(\S+)(?:\s+with\s+\S+)?\s*$/);
+    if (hideMatch) {
+      this.emit(`${this.pad()}hide ${hideMatch[1]};`);
+      return;
+    }
+
+    // ── with TRANS ───────────────────────────────────────────────────────────
+    const withMatch = line.match(/^with\s+(\S+.*)/);
+    if (withMatch) {
+      const trans = normTransition(withMatch[1]);
+      if (trans) this.emit(`${this.pad()}with ${trans};`);
+      return;
+    }
+
+    // ── $ varName op= value  (Python assignment) → let varName = val ──────────
+    const pyAssignMatch = line.match(
+      /^\$\s*([\w.]+)\s*([+\-*/]?=)\s*([\s\S]+?)\s*$/,
+    );
+    if (pyAssignMatch) {
+      const varName = pyAssignMatch[1];
+      const op = pyAssignMatch[2];
+      const rawVal = pyAssignMatch[3];
+      if (
+        varName.startsWith("renpy.") ||
+        varName.startsWith("persistent.") ||
+        varName === "day" ||
+        varName === "time" ||
+        varName === "location"
+      ) {
+        return;
+      }
+      const val = rawVal
+        .replace(/\bTrue\b/g, "true")
+        .replace(/\bFalse\b/g, "false");
+      if (op === "=") {
+        this.emit(`${this.pad()}let ${varName} = ${val};`);
+      } else {
+        this.emit(`${this.pad()}${varName} ${op} ${val};`);
+      }
       return;
     }
 
     // ── Unrecognised ──────────────────────────────────────────────────────────
-    if (line && !line.startsWith("#")) {
-      this.emit(`${this.pad()}// UNHANDLED: ${line}`);
-    }
+    this.emit(`${this.pad()}// UNHANDLED: ${line}`);
   }
 
   private preprocessLines(lines: string[]): string[] {
@@ -966,13 +1396,10 @@ class Converter {
     this.emit(`// Source: ${this.filename}`);
     this.emit("");
 
-    // Emit define char.* declarations
-    for (const [abbr, fullName] of this.charMap) {
-      this.emit(`define char.${abbr} = "${escStr(fullName)}";`);
-    }
-    if (this.charMap.size > 0) {
-      this.emit("");
-    }
+    // Note: define declarations are emitted inline via charDefMatch in
+    // processLine() when `$ abbr = Character("Name", ...)` is encountered —
+    // only script.rpy carries those lines, so only script.rrs gets defines.
+    // All other files rely on the globalCharMap passed at compile time.
 
     this.lines = this.preprocessLines(this.lines);
 
