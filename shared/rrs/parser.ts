@@ -56,10 +56,16 @@ class Parser {
     while (!this.check("EOF")) {
       if (this.checkIdent("define")) {
         defines.push(this.parseDefine());
+      } else if (this.checkIdent("let")) {
+        // Top-level `let char.k = "Name";` declarations are the canonical
+        // format emitted by rpy2rrs for character names.  Treat them as
+        // define declarations so codegen can build the charMap from them.
+        this.advance(); // consume 'let'
+        defines.push(this.parseDefineBody());
       } else if (this.checkIdent("label")) {
         labels.push(this.parseLabel());
       } else {
-        // Top-level statement outside any label (e.g. top-level `if` or `let`
+        // Top-level statement outside any label (e.g. top-level `if`
         // in init scripts like always_allow_skip.rrs).  Parse and discard.
         this.parseStmt();
       }
@@ -80,8 +86,21 @@ class Parser {
    */
   private parseDefine(): DefineDecl {
     this.expectIdent("define");
+    return this.parseDefineBody();
+  }
 
-    // Parse dotted key: e.g. "char", "char.k", "audio.bgm_main", "CAMP_NAME"
+  /**
+   * Parse the body of a define/let declaration after the leading keyword has
+   * already been consumed:
+   *   char.k     = "Keitaro";
+   *   audio.bgm  = "Audio/BGM/Main.ogg";
+   *   CAMP_NAME  = "Camp Buddy";
+   *
+   * Shared by parseDefine() (for `define` keyword) and the top-level `let`
+   * branch in parse() (for `let char.k = "Name";` character declarations).
+   */
+  private parseDefineBody(): DefineDecl {
+    // Parse dotted key: e.g. "char.k", "audio.bgm_main", "CAMP_NAME"
     let key = this.expectKind("Ident").value;
     while (this.check(".")) {
       this.advance(); // consume "."

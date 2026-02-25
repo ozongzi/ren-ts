@@ -298,7 +298,7 @@ async function loadAssetMaps(scriptRpyPath: string): Promise<AssetMaps> {
 
 /**
  * Read a previously-generated .rrs file and extract every
- *   define char.ABBR = "Full Name";
+ *   let char.ABBR = "Full Name";
  * line into a Map<abbr, fullName>.
  *
  * This is used in the two-pass workflow: script.rpy is converted first, and
@@ -315,7 +315,7 @@ async function loadCharMapFromRrs(
   } catch {
     return map; // file not yet written (dry-run or error) — return empty map
   }
-  const re = /^define\s+char\.(\w+)\s*=\s*"([^"]*)"\s*;/gm;
+  const re = /^let\s+char\.(\w+)\s*=\s*"([^"]*)"\s*;/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     map.set(m[1], m[2]);
@@ -1437,12 +1437,13 @@ class Converter {
       return;
     }
 
-    // ── $abbr = Character("Name", ...) → define abbr = "Name"; ───────────────
+    // ── $abbr = Character("Name", ...) → let char.abbr = "Name"; ─────────────
     // Character definitions appear in script.rpy inside  init: / python:  blocks.
-    // We translate them directly into .rrs define declarations so that
-    // script.rrs becomes the single source of truth for speaker names.
-    // Story files use `speak k "text"` with no defines of their own; the loader
-    // reads script.rrs first and passes the resulting charMap to all other files.
+    // We translate them into .rrs let declarations in the `char` namespace so
+    // that script.rrs becomes the single source of truth for speaker names.
+    // Story files use `speak k "text"` with no char declarations of their own;
+    // the loader reads script.rrs first and passes the resulting charMap to all
+    // other files.
     const charDefMatch = line.match(
       /^\$\s*(\w+)\s*=\s*Character\s*\(\s*(['"])([^'"]+)\2/,
     );
@@ -1454,7 +1455,7 @@ class Converter {
         // "empty" is a placeholder used by the emp (silent narrator) variable;
         // store it as "" so it renders without a nameplate.
         const name = fullName === "empty" ? "" : fullName;
-        this.emit(`define ${abbr} = "${name}";`);
+        this.emit(`let char.${abbr} = "${name}";`);
       }
       return;
     }

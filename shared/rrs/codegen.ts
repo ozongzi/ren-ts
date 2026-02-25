@@ -41,11 +41,15 @@ import type {
 // ── Define maps ───────────────────────────────────────────────────────────────
 
 /**
- * Build the three resolution maps from the top-level `define` declarations.
+ * Build the two resolution maps from the top-level define/let declarations.
  *
- * charMap   : abbr  → full name   (from `define char.<abbr> = "Name"`)
+ * charMap   : abbr  → full name   (from `let char.<abbr> = "Name"`)
  * audioMap  : alias → path        (from `define audio.<alias> = "path"`)
- * constMap  : name  → value       (from `define <NAME> = value`)
+ *
+ * The canonical format for character declarations is now:
+ *   let char.k = "Keitaro";
+ * Legacy bare-key format (`define k = "Keitaro"`) is also accepted for
+ * backward compatibility with previously generated .rrs files.
  */
 export function buildDefineMaps(
   defines: DefineDecl[],
@@ -55,18 +59,22 @@ export function buildDefineMaps(
   audioMap: Map<string, string>;
 } {
   // Start from the global char map (populated from script.rrs) so that
-  // story files which carry no define declarations can still resolve
+  // story files which carry no char declarations can still resolve
   // speaker abbreviations.
   const charMap = new Map<string, string>(globalCharMap);
   const audioMap = new Map<string, string>();
 
   for (const d of defines) {
     if (d.key.startsWith("audio.")) {
+      // audio alias: `define audio.bgm_main = "Audio/BGM/main.ogg";`
       audioMap.set(d.key.slice("audio.".length), d.value);
-    } else {
-      // All other defines are character/speaker name entries.
-      // Format: define k = "Keitaro";   (no char. prefix needed)
+    } else if (d.key.startsWith("char.")) {
+      // canonical character declaration: `let char.k = "Keitaro";`
       // File-local definitions override the global map.
+      charMap.set(d.key.slice("char.".length), d.value);
+    } else {
+      // Legacy bare-key character declaration: `define k = "Keitaro";`
+      // Kept for backward compatibility with older generated .rrs files.
       charMap.set(d.key, d.value);
     }
   }

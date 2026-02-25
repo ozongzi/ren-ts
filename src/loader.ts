@@ -83,8 +83,8 @@ export async function loadAll(): Promise<void> {
 
   // ── Two-pass loading ───────────────────────────────────────────────────────
   // Pass 1: load script.rrs first (if present) and extract the global
-  //         character map from its `define k = "Keitaro";` declarations.
-  //         Story files carry no define declarations and rely on this map.
+  //         character map from its `let char.k = "Keitaro";` declarations.
+  //         Story files carry no char declarations and rely on this map.
   // Pass 2: load all remaining files in parallel, passing the global charMap
   //         so speaker abbreviations are resolved correctly.
 

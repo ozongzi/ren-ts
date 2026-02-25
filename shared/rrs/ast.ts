@@ -8,19 +8,21 @@ export type Program = {
 // ── Top-level define declaration ──────────────────────────────────────────────
 
 /**
- * Top-level define declaration.  May appear before (or interleaved with)
+ * Top-level define/let declaration.  May appear before (or interleaved with)
  * label blocks, but never *inside* a label body.
  *
- * Two flavours:
- *   define <abbr>        = "Full Name";   → character/speaker alias (e.g. define k = "Keitaro")
+ * Three flavours:
+ *   let char.<abbr>      = "Full Name";   → character/speaker alias (canonical, e.g. let char.k = "Keitaro")
  *   define audio.<alias> = "path/to.ogg"; → audio path alias
+ *   define <abbr>        = "Full Name";   → legacy bare-key character alias (backward compat)
  *
- * No `char.` prefix is used for character names — the only namespaced keys
- * are `audio.*`.  All other defines are treated as character name entries.
+ * The canonical format for character names uses the `char.` namespace prefix.
+ * `buildDefineMaps` strips the prefix so the charMap key is just the abbreviation
+ * (e.g. `char.k` → key `"k"`).  Audio aliases use the `audio.*` namespace.
  */
 export type DefineDecl = {
   kind: "Define";
-  /** Full key exactly as written, e.g. "k", "mys_hiro", "audio.bgm_main" */
+  /** Full key exactly as written, e.g. "char.k", "audio.bgm_main", "CAMP_NAME" */
   key: string;
   /** Raw value string (the quoted string content, numeric literal, or bare identifier) */
   value: string;
