@@ -16,14 +16,9 @@
 //   --manifest        Write manifest.json listing all successfully converted files
 //   --dry-run         Parse only, do not write files
 //   --verbose         Print generated rrs to stdout
-//   --script <path>   Path to script.rpy (required for asset/character maps)
 //   --tl <dir>        Path to tl/chinese directory for Chinese translations
 //                     (translations are disabled by default; must be explicitly enabled)
 //   --no-tl           Kept for backward compatibility; now a no-op (no-tl is the default)
-//   --cook            Before converting story files, read the already-generated
-//                     script.rrs (or convert script.rpy first) to extract all
-//                     top-level variable definitions (audio.*, image.*) and
-//                     inline / hard-code resolved paths everywhere they appear
 //   --skip <pattern>  Skip files matching this glob/name pattern (repeatable)
 //   --stub-exit <label=var>  Inject `jump VAR;` when closing label LABEL
 //   --help, -h        Show this help
@@ -145,7 +140,7 @@ function extractPyStr(raw: string): string {
   return m ? m[2] : raw;
 }
 
-// ── Script.rpy map loader ─────────────────────────────────────────────────────
+// ── Asset maps ───────────────────────────────────────────────────────────────
 
 interface AssetMaps {
   /** audio.VAR → file path */
@@ -171,187 +166,15 @@ interface AssetMaps {
   tl?: Map<string, string>;
 }
 
-async function loadAssetMaps(scriptRpyPath: string): Promise<AssetMaps> {
-  const audio = new Map<string, string>();
-  const bg = new Map<string, string>();
-  const cg = new Map<string, string>();
-  const sx = new Map<string, string>();
-  const misc = new Map<string, string>();
-  const charMap = new Map<string, string>();
-
-  let text: string;
-  try {
-    text = await readFile(scriptRpyPath, "utf-8");
-  } catch {
-    console.warn(
-      `Warning: Could not read ${scriptRpyPath}; asset maps will be empty.`,
-    );
-    return { audio, bg, cg, sx, misc, charMap };
-  }
-
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-
-    // define audio.VAR = "PATH"
-    const audioMatch = trimmed.match(/^define\s+audio\.(\w+)\s*=\s*"([^"]+)"/);
-    if (audioMatch) {
-      audio.set(audioMatch[1], audioMatch[2]);
-      continue;
-    }
-
-    // Character definitions — four forms found in the wild:
-    //   define abbr = Character("Name", ...)       standard Ren'Py define
-    //   define $abbr = Character("Name", ...)      dollar-prefixed define
-    //   $abbr = Character("Name", ...)             Python assignment (init block)
-    //   $ abbr = Character("Name", ...)            Python assignment with space
-    // Single or double quotes around the display name are both accepted.
-    const charMatch = trimmed.match(
-      /^(?:define\s+\$?|\$\s*)(\w+)\s*=\s*Character\s*\(\s*(['"])([^'"]+)\2/,
-    );
-    if (charMatch) {
-      const abbr = charMatch[1];
-      const fullName = charMatch[3];
-      // Skip narrator/nvl and minigame re-used slots
-      if (abbr !== "narrator" && abbr !== "nvl" && abbr !== "k_foreplay") {
-        // "empty" is a placeholder name used by the emp (silent narrator) char;
-        // store it as "" so it renders as narration (no nameplate).
-        charMap.set(abbr, fullName === "empty" ? "" : fullName);
-      }
-      continue;
-    }
-
-    // image bg_NAME = "PATH"  (single-word key)
-    // image bg_NAME STATE = "PATH"  (two-word key, e.g. "bg_cabin_taiga_night lightsoff")
-    // Both are stored with underscore-joined key: bg_NAME_STATE
-    const bgMatch = trimmed.match(
-      /^image\s+(bg_\S+)(?:\s+(\w+))?\s*=\s*"([^"]+)"/,
-    );
-    if (bgMatch) {
-      const bgKey = bgMatch[2] ? bgMatch[1] + "_" + bgMatch[2] : bgMatch[1];
-      bg.set(bgKey, bgMatch[3]);
-      // Also store the base key (without modifier) so bare `scene bg_NAME` still resolves
-      if (bgMatch[2]) bg.set(bgMatch[1], bgMatch[3]);
-      continue;
-    }
-
-    // image cg NAME = "PATH"  (multi-word key, e.g. "cg black" → cg_black)
-    const cgSpaceMatch = trimmed.match(/^image\s+cg\s+(\S+)\s*=\s*"([^"]+)"/);
-    if (cgSpaceMatch) {
-      cg.set("cg_" + cgSpaceMatch[1], cgSpaceMatch[2]);
-      continue;
-    }
-
-    // image cg_NAME = "PATH"  (underscore key)
-    const cgUnderMatch = trimmed.match(/^image\s+(cg_\S+)\s*=\s*"([^"]+)"/);
-    if (cgUnderMatch) {
-      cg.set(cgUnderMatch[1], cgUnderMatch[2]);
-      continue;
-    }
-
-    // image sx NAME_PARTS = "PATH"  (key with spaces → underscore-joined)
-    // e.g. "image sx hiro10_9 = ..."  or  "image sx natsumi6 face1 = ..."
-    const sxMatch = trimmed.match(/^image\s+sx\s+(.*?)\s*=\s*"([^"]+)"/);
-    if (sxMatch) {
-      const rawKey = sxMatch[1].trim().replace(/\s+/g, "_");
-      sx.set("sx_" + rawKey, sxMatch[2]);
-      // Also store without prefix for resolution via raw name
-      sx.set(rawKey, sxMatch[2]);
-      continue;
-    }
-
-    // sx_ underscore images
-    const sxUnderMatch = trimmed.match(/^image\s+(sx_\S+)\s*=\s*"([^"]+)"/);
-    if (sxUnderMatch) {
-      sx.set(sxUnderMatch[1], sxUnderMatch[2]);
-      continue;
-    }
-
-    // Misc images without standard prefix (e.g. "montage_bg", "jrm_entry1_1")
-    // Only store single-word image names to avoid capturing ATL/Movie defs
-    const miscMatch = trimmed.match(/^image\s+([a-zA-Z0-9_]+)\s*=\s*"([^"]+)"/);
-    if (miscMatch) {
-      misc.set(miscMatch[1], miscMatch[2]);
-      continue;
-    }
-
-    // image NAME = Movie(play="PATH", ...)  — animated CG / sprite movie
-    // Store the webm path in the misc map so `scene NAME` can resolve it.
-    const movieMatch = trimmed.match(
-      /^image\s+([a-zA-Z0-9_]+)\s*=\s*Movie\s*\(\s*play\s*=\s*"([^"]+\.webm)"/,
-    );
-    if (movieMatch) {
-      misc.set(movieMatch[1], movieMatch[2]);
-      continue;
-    }
-  }
-
-  return { audio, bg, cg, sx, misc, charMap };
-}
-
-// ── Character map reader from generated .rrs ─────────────────────────────────
-
-/**
- * Read a previously-generated .rrs file and extract every
- *   char.ABBR = "Full Name";
- * line into a Map<abbr, fullName>.
- *
- * This is used in the two-pass workflow: script.rpy is converted first, and
- * the resulting script.rrs is then read back to build the definitive character
- * name table before all other files are converted.
- */
-async function loadCharMapFromRrs(
-  rrsPath: string,
-): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
-  let text: string;
-  try {
-    text = await readFile(rrsPath, "utf-8");
-  } catch {
-    return map; // file not yet written (dry-run or error) — return empty map
-  }
-  const re = /^char\.(\w+)\s*=\s*"([^"]*)"\s*;/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    map.set(m[1], m[2]);
-  }
-  return map;
-}
-
-// ── Cook-mode: read top-level defines from an already-generated .rrs file ─────
-
-/**
- * Read an already-generated .rrs file and extract top-level
- * `audio.*` and `image.*` define declarations so the converter can
- * resolve aliases to hard paths in --cook mode.
- *
- * Returns:
- *   audio  — alias → path,  e.g. "outdoors" → "Audio/Ambient/outdoors.ogg"
- *   image  — full dotted key → path,  e.g. "image.bg.tent_day" → "BGs/tent_day.jpg"
- */
-async function loadCookedMapsFromRrs(rrsPath: string): Promise<{
-  audio: Map<string, string>;
-  image: Map<string, string>;
-}> {
-  const audio = new Map<string, string>();
-  const image = new Map<string, string>();
-  let text: string;
-  try {
-    text = await readFile(rrsPath, "utf-8");
-  } catch {
-    return { audio, image }; // file not yet available — return empty maps
-  }
-  // audio.NAME = "path/to/file.ogg";
-  const audioRe = /^audio\.(\w+)\s*=\s*"([^"]*)"\s*;/gm;
-  let m: RegExpExecArray | null;
-  while ((m = audioRe.exec(text)) !== null) {
-    audio.set(m[1], m[2]);
-  }
-  // image.NS.KEY = "path/to/file.ext";   (NS = bg / cg / sx / misc / …)
-  const imageRe = /^(image\.[a-zA-Z0-9_.]+)\s*=\s*"([^"]*)"\s*;/gm;
-  while ((m = imageRe.exec(text)) !== null) {
-    image.set(m[1], m[2]);
-  }
-  return { audio, image };
+function emptyAssetMaps(): AssetMaps {
+  return {
+    audio: new Map(),
+    bg: new Map(),
+    cg: new Map(),
+    sx: new Map(),
+    misc: new Map(),
+    charMap: new Map(),
+  };
 }
 
 // ── Chinese translation loader ────────────────────────────────────────────────
@@ -532,8 +355,6 @@ class Converter {
     lines: string[],
     private readonly maps: AssetMaps,
     private readonly filename: string,
-    private readonly cookedAudio?: Map<string, string>,
-    private readonly cookedImage?: Map<string, string>,
   ) {
     this.lines = lines;
     this.charMap = maps.charMap;
@@ -639,13 +460,13 @@ class Converter {
       this.emit(`${this.pad()}speak ${sp} "${escStr(lines[0].text)}";`);
     } else if (lines.length === 1 && lines[0].voice) {
       this.emit(
-        `${this.pad()}speak ${sp} "${escStr(lines[0].text)}" | "${lines[0].voice}";`,
+        `${this.pad()}speak ${sp} "${escStr(lines[0].text)}" | ${lines[0].voice};`,
       );
     } else {
       this.emit(`${this.pad()}speak ${sp} {`);
       for (const l of lines) {
         if (l.voice) {
-          this.emit(`${this.pad(1)}"${escStr(l.text)}" | "${l.voice}";`);
+          this.emit(`${this.pad(1)}"${escStr(l.text)}" | ${l.voice};`);
         } else {
           this.emit(`${this.pad(1)}"${escStr(l.text)}";`);
         }
@@ -667,7 +488,9 @@ class Converter {
   // ── Asset resolution ────────────────────────────────────────────────────────
 
   private resolveAudio(varName: string): string {
-    return this.maps.audio.get(varName) ?? `Audio/???/${varName}.ogg`;
+    // Return a variable reference: audio.VAR
+    // The runtime resolves it via the audio namespace defined in script.rrs
+    return `audio.${varName}`;
   }
 
   /**
@@ -675,16 +498,9 @@ class Converter {
    * Falls back to a quoted unknown marker if the key is not in the map.
    */
   private bgVarRef(key: string): string {
-    if (!this.maps.bg.has(key)) return `"BGs/<UNKNOWN:${key}>.jpg"`;
     // Strip the bg_ prefix for the var ref key: bg_bathroom2_sunset → bathroom2_sunset
     const refKey = key.startsWith("bg_") ? key.slice("bg_".length) : key;
-    const varRef = `image.bg.${refKey}`;
-    // Cook mode: inline the hard path if available
-    if (this.cookedImage) {
-      const path = this.cookedImage.get(varRef);
-      if (path !== undefined) return `"${escStr(path)}"`;
-    }
-    return varRef;
+    return `image.bg.${refKey}`;
   }
 
   /**
@@ -692,16 +508,9 @@ class Converter {
    * Falls back to a quoted unknown marker if the key is not in the map.
    */
   private cgVarRef(key: string): string {
-    if (!this.maps.cg.has(key)) return `"CGs/<UNKNOWN:${key}>.jpg"`;
     // Strip the cg_ prefix for the var ref key: cg_arrival1 → arrival1
     const refKey = key.startsWith("cg_") ? key.slice("cg_".length) : key;
-    const varRef = `image.cg.${refKey}`;
-    // Cook mode: inline the hard path if available
-    if (this.cookedImage) {
-      const path = this.cookedImage.get(varRef);
-      if (path !== undefined) return `"${escStr(path)}"`;
-    }
-    return varRef;
+    return `image.cg.${refKey}`;
   }
 
   /**
@@ -709,17 +518,9 @@ class Converter {
    * Falls back to a quoted unknown marker if the key is not in the map.
    */
   private sxVarRef(key: string): string {
-    const found = this.maps.sx.has("sx_" + key) || this.maps.sx.has(key);
-    if (!found) return `"CGs/<UNKNOWN:sx_${key}>.jpg"`;
     // Normalise: strip any sx_ prefix for the var ref key
     const refKey = key.startsWith("sx_") ? key.slice("sx_".length) : key;
-    const varRef = `image.sx.${refKey}`;
-    // Cook mode: inline the hard path if available
-    if (this.cookedImage) {
-      const path = this.cookedImage.get(varRef);
-      if (path !== undefined) return `"${escStr(path)}"`;
-    }
-    return varRef;
+    return `image.sx.${refKey}`;
   }
 
   /**
@@ -727,22 +528,15 @@ class Converter {
    * Falls back to null if the name is not in any map.
    */
   private miscVarRef(name: string): string | null {
-    let varRef: string | null = null;
     if (this.maps.cg.has(name)) {
       const refKey = name.startsWith("cg_") ? name.slice("cg_".length) : name;
-      varRef = `image.cg.${refKey}`;
+      return `image.cg.${refKey}`;
     } else if (this.maps.bg.has("bg_" + name)) {
-      varRef = `image.bg.${name}`;
+      return `image.bg.${name}`;
     } else if (this.maps.misc.has(name)) {
-      varRef = `image.misc.${name}`;
+      return `image.misc.${name}`;
     }
-    if (varRef === null) return null;
-    // Cook mode: inline the hard path if available
-    if (this.cookedImage) {
-      const path = this.cookedImage.get(varRef);
-      if (path !== undefined) return `"${escStr(path)}"`;
-    }
-    return varRef;
+    return null;
   }
 
   // ── Look-ahead helper ───────────────────────────────────────────────────────
@@ -1073,9 +867,7 @@ class Converter {
     if (playMusicMatch) {
       const varName = playMusicMatch[1];
       const fadein = playMusicMatch[2] ?? playMusicMatch[3];
-      const resolvedMusic = this.cookedAudio?.get(varName);
-      const musicArg =
-        resolvedMusic !== undefined ? `"${escStr(resolvedMusic)}"` : varName;
+      const musicArg = varName;
       if (fadein) {
         this.emit(
           `${this.pad()}music::play(${musicArg}) | fadein(${fmtFloat(parseFloat(fadein))});`,
@@ -1090,9 +882,7 @@ class Converter {
     const playSoundMatch = line.match(/^play\s+sound\s+(\S+)/);
     if (playSoundMatch) {
       const sn = playSoundMatch[1];
-      const resolvedSn = this.cookedAudio?.get(sn);
-      const snArg = resolvedSn !== undefined ? `"${escStr(resolvedSn)}"` : sn;
-      this.emit(`${this.pad()}sound::play(${snArg});`);
+      this.emit(`${this.pad()}sound::play(${sn});`);
       return;
     }
 
@@ -1100,9 +890,7 @@ class Converter {
     const playAudioMatch = line.match(/^play\s+audio\s+(\S+)/);
     if (playAudioMatch) {
       const an = playAudioMatch[1];
-      const resolvedAn = this.cookedAudio?.get(an);
-      const anArg = resolvedAn !== undefined ? `"${escStr(resolvedAn)}"` : an;
-      this.emit(`${this.pad()}sound::play(${anArg});`);
+      this.emit(`${this.pad()}sound::play(${an});`);
       return;
     }
 
@@ -1110,9 +898,7 @@ class Converter {
     const playBgsoundMatch = line.match(/^play\s+bgsound2?\s+(\S+)/);
     if (playBgsoundMatch) {
       const bn = playBgsoundMatch[1];
-      const resolvedBn = this.cookedAudio?.get(bn);
-      const bnArg = resolvedBn !== undefined ? `"${escStr(resolvedBn)}"` : bn;
-      this.emit(`${this.pad()}music::play(${bnArg});`);
+      this.emit(`${this.pad()}music::play(${bn});`);
       return;
     }
 
@@ -1873,11 +1659,6 @@ OPTIONS
                         (disabled by default; must be explicitly enabled)
   --no-tl               Kept for backward compatibility; translations are now
                         disabled by default
-  --cook                After converting script.rpy (or reading an existing
-                        script.rrs), read its top-level variable definitions
-                        and inline / hard-code resolved paths in all other
-                        files (audio aliases → quoted paths, image var-refs →
-                        quoted paths)
   --skip <name>         Additional filename to skip in directory mode (repeatable)
   --stub-exit <l=v>     When label L closes, inject \`jump v;\`  (repeatable)
                         Example: --stub-exit foreplay=label_afterforeplay
@@ -1888,7 +1669,7 @@ OPTIONS
 
 EXAMPLES
   bun run rpy2rrs /path/to/game/day1.rpy
-  bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest --script /path/to/game/script.rpy
+  bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest
   bun run rpy2rrs /path/to/game/day1.rpy --no-tl   # English output
 `;
 
@@ -1905,10 +1686,8 @@ async function main(): Promise<void> {
   }
 
   let outputArg: string | undefined;
-  let scriptRpy: string | undefined;
   let tlDir: string | undefined;
   let noTl = false; // kept for backward-compat; no-tl is now the default
-  let cook = false;
   let dryRun = false;
   let verbose = false;
   let writeManifest = false;
@@ -1920,14 +1699,10 @@ async function main(): Promise<void> {
     const arg = rawArgs[i];
     if (arg === "-o") {
       outputArg = rawArgs[++i];
-    } else if (arg === "--script") {
-      scriptRpy = rawArgs[++i];
     } else if (arg === "--tl") {
       tlDir = rawArgs[++i];
     } else if (arg === "--no-tl") {
       noTl = true; // no-op; kept for backward-compat
-    } else if (arg === "--cook") {
-      cook = true;
     } else if (arg === "--dry-run") {
       dryRun = true;
     } else if (arg === "--verbose") {
@@ -1978,99 +1753,12 @@ async function main(): Promise<void> {
     }
   }
 
-  // Auto-detect script.rpy if not specified: look for it in the first positional
-  // argument (which may be the game directory).
-  if (!scriptRpy && positional.length > 0) {
-    const candidate = `${positional[0].replace(/\/$/, "")}/script.rpy`;
-    try {
-      await fsStat(candidate);
-      scriptRpy = candidate;
-      console.log(`Auto-detected script.rpy at: ${scriptRpy}`);
-    } catch {
-      // Not found — will proceed without asset maps
-    }
-  }
-
   // Translations are opt-in only: use --tl <dir> to enable.
   // (Auto-detection of tl/chinese has been removed; --no-tl is a no-op now.)
   void noTl;
 
-  // ── Cook mode: build cooked maps from script.rrs ─────────────────────────
-  // When --cook is specified we read the already-generated (or about-to-be-
-  // generated) script.rrs and extract all top-level audio.* / image.* defines
-  // so that story files can inline hard paths instead of emitting variable refs.
-  let cookedAudio: Map<string, string> | undefined;
-  let cookedImage: Map<string, string> | undefined;
-
-  // Determine where script.rrs lives (mirrors the outPath logic for script.rpy)
-  let scriptRrsPath: string | undefined;
-  if (cook && scriptRpy) {
-    const scriptBaseName = scriptRpy
-      .split("/")
-      .pop()!
-      .replace(/\.rpy$/, ".rrs");
-    if (outputIsDir && outputArg) {
-      scriptRrsPath = `${outputArg.replace(/\/$/, "")}/${scriptBaseName}`;
-    } else if (outputArg && !outputIsDir) {
-      // Single-file mode — script.rrs would sit next to script.rpy
-      scriptRrsPath = scriptRpy.replace(/\.rpy$/, ".rrs");
-    } else {
-      scriptRrsPath = scriptRpy.replace(/\.rpy$/, ".rrs");
-    }
-  }
-
-  // Load asset maps (and character map) once
-  let maps: AssetMaps;
-  if (scriptRpy) {
-    console.log(`Loading asset maps from ${scriptRpy} …`);
-    maps = await loadAssetMaps(scriptRpy);
-    console.log(
-      `  audio: ${maps.audio.size}  bg: ${maps.bg.size}  cg: ${maps.cg.size}  sx: ${maps.sx.size}  misc: ${maps.misc.size}  chars: ${maps.charMap.size}`,
-    );
-  } else {
-    console.warn(
-      `Warning: --script not specified and no script.rpy auto-detected. ` +
-        `Asset maps and character definitions will be empty.`,
-    );
-    maps = {
-      audio: new Map(),
-      bg: new Map(),
-      cg: new Map(),
-      sx: new Map(),
-      misc: new Map(),
-      charMap: new Map(),
-    };
-  }
-
-  // ── Cook: if script.rrs doesn't exist yet, convert script.rpy first ────────
-  if (cook && scriptRrsPath && scriptRpy) {
-    let scriptRrsExists = false;
-    try {
-      await fsStat(scriptRrsPath);
-      scriptRrsExists = true;
-    } catch {
-      scriptRrsExists = false;
-    }
-
-    if (!scriptRrsExists) {
-      console.log(
-        `[cook] script.rrs not found at ${scriptRrsPath}; converting script.rpy first …`,
-      );
-      await convertFile(scriptRpy, scriptRrsPath, maps, {
-        dryRun,
-        verbose,
-        tlDir,
-      });
-    }
-
-    console.log(`[cook] Loading cooked maps from ${scriptRrsPath} …`);
-    const cooked = await loadCookedMapsFromRrs(scriptRrsPath);
-    cookedAudio = cooked.audio;
-    cookedImage = cooked.image;
-    console.log(
-      `[cook]   audio aliases: ${cookedAudio.size}  image refs: ${cookedImage.size}`,
-    );
-  }
+  // Asset maps are populated per-file from the file's own image/audio declarations
+  const maps: AssetMaps = emptyAssetMaps();
 
   // Gather input files
   const inputFiles: string[] = [];
@@ -2134,8 +1822,6 @@ async function main(): Promise<void> {
       dryRun,
       verbose,
       tlDir,
-      cookedAudio,
-      cookedImage,
     });
 
     if (result.ok) {
@@ -2210,8 +1896,6 @@ async function convertFile(
     dryRun: boolean;
     verbose: boolean;
     tlDir?: string;
-    cookedAudio?: Map<string, string>;
-    cookedImage?: Map<string, string>;
   },
   skipFiles?: Set<string>,
 ): Promise<ConvertResult> {
@@ -2298,13 +1982,7 @@ async function convertFile(
     effectiveMaps = { ...effectiveMaps, tl };
   }
 
-  const converter = new Converter(
-    lines,
-    effectiveMaps,
-    filename,
-    opts.cookedAudio,
-    opts.cookedImage,
-  );
+  const converter = new Converter(lines, effectiveMaps, filename);
   let result: string;
   try {
     result = converter.convert();

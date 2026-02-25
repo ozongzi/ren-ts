@@ -564,7 +564,7 @@ class Parser {
         let voice: string | undefined;
         if (this.check("|")) {
           this.advance();
-          voice = this.expectKind("Str").value;
+          voice = this.parseVoiceRef();
         }
         this.expectKind(";");
         lines.push({ text, voice });
@@ -587,7 +587,7 @@ class Parser {
       } else if (this.check("|")) {
         // ── speak WHO "text" | "voice" ; ─────────────────────────────────
         this.advance();
-        const voice = this.expectKind("Str").value;
+        const voice = this.parseVoiceRef();
         this.expectKind(";");
         lines.push({ text: first, voice });
       } else {
@@ -752,6 +752,28 @@ class Parser {
   }
 
   // ── Multi-word ident collector ────────────────────────────────────────────────
+
+  /**
+   * Parse a voice reference after the `|` separator in a speak line.
+   *
+   * Accepts two forms:
+   *   - A string literal:            `"Audio/voice/foo.ogg"`
+   *   - A dotted identifier ref:     `audio.keitaro_vs1_line1`
+   *
+   * The dotted-ident form is returned as-is (e.g. `"audio.keitaro_vs1_line1"`)
+   * so that `resolveAudioAlias` in the codegen can expand it via the audioMap.
+   */
+  private parseVoiceRef(): string {
+    if (this.check("Str")) {
+      return this.advance().value;
+    }
+    if (this.check("Ident")) {
+      return this.parseDottedIdent();
+    }
+    throw this.err(
+      `Expected voice reference (string or dotted identifier) after '|', got '${this.peek().value}'`,
+    );
+  }
 
   /**
    * Collect one or more consecutive Ident tokens (space-joined) as a single
