@@ -159,7 +159,31 @@ Key tasks: rename `cbscript` → `rrs`, add `define` language feature, remove CB
 - Created `src/components/ConvertScreen.tsx`: React UI overlay for in-browser `.rpy` → `.rrs` conversion with drag-and-drop, options, progress, and per-file downloads.
 - Updated `src/components/TitleScreen.tsx`: added "🔄 转换 .rpy 文件" button that opens `ConvertScreen`.
 
-### 2026-02-24 (Session 1)
+### 2026-02-25 (Session 5 — parser robustness & position system)
+
+#### Bug fixes
+- **`label start` not loading** (`src/rrs/parser.ts`):
+  - Root cause: `script.rrs` line 61 had `flash = Fade(.25, 0, .75, color="#fff")` — a complex value that caused `parseDefineBody()` to throw, which caused `loadFile()` to catch and bail, so the entire file (including `label start`) was never registered in `labelIndex`.
+  - Fix 1 — `parseDefineBody()`: instead of throwing on complex values, skip tokens to the next `;` and return a dummy define with `value: ""`.
+  - Fix 2 — `parse()`: wrapped top-level loop in try/catch; on error calls `skipToRecoveryPoint(0)` to skip to the next `;` and continue parsing subsequent labels.
+  - Fix 3 — `parseBody()`: same try/catch pattern inside label bodies, preventing bad statements in `journal.rrs` / `foreplay.rrs` from aborting the entire label.
+  - Fix 4 — added `skipToRecoveryPoint(minDepth)` helper: skips tokens until `;` or `}` at or above `minDepth`, leaving the closing brace for the caller.
+
+#### Position system overhaul (`rpy2rrs.ts`, `src/rrs/codegen.ts`, `src/assets.ts`)
+- **`rpy2rrs.ts`**: added recognition of `$ VAR = Position(xpos=X, ...)` and `define VAR = Position(xpos=X, ...)` — emits `position.VAR = X;` as a top-level define in the `.rrs` output. Previously these were silently discarded (complex value), causing all group-scene positions (`p4_1`, `p7_3a`, etc.) to fall back to `50%`.
+- **`src/rrs/codegen.ts`**: `buildDefineMaps()` now handles the `position.` prefix — calls `registerPosition(name, xpos)` from `assets.ts` so positions become available at runtime immediately after `script.rrs` is parsed.
+- **`src/assets.ts`**:
+  - Added `_runtimePositions` map and `registerPosition(name, xpos)` export.
+  - `atToLeftPercent()` now checks `_runtimePositions` first (populated from `script.rrs`), then falls back to `AT_POSITION_LEFT`.
+  - Removed all `pN_K` / `pN_Ka` entries from `AT_POSITION_LEFT` (now populated at runtime from `script.rrs`). Hardcoded table now only contains named positions (`left`, `right`, `center`, `left1`–`left4`, `right1`–`right4`, etc.).
+  - Also corrected `left`/`right` values to match original game (25% / 75%), and `sniff` to 55%.
+
+#### Noise reduction
+- **`src/rrs/codegen.ts`**: removed `console.warn` for "no known stage position" — these are normal for Ren'Py games where body sprites don't always precede face expressions in the same label.
+
+#### Double-load investigation (`src/loader.ts`)
+- Diagnosed that React StrictMode causes `useEffect` (and therefore `loadAll()`) to run twice in development.
+- Noted this is cosmetic only (duplicate log lines, extra HTTP requests in dev) — `loadedFiles` set prevents actual double-parsing, and second pass produces no new labels. Decided not to add a Promise-level guard since it has no functional impact in production.
 - Created `src/rrs/` and `tools/rrs/` by copying from `src/cbscript/` and `tools/cbscript/`.
 - Added `DefineDecl` to `tools/rrs/types.ts` and `src/rrs/ast.ts`.
 - Updated both parsers to recognise top-level `define` and call `parseDefine()`.

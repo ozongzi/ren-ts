@@ -9,16 +9,10 @@
 | 文件 | 说明 |
 |------|------|
 | `rpy2rrs.ts` | **主工具**：将 Ren'Py `.rpy` 文件批量转换为 `.rrs` |
-| `cli.ts` | 编译器：`.rrs` → JSON Step 数组（调试用） |
-| `decompile.ts` | 反编译器：JSON Step 数组 → `.rrs` |
-| `batch_roundtrip.ts` | 往返一致性测试（decompile → compile） |
-| `lexer.ts` | 词法分析器 |
-| `parser.ts` | 语法分析器（生成 AST） |
-| `codegen.ts` | AST → `Step[]` 代码生成器 |
-| `types.ts` | 工具链内部类型定义 |
-| `validate_assets.ts` | 资源引用检查器（验证 `.rrs` 中的图片/音频路径） |
+| `parse_gallery.ts` | 从 `gallery_images.rpy` 提取 CG 图鉴数据，写入 `manifest.json` |
+| `validate_assets.ts` | 资源引用检查器：验证 `.rrs` 中的图片/音频路径是否实际存在 |
 
-> 前端运行时的解析器位于 `src/rrs/`，与此处的工具链实现相互独立，结构相同。
+> 前端运行时的解析器位于 `src/rrs/`（`lexer.ts` / `parser.ts` / `codegen.ts`），与此处的工具链相互独立，结构对应。
 
 ---
 
@@ -27,17 +21,14 @@
 所有工具均通过 `package.json` 中的 script 调用，在项目根目录执行：
 
 ```bash
-# Ren'Py → .rrs（批量，生成 manifest.json）
+# Ren'Py → .rrs（批量转换，生成 manifest.json）
 bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest
 
-# 编译单个 .rrs → JSON Steps（调试用）
-bun run rrs:compile assets/data/day1.rrs
+# 提取 CG 图鉴数据
+bun run parse-gallery /path/to/game/gallery_images.rpy -o assets/data/manifest.json
 
-# 反编译 JSON Steps → .rrs
-bun run rrs:decompile assets/data/day1.json
-
-# 往返一致性测试
-bun run rrs:roundtrip assets/data/
+# 验证资源引用
+bun run tools/rrs/validate_assets.ts --data assets/data --assets assets
 ```
 
 ---
@@ -49,8 +40,6 @@ bun run rrs:roundtrip assets/data/
 
 ### 顶层结构
 
-顶层声明写作裸赋值（无关键字）。**在 label 外部**的赋值自动成为全局定义（define）；**在 label 内部**的赋值是存档变量。
-
 ```
 // 注释用双斜线
 
@@ -58,6 +47,7 @@ bun run rrs:roundtrip assets/data/
 char.k  = "Keitaro";
 char.hi = "Hiro";
 audio.bgm_main = "Audio/BGM/Main.ogg";
+position.left1 = 0.30;
 
 // label 块
 label scene_name {
@@ -73,7 +63,7 @@ label another_scene {
 
 ### 顶层声明
 
-顶层声明**不能出现在 label 内部**，写作裸赋值。主要有三类：
+顶层声明**不能出现在 label 内部**，写作裸赋值。主要有四类：
 
 #### 角色名定义
 
@@ -81,9 +71,7 @@ label another_scene {
 char.<abbr> = "全名";
 ```
 
-转换器（`rpy2rrs.ts`）会自动从游戏的 `.rpy` 文件中提取 `Character("名字")` 定义，并在每个 `.rrs` 文件头部生成对应的 `char.*` 声明。
-
-运行时 codegen 将 `speak` 语句中的 `<abbr>` 展开为全名，写入引擎 JSON。
+转换器（`rpy2rrs.ts`）会自动从游戏的 `.rpy` 文件中提取 `Character("名字")` 定义，并生成对应的 `char.*` 声明。运行时 codegen 将 `speak` 语句中的缩写展开为全名后写入引擎 JSON。
 
 #### 音频别名定义
 
@@ -91,15 +79,35 @@ char.<abbr> = "全名";
 audio.<alias> = "Audio/BGM/SomeTrack.ogg";
 ```
 
-在 `music::play` / `sound::play` / `speak` 的语音字段中，可以用 `audio.<alias>` 引用已定义的路径。
+在 `music::play` / `sound::play` / `speak` 的语音字段中可用别名引用路径。
+
+#### 位置定义
+
+```
+position.<name> = <xpos>;
+```
+
+由 `rpy2rrs.ts` 从 Ren'Py 的 `Position(xpos=X, xanchor='center')` 转换而来，`xpos` 为 0–1 的比例值。支持两种原始写法：
+
+```python
+define left1  = Position(xpos=0.30, xanchor='center')   # define 形式
+$ p4_1 = Position(xpos=0.20, xanchor='center')           # $ 赋值形式
+```
+
+生成：
+
+```
+position.left1 = 0.30;
+position.p4_1  = 0.20;
+```
+
+引擎在解析 `@ pos` 时优先查运行时位置表，找不到再回退到内置命名位置（`left`、`center`、`right` 等）。
 
 #### 通用常量
 
 ```
 CAMP_NAME = "Camp Buddy";
 ```
-
-通用常量可在条件表达式和变量赋值右侧引用。
 
 ---
 
@@ -181,17 +189,20 @@ hide hiro_casual;
 hide hiro::talking1;
 ```
 
-**位置（position）** 常用值：
+**位置（position）** 内置命名值：
 
 | 值 | 屏幕位置 |
 |----|---------|
-| `left` | 左侧 15% |
+| `left` | 左侧 25% |
 | `cleft` | 偏左 27% |
 | `center` | 中央 50% |
 | `cright` | 偏右 73% |
-| `right` | 右侧 85% |
-| `left2` / `right2` | 稍内移的左/右（多人场景） |
+| `right` | 右侧 75% |
+| `left1`–`left4` | 多人场景左侧各槽位 |
+| `right1`–`right4` | 多人场景右侧各槽位 |
 | `truecenter` | 屏幕正中（CG 全屏用） |
+
+`p4_1`、`p7_3a` 等游戏自定义位置从 `script.rrs` 的 `position.*` 声明中动态加载。
 
 ---
 
@@ -218,7 +229,7 @@ sound::stop();
 
 ### 对话（speak）
 
-`speak` 中的说话人名称在 `.rrs` 源文件中存储为缩写（如 `k`），codegen 根据文件顶部的 `char.*` 声明将其展开为全名后写入引擎 JSON。
+`speak` 中的说话人在 `.rrs` 源文件中存储为缩写（如 `k`），codegen 根据 `char.*` 声明将其展开为全名后写入引擎 JSON。
 
 ```
 // 单行对话，无语音
@@ -303,10 +314,9 @@ label intro_sequence {
 ### 变量赋值
 
 ```
-let day_num = "Day 1";
 score = 0;
 score += 1;
-persistent.animations = True;
+flag_met_hiro = true;
 ```
 
 ---
@@ -314,12 +324,11 @@ persistent.animations = True;
 ### 完整示例
 
 ```
-// 角色定义
 char.k  = "Keitaro";
 char.hi = "Hiro";
 
 label day1 {
-  day_num = "Day 1";
+  score = 0;
   scene #000000;
   sound::play("Audio/SFX/sfx_busengine.ogg");
 
@@ -386,18 +395,16 @@ bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest --game "My VN Game"
 | `-o <path>` | 输出路径（单文件）或输出目录（目录模式） | 同源文件目录 |
 | `--manifest` | 生成 `manifest.json`，列出所有含 label 的故事文件 | 关闭 |
 | `--script <path>` | 资源映射文件路径（通常是 `script.rpy`） | 自动检测 |
-| `--tl <dir>` | 翻译目录（如 `tl/chinese/`），启用翻译合并 | 自动检测 |
-| `--no-tl` | 禁用翻译合并，输出原版文本 | — |
-| `--skip <pattern>` | 额外跳过匹配该模式的文件（可多次使用） | — |
+| `--tl <dir>` | 翻译目录（如 `tl/chinese/`），启用翻译合并 | 关闭 |
+| `--cook` | 读取已生成的 `script.rrs`，将音频/图片别名内联为硬路径 | 关闭 |
+| `--skip <pattern>` | 额外跳过匹配该名称的文件（可多次使用） | — |
 | `--stub-exit label=var` | 为指定 label 末尾注入 `jump var;`（小游戏存根用） | — |
 | `--game <name>` | 游戏名称，写入 manifest.json | — |
-| `--dry-run` | 仅解析，不写入文件 | — |
-| `--verbose` | 将生成内容打印到 stdout | — |
+| `--dry-run` | 仅解析，不写入文件 | 关闭 |
+| `--verbose` | 将生成内容打印到 stdout | 关闭 |
 | `-h`, `--help` | 显示帮助信息 | — |
 
 ### manifest.json 格式
-
-转换器生成的 `manifest.json` 格式如下：
 
 ```json
 {
@@ -407,70 +414,42 @@ bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest --game "My VN Game"
 }
 ```
 
-- `start`：引擎启动时跳转的入口 label，遵循 Ren'Py 约定默认为 `"start"`
-- `game`：游戏名称（可选），由 `--game` 参数写入
+- `start`：引擎启动时跳转的入口 label，默认 `"start"`
+- `game`：游戏名称（可选）
 - `files`：所有含 label 的 `.rrs` 文件列表
 
 ### 转换器工作原理
 
-1. **角色映射**：从 `script.rpy`（或游戏目录中的 `.rpy` 文件）解析 `define <abbr> = Character("名字")` 行，构建角色缩写 → 全名映射表。每个转换后的 `.rrs` 文件头部自动生成对应的 `char.*` 声明。
+1. **角色映射**：从 `script.rpy` 解析 `define <abbr> = Character("名字")` 行，构建角色缩写 → 全名映射表。
 2. **资源映射**：解析音频、背景图、CG、SFX 等资源定义，为 `show` / `scene` / `music` 等语句提供路径解析依据。
-3. **`script.rpy` 处理**：`script.rpy` 既作为资源映射来源，同时也被转换为 `script.rrs`，其中的 `label start` 将被引擎加载为游戏入口。
-4. **翻译合并**：若存在翻译目录，将对话文本替换为目标语言（按文件逐一加载）。
-5. **语句映射**：Ren'Py 语句逐条翻译为 `.rrs`，主要映射关系：
+3. **位置映射**：将 `define VAR = Position(xpos=X, ...)` 和 `$ VAR = Position(xpos=X, ...)` 转换为 `position.VAR = X;` 顶层声明，引擎加载时注册到运行时位置表。
+4. **`script.rpy` 处理**：`script.rpy` 既作为资源映射来源，同时也被转换为 `script.rrs`，其中的 `label start` 作为游戏入口。
+5. **翻译合并**：若通过 `--tl` 指定翻译目录，将对话文本替换为目标语言。
+6. **语句映射**：主要对应关系：
 
    | Ren'Py | .rrs |
    |--------|------|
    | `scene bg_X [with TRANS]` | `scene "BGs/..." \| trans;` |
-   | `show BODY / show BODY FACE` | `show body::face @ pos;` |
+   | `show BODY FACE [at POS]` | `show body::face @ pos;` |
    | `hide CHAR` | `hide char;` 或 `hide char::face;` |
    | `play music "path"` | `music::play("path");` |
    | `stop music fadeout N` | `music::stop() \| fadeout(N);` |
-   | `CHAR "text"` | `speak <abbr> "text";` |
+   | `CHAR "text"` | `speak abbr "text";` |
+   | `define VAR = Position(xpos=X)` | `position.VAR = X;` |
+   | `$ VAR = Position(xpos=X)` | `position.VAR = X;` |
    | `menu` / `if` / `jump` / `call` | 直接结构映射 |
 
 ### 自动跳过的文件
 
-目录模式下以下通用 UI/系统文件会被跳过（可用 `--skip` 追加自定义规则）：
+目录模式下以下通用 UI / 系统文件会被跳过：
 
-- `screens.rpy`、`gui.rpy`、`options.rpy` 等 UI 框架文件
-- `gallery.rpy`、`achievements.rpy` 等系统功能文件
+`screens.rpy`、`gui.rpy`、`options.rpy`、`about.rpy`、`save.rpy`、`load.rpy`、`updater.rpy`、`gallery.rpy`、`gallery_config.rpy`、`gallery_images.rpy`
+
+可用 `--skip <filename>` 追加自定义规则。
 
 ---
 
-## 其他工具
-
-### 编译器（cli.ts）
-
-将 `.rrs` 编译为引擎内部的 JSON Step 数组，便于调试和检查代码生成结果：
-
-```bash
-bun run rrs:compile assets/data/day1.rrs
-# 等价于
-bun run tools/rrs/cli.ts assets/data/day1.rrs
-```
-
-### 反编译器（decompile.ts）
-
-将 JSON Step 数组反编译回可读的 `.rrs` 格式：
-
-```bash
-bun run rrs:decompile assets/data/day1.json
-# 等价于
-bun run tools/rrs/decompile.ts assets/data/day1.json
-```
-
-### 往返一致性测试（batch_roundtrip.ts）
-
-对指定目录下全部 JSON 文件执行 decompile → compile 往返，验证转换无损：
-
-```bash
-bun run rrs:roundtrip assets/data/
-# 等价于
-bun run tools/rrs/batch_roundtrip.ts assets/data/
-```
-
-### 资源验证（validate_assets.ts）
+## 资源验证（validate_assets.ts）
 
 检查所有 `.rrs` 文件中的图片和音频引用路径是否在 `assets/` 目录中实际存在：
 
@@ -481,8 +460,27 @@ bun run tools/rrs/validate_assets.ts \
   --ci
 ```
 
+| 选项 | 说明 |
+|------|------|
+| `--data <dir>` | `.rrs` 文件目录（默认 `assets/data`） |
+| `--assets <dir>` | 资源根目录（默认 `assets`） |
+| `--ci` | 有错误时以非零退出码退出 |
+| `--verbose` | 打印每个已检查的引用 |
+| `--no-color` | 禁用 ANSI 颜色输出 |
+
 | 退出码 | 含义 |
 |--------|------|
 | `0` | 所有引用均可解析（大小写不敏感） |
 | `1` | 存在无法解析的引用（`--ci` 模式下触发） |
 | `2` | 无法读取数据目录 |
+
+---
+
+## CG 图鉴解析（parse_gallery.ts）
+
+从游戏的 `gallery_images.rpy` 提取 CG 图鉴数据，合并写入 `manifest.json` 的 `gallery` 字段，供前端图鉴组件使用：
+
+```bash
+bun run parse-gallery /path/to/game/gallery_images.rpy \
+  -o assets/data/manifest.json
+```
