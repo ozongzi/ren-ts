@@ -1,11 +1,13 @@
-/// <reference lib="deno.ns" />
+#!/usr/bin/env bun
 // ── decompile.ts ─────────────────────────────────────────────────────────────
 // Decompiles engine-format JSON back into .rrs DSL.
 //
 // Usage:
-//   deno run --allow-read --allow-write tools/rrs/decompile.ts <input.json>
-//   deno run --allow-read --allow-write tools/rrs/decompile.ts <input.json> -o out.rrs
-//   deno run --allow-read --allow-write tools/rrs/decompile.ts <input.json> --dry-run
+//   bun run tools/rrs/decompile.ts <input.json>
+//   bun run tools/rrs/decompile.ts <input.json> -o out.rrs
+//   bun run tools/rrs/decompile.ts <input.json> --dry-run
+
+import { readFileSync, writeFileSync } from "node:fs";
 
 const INDENT = "  ";
 
@@ -31,13 +33,13 @@ interface MenuOption {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 function main() {
-  const args = Deno.args;
+  const args = process.argv.slice(2);
   if (args.length < 1) {
     console.error(
-      "Usage: deno run --allow-read --allow-write tools/rrs/decompile.ts " +
+      "Usage: bun run tools/rrs/decompile.ts " +
         "<input.json> [-o output.rrs] [--dry-run] [--verbose]",
     );
-    Deno.exit(1);
+    process.exit(1);
   }
 
   const inputPath = args[0];
@@ -55,7 +57,7 @@ function main() {
     outputPath = inputPath.replace(/\.json$/, "") + ".rrs";
   }
 
-  const jsonText = Deno.readTextFileSync(inputPath);
+  const jsonText = readFileSync(inputPath, "utf-8");
   const data = JSON.parse(jsonText);
 
   const output = decompileFile(data, verbose);
@@ -63,7 +65,7 @@ function main() {
   if (dryRun) {
     console.log(output);
   } else if (outputPath) {
-    Deno.writeTextFileSync(outputPath, output);
+    writeFileSync(outputPath, output, "utf-8");
     console.log(`✓ Decompiled → ${outputPath}`);
   }
 }

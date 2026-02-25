@@ -1,10 +1,10 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write
+#!/usr/bin/env bun
 // ── rrs compiler CLI ──────────────────────────────────────────────────────────
 //
 // Usage:
-//   deno run --allow-read --allow-write tools/rrs/cli.ts <file.rrs> [options]
-//   deno run --allow-read --allow-write tools/rrs/cli.ts <dir/>      [options]
-//   deno task rrs:compile <file.rrs>
+//   bun run tools/rrs/cli.ts <file.rrs> [options]
+//   bun run tools/rrs/cli.ts <dir/>      [options]
+//   bun run rrs:compile <file.rrs>
 //
 // Options:
 //   -o <path>     Write output to this path (single-file mode only)
@@ -12,13 +12,14 @@
 //   --verbose     Print the generated JSON to stdout as well
 //   --help        Show this help message
 
+import { stat as fsStat, readFile, writeFile, opendir } from "node:fs/promises";
 import { tokenize } from "../../shared/rrs/lexer.ts";
 import { parse } from "../../shared/rrs/parser.ts";
 import { compile } from "../../shared/rrs/codegen.ts";
 
 // ── ANSI colour helpers ───────────────────────────────────────────────────────
 
-const isTTY = Deno.stdout.isTerminal?.() ?? false;
+const isTTY = process.stdout.isTTY ?? false;
 
 function green(s: string) {
   return isTTY ? `\x1b[32m${s}\x1b[0m` : s;
@@ -42,8 +43,8 @@ const HELP = `
 ${bold("rrs")} — compile .rrs files to engine JSON
 
 ${bold("USAGE")}
-  deno task rrs:compile <input> [options]
-  deno run --allow-read --allow-write tools/rrs/cli.ts <input> [options]
+  bun run rrs:compile <input> [options]
+  bun run tools/rrs/cli.ts <input> [options]
 
 ${bold("INPUT")}
   A single .rrs file   → compile that file
@@ -59,22 +60,22 @@ ${bold("OPTIONS")}
 
 ${bold("EXAMPLES")}
   # Compile a single file next to the source
-  deno task rrs:compile data/day1.rrs
+  bun run rrs:compile data/day1.rrs
 
   # Compile a single file to an explicit output path
-  deno task rrs:compile data/day1.rrs -o data/day1.json
+  bun run rrs:compile data/day1.rrs -o data/day1.json
 
   # Compile every .rrs in the data/ directory
-  deno task rrs:compile data/
+  bun run rrs:compile data/
 
   # Validate all scripts without writing output
-  deno task rrs:compile data/ --dry-run
+  bun run rrs:compile data/ --dry-run
 `;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const rawArgs = Deno.args.slice();
+  const rawArgs = process.argv.slice(2);
 
   if (
     rawArgs.length === 0 ||
@@ -82,7 +83,7 @@ async function main(): Promise<void> {
     rawArgs.includes("-h")
   ) {
     console.log(HELP);
-    Deno.exit(rawArgs.length === 0 ? 1 : 0);
+    process.exit(rawArgs.length === 0 ? 1 : 0);
   }
 
   // ── Parse flags ─────────────────────────────────────────────────────────────
@@ -125,17 +126,17 @@ async function main(): Promise<void> {
   const inputFiles: string[] = [];
 
   for (const p of positional) {
-    let stat: Deno.FileInfo;
+    let st: Awaited<ReturnType<typeof fsStat>>;
     try {
-      stat = await Deno.stat(p);
+      st = await fsStat(p);
     } catch {
       die(`Path not found: ${p}`);
       return; // unreachable — die() exits
     }
 
-    if (stat.isFile) {
+    if (st.isFile()) {
       inputFiles.push(p);
-    } else if (stat.isDirectory) {
+    } else if (st.isDirectory()) {
       const found = await collectScripts(p, recursive);
       if (found.length === 0) {
         console.warn(yellow(`  No .rrs files found in '${p}'`));
@@ -173,7 +174,7 @@ async function main(): Promise<void> {
     console.log(failed > 0 ? red(summary) : green(summary));
   }
 
-  if (failed > 0) Deno.exit(1);
+  if (failed > 0) process.exit(1);
 }
 
 // ── Compile a single file ─────────────────────────────────────────────────────
@@ -187,7 +188,7 @@ async function compileFile(
 
   let src: string;
   try {
-    src = await Deno.readTextFile(inputPath);
+    src = await readFile(inputPath, "utf-8");
   } catch (e) {
     printError(
       inputPath,
@@ -253,7 +254,7 @@ async function compileFile(
   // ── Write output ──────────────────────────────────────────────────────────
 
   try {
-    await Deno.writeTextFile(outputPath, jsonText);
+    await writeFile(outputPath, jsonText, "utf-8");
   } catch (e) {
     printError(
       inputPath,
@@ -288,11 +289,11 @@ async function collectScripts(
 ): Promise<string[]> {
   const results: string[] = [];
 
-  for await (const entry of Deno.readDir(dir)) {
+  for await (const entry of await opendir(dir)) {
     const fullPath = `${dir}/${entry.name}`;
-    if (entry.isFile && entry.name.endsWith(".rrs")) {
+    if (entry.isFile() && entry.name.endsWith(".rrs")) {
       results.push(fullPath);
-    } else if (entry.isDirectory && recursive) {
+    } else if (entry.isDirectory() && recursive) {
       results.push(...(await collectScripts(fullPath, recursive)));
     }
   }
@@ -314,7 +315,7 @@ function printWarning(file: string, msg: string): void {
 
 function die(msg: string): never {
   console.error(`${red("Error:")} ${msg}\nRun with --help for usage.`);
-  Deno.exit(1);
+  process.exit(1);
 }
 
 // ── Run ───────────────────────────────────────────────────────────────────────

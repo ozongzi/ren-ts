@@ -24,20 +24,20 @@
 
 ## 快速上手
 
-所有工具均通过 `deno.json` 中的 task 调用，在项目根目录执行：
+所有工具均通过 `package.json` 中的 script 调用，在项目根目录执行：
 
 ```bash
 # Ren'Py → .rrs（批量，生成 manifest.json）
-deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest
+bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest
 
 # 编译单个 .rrs → JSON Steps（调试用）
-deno task rrs:compile assets/data/day1.rrs
+bun run rrs:compile assets/data/day1.rrs
 
 # 反编译 JSON Steps → .rrs
-deno task rrs:decompile assets/data/day1.json
+bun run rrs:decompile assets/data/day1.json
 
 # 往返一致性测试
-deno task rrs:roundtrip assets/data/
+bun run rrs:roundtrip assets/data/
 ```
 
 ---
@@ -367,16 +367,16 @@ label day1_hiro {
 
 ```bash
 # 转换单个文件（输出到同目录）
-deno task rpy2rrs /path/to/game/day1.rpy
+bun run rpy2rrs /path/to/game/day1.rpy
 
 # 转换单个文件，指定输出路径
-deno task rpy2rrs /path/to/game/day1.rpy -o assets/data/day1.rrs
+bun run rpy2rrs /path/to/game/day1.rpy -o assets/data/day1.rrs
 
 # 批量转换整个目录，写入 assets/data/，同时生成 manifest.json
-deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest
+bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest
 
 # 指定游戏名称（写入 manifest.json 的 game 字段）
-deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest --game "My VN Game"
+bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest --game "My VN Game"
 ```
 
 ### 命令行选项
@@ -445,9 +445,9 @@ deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest --game "My VN Game"
 将 `.rrs` 编译为引擎内部的 JSON Step 数组，便于调试和检查代码生成结果：
 
 ```bash
-deno task rrs:compile assets/data/day1.rrs
+bun run rrs:compile assets/data/day1.rrs
 # 等价于
-deno run --allow-read --allow-write tools/rrs/cli.ts assets/data/day1.rrs
+bun run tools/rrs/cli.ts assets/data/day1.rrs
 ```
 
 ### 反编译器（decompile.ts）
@@ -455,9 +455,9 @@ deno run --allow-read --allow-write tools/rrs/cli.ts assets/data/day1.rrs
 将 JSON Step 数组反编译回可读的 `.rrs` 格式：
 
 ```bash
-deno task rrs:decompile assets/data/day1.json
+bun run rrs:decompile assets/data/day1.json
 # 等价于
-deno run --allow-read --allow-write tools/rrs/decompile.ts assets/data/day1.json
+bun run tools/rrs/decompile.ts assets/data/day1.json
 ```
 
 ### 往返一致性测试（batch_roundtrip.ts）
@@ -465,9 +465,9 @@ deno run --allow-read --allow-write tools/rrs/decompile.ts assets/data/day1.json
 对指定目录下全部 JSON 文件执行 decompile → compile 往返，验证转换无损：
 
 ```bash
-deno task rrs:roundtrip assets/data/
+bun run rrs:roundtrip assets/data/
 # 等价于
-deno run --allow-read --allow-write --allow-run tools/rrs/batch_roundtrip.ts assets/data/
+bun run tools/rrs/batch_roundtrip.ts assets/data/
 ```
 
 ### 资源验证（validate_assets.ts）
@@ -475,7 +475,7 @@ deno run --allow-read --allow-write --allow-run tools/rrs/batch_roundtrip.ts ass
 检查所有 `.rrs` 文件中的图片和音频引用路径是否在 `assets/` 目录中实际存在：
 
 ```bash
-deno run --allow-read tools/rrs/validate_assets.ts \
+bun run tools/rrs/validate_assets.ts \
   --data assets/data \
   --assets assets \
   --ci

@@ -7,18 +7,25 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "rrs:compile": "bun run tools/rrs/cli.ts",
+    "rrs:decompile": "bun run tools/rrs/decompile.ts",
+    "rrs:roundtrip": "bun run tools/rrs/batch_roundtrip.ts",
+    "rpy2rrs": "bun run tools/rrs/rpy2rrs.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-dialog": "^2.2.0",
-    "@tauri-apps/plugin-fs": "^2.2.0",
+    "@tauri-apps/plugin-fs": "^2.4.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^5.0.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0",
+    "@types/node": "^25.3.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",

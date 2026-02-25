@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write
+#!/usr/bin/env bun
 // ── rpy2rrs.ts ────────────────────────────────────────────────────────────────
 //
 // Converts Ren'Py .rpy files to .rrs format.
@@ -7,9 +7,9 @@
 // structural syntax of each .rpy file.
 //
 // Usage:
-//   deno run --allow-read --allow-write tools/rrs/rpy2rrs.ts <file.rpy>
-//   deno run --allow-read --allow-write tools/rrs/rpy2rrs.ts <dir/>
-//   deno task rpy2rrs <file.rpy>
+//   bun run tools/rrs/rpy2rrs.ts <file.rpy>
+//   bun run tools/rrs/rpy2rrs.ts <dir/>
+//   bun run rpy2rrs <file.rpy>
 //
 // Options:
 //   -o <path>         Output path (single-file mode only) or output directory
@@ -27,6 +27,14 @@
 //   --skip <pattern>  Skip files matching this glob/name pattern (repeatable)
 //   --stub-exit <label=var>  Inject `jump VAR;` when closing label LABEL
 //   --help, -h        Show this help
+
+import {
+  stat as fsStat,
+  readFile,
+  writeFile,
+  mkdir,
+  opendir,
+} from "node:fs/promises";
 
 // ── Non-story files to skip (UI / system) ────────────────────────────────────
 // These are generic Ren'Py infrastructure files present in virtually every
@@ -173,7 +181,7 @@ async function loadAssetMaps(scriptRpyPath: string): Promise<AssetMaps> {
 
   let text: string;
   try {
-    text = await Deno.readTextFile(scriptRpyPath);
+    text = await readFile(scriptRpyPath, "utf-8");
   } catch {
     console.warn(
       `Warning: Could not read ${scriptRpyPath}; asset maps will be empty.`,
@@ -297,7 +305,7 @@ async function loadCharMapFromRrs(
   const map = new Map<string, string>();
   let text: string;
   try {
-    text = await Deno.readTextFile(rrsPath);
+    text = await readFile(rrsPath, "utf-8");
   } catch {
     return map; // file not yet written (dry-run or error) — return empty map
   }
@@ -328,7 +336,7 @@ async function loadCookedMapsFromRrs(rrsPath: string): Promise<{
   const image = new Map<string, string>();
   let text: string;
   try {
-    text = await Deno.readTextFile(rrsPath);
+    text = await readFile(rrsPath, "utf-8");
   } catch {
     return { audio, image }; // file not yet available — return empty maps
   }
@@ -360,7 +368,7 @@ async function loadChineseTranslationsForFile(
   const filePath = `${tlDir}/${sourceBaseName}.rpy`;
   let content: string;
   try {
-    content = await Deno.readTextFile(filePath);
+    content = await readFile(filePath, "utf-8");
   } catch {
     return map;
   }
@@ -1838,8 +1846,8 @@ const HELP = `
 rpy2rrs — convert Ren'Py .rpy files to .rrs
 
 USAGE
-  deno task rpy2rrs <input> [options]
-  deno run --allow-read --allow-write tools/rrs/rpy2rrs.ts <input> [options]
+  bun run rpy2rrs <input> [options]
+  bun run tools/rrs/rpy2rrs.ts <input> [options]
 
 INPUT
   A single .rpy file    → convert that file
@@ -1869,13 +1877,13 @@ OPTIONS
   --help, -h            Show this message
 
 EXAMPLES
-  deno task rpy2rrs /path/to/game/day1.rpy
-  deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest --script /path/to/game/script.rpy
-  deno task rpy2rrs /path/to/game/day1.rpy --no-tl   # English output
+  bun run rpy2rrs /path/to/game/day1.rpy
+  bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest --script /path/to/game/script.rpy
+  bun run rpy2rrs /path/to/game/day1.rpy --no-tl   # English output
 `;
 
 async function main(): Promise<void> {
-  const rawArgs = Deno.args.slice();
+  const rawArgs = process.argv.slice(2);
 
   if (
     rawArgs.length === 0 ||
@@ -1883,7 +1891,7 @@ async function main(): Promise<void> {
     rawArgs.includes("-h")
   ) {
     console.log(HELP);
-    Deno.exit(rawArgs.length === 0 ? 1 : 0);
+    process.exit(rawArgs.length === 0 ? 1 : 0);
   }
 
   let outputArg: string | undefined;
@@ -1927,12 +1935,12 @@ async function main(): Promise<void> {
         console.error(
           `--stub-exit requires format label=varName, got: ${pair}`,
         );
-        Deno.exit(1);
+        process.exit(1);
       }
       STUB_EXIT_MAP[pair.slice(0, eqIdx)] = pair.slice(eqIdx + 1);
     } else if (arg.startsWith("-")) {
       console.error(`Unknown option '${arg}'`);
-      Deno.exit(1);
+      process.exit(1);
     } else {
       positional.push(arg);
     }
@@ -1940,7 +1948,7 @@ async function main(): Promise<void> {
 
   if (positional.length === 0) {
     console.error("No input specified.  Run with --help for usage.");
-    Deno.exit(1);
+    process.exit(1);
   }
 
   // Build the effective skip set (defaults + any extra --skip args)
@@ -1953,7 +1961,7 @@ async function main(): Promise<void> {
       outputIsDir = true;
     } else {
       try {
-        outputIsDir = (await Deno.stat(outputArg)).isDirectory;
+        outputIsDir = (await fsStat(outputArg)).isDirectory();
       } catch {
         outputIsDir = false;
       }
@@ -1965,7 +1973,7 @@ async function main(): Promise<void> {
   if (!scriptRpy && positional.length > 0) {
     const candidate = `${positional[0].replace(/\/$/, "")}/script.rpy`;
     try {
-      await Deno.stat(candidate);
+      await fsStat(candidate);
       scriptRpy = candidate;
       console.log(`Auto-detected script.rpy at: ${scriptRpy}`);
     } catch {
@@ -2028,7 +2036,7 @@ async function main(): Promise<void> {
   if (cook && scriptRrsPath && scriptRpy) {
     let scriptRrsExists = false;
     try {
-      await Deno.stat(scriptRrsPath);
+      await fsStat(scriptRrsPath);
       scriptRrsExists = true;
     } catch {
       scriptRrsExists = false;
@@ -2057,19 +2065,19 @@ async function main(): Promise<void> {
   // Gather input files
   const inputFiles: string[] = [];
   for (const p of positional) {
-    let stat: Deno.FileInfo;
+    let st: Awaited<ReturnType<typeof fsStat>>;
     try {
-      stat = await Deno.stat(p);
+      st = await fsStat(p);
     } catch {
       console.error(`Path not found: ${p}`);
-      Deno.exit(1);
+      process.exit(1);
       return;
     }
-    if (stat.isFile) {
+    if (st.isFile()) {
       inputFiles.push(p);
-    } else if (stat.isDirectory) {
-      for await (const entry of Deno.readDir(p)) {
-        if (entry.isFile && entry.name.endsWith(".rpy")) {
+    } else if (st.isDirectory()) {
+      for await (const entry of await opendir(p)) {
+        if (entry.isFile() && entry.name.endsWith(".rpy")) {
           // Skip known non-story files in directory mode
           if (skipFiles.has(entry.name)) {
             if (verbose) console.log(`  skip: ${entry.name}`);
@@ -2084,7 +2092,7 @@ async function main(): Promise<void> {
 
   if (inputFiles.length === 0) {
     console.error("No .rpy files found.");
-    Deno.exit(1);
+    process.exit(1);
   }
 
   let succeeded = 0;
@@ -2159,8 +2167,8 @@ async function main(): Promise<void> {
     if (!dryRun) {
       try {
         // Ensure the output directory exists
-        await Deno.mkdir(manifestDir, { recursive: true });
-        await Deno.writeTextFile(manifestPath, manifestContent);
+        await mkdir(manifestDir, { recursive: true });
+        await writeFile(manifestPath, manifestContent, "utf-8");
         console.log(
           `\x1b[32m✓\x1b[0m manifest.json → ${manifestPath}  (${manifestEntries.length} files)`,
         );
@@ -2176,7 +2184,7 @@ async function main(): Promise<void> {
     }
   }
 
-  if (failed > 0) Deno.exit(1);
+  if (failed > 0) process.exit(1);
 }
 
 interface ConvertResult {
@@ -2204,7 +2212,7 @@ async function convertFile(
 
   let src: string;
   try {
-    src = await Deno.readTextFile(inputPath);
+    src = await readFile(inputPath, "utf-8");
   } catch (e) {
     console.error(
       `✗ ${inputPath}: Cannot read: ${e instanceof Error ? e.message : e}`,
@@ -2312,14 +2320,14 @@ async function convertFile(
   const outDir = outputPath.replace(/\/[^/]+$/, "");
   if (outDir && outDir !== outputPath) {
     try {
-      await Deno.mkdir(outDir, { recursive: true });
+      await mkdir(outDir, { recursive: true });
     } catch {
       // ignore if already exists
     }
   }
 
   try {
-    await Deno.writeTextFile(outputPath, result);
+    await writeFile(outputPath, result, "utf-8");
   } catch (e) {
     console.error(
       `✗ ${inputPath}: Cannot write '${outputPath}': ${e instanceof Error ? e.message : e}`,

@@ -102,9 +102,6 @@ function staticDirsPlugin(): import("vite").Plugin {
         const mime = MIME[ext] ?? "application/octet-stream";
 
         // Read the file synchronously and send it in one shot.
-        // We avoid createReadStream().pipe() because Deno's Node-compat layer
-        // does not reliably implement stream piping to ServerResponse, which
-        // would silently return empty bodies for every .rrs request.
         let buf: Buffer;
         try {
           buf = fs.readFileSync(filePath);

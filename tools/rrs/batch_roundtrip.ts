@@ -1,9 +1,8 @@
-#!/usr/bin/env -S deno run --allow-read --allow-write --allow-run
-/// <reference lib="deno.ns" />
+#!/usr/bin/env bun
 // ── rrs batch round-trip tool ─────────────────────────────────────────────────
 //
 // Usage:
-//   deno run --allow-read --allow-write --allow-run tools/rrs/batch_roundtrip.ts [data/]
+//   bun run tools/rrs/batch_roundtrip.ts [data/]
 //
 // Steps:
 //   1. Backup all *.json in the data directory → data/backup_<timestamp>/
@@ -17,13 +16,21 @@
 // gracefully at the decompile step (a warning is printed and they are
 // left untouched so the backup is still the source of truth).
 
+import {
+  stat as fsStat,
+  mkdir,
+  copyFile,
+  readFile,
+  opendir,
+} from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tokenize } from "../../shared/rrs/lexer.ts";
 import { parse } from "../../shared/rrs/parser.ts";
 import { compile } from "../../shared/rrs/codegen.ts";
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 
-const isTTY = Deno.stdout.isTerminal?.() ?? false;
+const isTTY = process.stdout.isTTY ?? false;
 const green = (s: string) => (isTTY ? `\x1b[32m${s}\x1b[0m` : s);
 const red = (s: string) => (isTTY ? `\x1b[31m${s}\x1b[0m` : s);
 const yellow = (s: string) => (isTTY ? `\x1b[33m${s}\x1b[0m` : s);
@@ -38,29 +45,29 @@ const SKIP_FILES = new Set(["manifest.json"]);
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const args = Deno.args;
+  const args = process.argv.slice(2);
   const dataDir = args[0] ?? "data";
 
   // Verify the directory exists
-  let stat: Deno.FileInfo;
+  let st: Awaited<ReturnType<typeof fsStat>>;
   try {
-    stat = await Deno.stat(dataDir);
+    st = await fsStat(dataDir);
   } catch {
     console.error(red(`Error: directory not found: ${dataDir}`));
-    Deno.exit(1);
+    process.exit(1);
     return;
   }
-  if (!stat.isDirectory) {
+  if (!st.isDirectory()) {
     console.error(red(`Error: '${dataDir}' is not a directory`));
-    Deno.exit(1);
+    process.exit(1);
     return;
   }
 
   // ── 1. Gather all JSON files ─────────────────────────────────────────────
 
   const jsonFiles: string[] = [];
-  for await (const entry of Deno.readDir(dataDir)) {
-    if (entry.isFile && entry.name.endsWith(".json")) {
+  for await (const entry of await opendir(dataDir)) {
+    if (entry.isFile() && entry.name.endsWith(".json")) {
       jsonFiles.push(`${dataDir}/${entry.name}`);
     }
   }
@@ -88,14 +95,14 @@ async function main(): Promise<void> {
   ].join("");
   const backupDir = `${dataDir}/backup_${ts}`;
 
-  await Deno.mkdir(backupDir, { recursive: true });
+  await mkdir(backupDir, { recursive: true });
   console.log(`Backup directory: ${bold(backupDir)}`);
 
   let backupCount = 0;
   for (const src of jsonFiles) {
     const name = src.split("/").pop()!;
     const dst = `${backupDir}/${name}`;
-    await Deno.copyFile(src, dst);
+    await copyFile(src, dst);
     backupCount++;
   }
   console.log(green(`✓ Backed up ${backupCount} JSON files`));
@@ -131,7 +138,7 @@ async function main(): Promise<void> {
     // Peek at the file to check it has "labels"
     let hasLabels = false;
     try {
-      const text = await Deno.readTextFile(jsonPath);
+      const text = await readFile(jsonPath, "utf-8");
       const data = JSON.parse(text);
       hasLabels = typeof data === "object" && data !== null && "labels" in data;
     } catch {
@@ -153,26 +160,23 @@ async function main(): Promise<void> {
     const rrsPath = jsonPath.replace(/\.json$/, ".rrs");
 
     // Run the decompiler as a subprocess (keeps memory tidy for large files)
-    const result = await new Deno.Command("deno", {
-      args: [
-        "run",
-        "--allow-read",
-        "--allow-write",
-        decompileCli,
-        jsonPath,
-        "-o",
-        rrsPath,
-      ],
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
+    const result = spawnSync(
+      "bun",
+      ["run", decompileCli, jsonPath, "-o", rrsPath],
+      {
+        encoding: "buffer",
+      },
+    );
+    const success = result.status === 0 && result.error == null;
 
-    if (result.success) {
+    if (success) {
       console.log(`${green("✓")} ${jsonPath}  ${dim("→")}  ${rrsPath}`);
       compilable.push(rrsPath);
       decompOk++;
     } else {
-      const errText = new TextDecoder().decode(result.stderr).trim();
+      const errText = new TextDecoder()
+        .decode(result.stderr ?? new Uint8Array())
+        .trim();
       console.error(`${red("✗")} ${jsonPath}\n  ${red(errText)}`);
       decompFail++;
     }
@@ -186,7 +190,7 @@ async function main(): Promise<void> {
 
   if (compilable.length === 0) {
     console.error(red("\nNo .rrs files to compile — aborting."));
-    Deno.exit(decompFail > 0 ? 1 : 0);
+    process.exit(decompFail > 0 ? 1 : 0);
     return;
   }
 
@@ -208,24 +212,23 @@ async function main(): Promise<void> {
   for (const rrsPath of compilable) {
     const jsonOut = rrsPath.replace(/\.rrs$/, ".json");
 
-    const result = await new Deno.Command("deno", {
-      args: [
-        "run",
-        "--allow-read",
-        "--allow-write",
-        compileCli,
-        rrsPath,
-        "-o",
-        jsonOut,
-      ],
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
+    const result = spawnSync(
+      "bun",
+      ["run", compileCli, rrsPath, "-o", jsonOut],
+      {
+        encoding: "buffer",
+      },
+    );
+    const success = result.status === 0 && result.error == null;
 
-    const outText = new TextDecoder().decode(result.stdout).trim();
-    const errText = new TextDecoder().decode(result.stderr).trim();
+    const outText = new TextDecoder()
+      .decode(result.stdout ?? new Uint8Array())
+      .trim();
+    const errText = new TextDecoder()
+      .decode(result.stderr ?? new Uint8Array())
+      .trim();
 
-    if (result.success) {
+    if (success) {
       // The CLI prints its own success line; relay it
       if (outText) console.log(outText);
       compileOk++;
@@ -265,7 +268,7 @@ async function main(): Promise<void> {
           `Fix the issues above and re-run, or restore from backup.`,
       ),
     );
-    Deno.exit(1);
+    process.exit(1);
   } else {
     console.log(
       green(

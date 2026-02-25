@@ -9,8 +9,11 @@ src-tauri/target/
 # ─── Dependencies ─────────────────────────────────────────────────────────────
 node_modules/
 
-# ─── Deno ─────────────────────────────────────────────────────────────────────
-.deno/
+# ─── Bun ──────────────────────────────────────────────────────────────────────
+# bun.lockb is a binary lockfile — track it in git for reproducible installs
+# (uncomment the line below only if you intentionally want to ignore it)
+# bun.lockb
+
 
 # ─── Environment & secrets ────────────────────────────────────────────────────
 .env

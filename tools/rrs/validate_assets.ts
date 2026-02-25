@@ -1,4 +1,4 @@
-#!/usr/bin/env deno run --allow-read
+#!/usr/bin/env bun
 /**
  * validate_assets.ts
  *
@@ -7,7 +7,7 @@
  * the assets/ directory.
  *
  * Usage:
- *   deno run --allow-read tools/rrs/validate_assets.ts [options]
+ *   bun run tools/rrs/validate_assets.ts [options]
  *
  * Options:
  *   --data   <dir>    Path to the .rrs output directory
@@ -23,9 +23,14 @@
  *   1  One or more references could not be resolved at all
  */
 
+// ─── Imports ──────────────────────────────────────────────────────────────────
+
+import { readFile, opendir } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+
 // ─── CLI args ─────────────────────────────────────────────────────────────────
 
-const args = Deno.args;
+const args = process.argv.slice(2);
 
 function getArg(flag: string, def: string): string {
   const idx = args.indexOf(flag);
@@ -38,7 +43,7 @@ const assetsDir = getArg("--assets", "assets");
 const ci = args.includes("--ci");
 const verbose = args.includes("--verbose");
 const noColor =
-  args.includes("--no-color") || Deno.env.get("NO_COLOR") !== undefined;
+  args.includes("--no-color") || process.env["NO_COLOR"] !== undefined;
 
 // ─── ANSI helpers ─────────────────────────────────────────────────────────────
 
@@ -92,16 +97,16 @@ async function buildFileIndex(root: string): Promise<{
   const lower = new Map<string, string>();
 
   async function walk(dir: string): Promise<void> {
-    let entries: Deno.DirEntry[];
+    let entries: Dirent[];
     try {
       entries = [];
-      for await (const e of Deno.readDir(dir)) entries.push(e);
+      for await (const e of await opendir(dir)) entries.push(e);
     } catch {
       return;
     }
     for (const e of entries) {
       const full = `${dir}/${e.name}`;
-      if (e.isDirectory) {
+      if (e.isDirectory()) {
         await walk(full);
       } else {
         // Store relative to assetsDir
@@ -131,13 +136,12 @@ interface Ref {
 
 async function extractRefs(rrsDir: string): Promise<Ref[]> {
   const refs: Ref[] = [];
-  let entries: Deno.DirEntry[];
+  let entries: Dirent[] = [];
   try {
-    entries = [];
-    for await (const e of Deno.readDir(rrsDir)) entries.push(e);
+    for await (const e of await opendir(rrsDir)) entries.push(e);
   } catch (e) {
     console.error(`Cannot read data directory "${rrsDir}": ${e}`);
-    Deno.exit(2);
+    process.exit(2);
   }
 
   for (const entry of entries) {
@@ -145,7 +149,7 @@ async function extractRefs(rrsDir: string): Promise<Ref[]> {
     const filePath = `${rrsDir}/${entry.name}`;
     let content: string;
     try {
-      content = await Deno.readTextFile(filePath);
+      content = await readFile(filePath, "utf-8");
     } catch {
       continue;
     }
@@ -473,7 +477,7 @@ async function main(): Promise<void> {
   // 7. Exit code
   const criticalCount = summary.unknownCount + summary.missingCount;
   if (ci && criticalCount > 0) {
-    Deno.exit(1);
+    process.exit(1);
   }
 }
 

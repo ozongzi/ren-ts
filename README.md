@@ -1,6 +1,6 @@
 # Ren'Py Reader
 
-A generic Ren'Py visual-novel story reader built with **Deno + React**.  
+A generic Ren'Py visual-novel story reader built with **Bun + React**.  
 Script files are stored in the project's own `.rrs` (Ren'Py Reader Script) format, converted from original `.rpy` sources by the included toolchain.
 
 ---
@@ -11,7 +11,7 @@ Script files are stored in the project's own `.rrs` (Ren'Py Reader Script) forma
 renpy_reader/
 ├── README.md               ← This file
 ├── index.html              ← HTML entry point
-├── deno.json               ← Deno task configuration
+├── package.json            ← Bun script configuration
 ├── vite.config.ts          ← Vite configuration
 ├── src/
 │   ├── main.tsx            ← React mount entry
@@ -66,11 +66,11 @@ renpy_reader/
 
 ```bash
 # Run from the renpy_reader/ directory
-deno task dev           # Start dev server (http://localhost:3000)
-deno task build         # Production build → dist/
-deno task preview       # Preview build output
-deno task tauri:dev     # Start Tauri desktop app (dev mode)
-deno task tauri:build   # Build Tauri desktop installer
+bun run dev             # Start dev server (http://localhost:3000)
+bun run build           # Production build → dist/
+bun run preview         # Preview build output
+bun run tauri:dev       # Start Tauri desktop app (dev mode)
+bun run tauri:build     # Build Tauri desktop installer
 ```
 
 ---
@@ -114,14 +114,14 @@ label day1 {
 
 ```bash
 # Batch-convert an entire game directory, generate manifest.json
-deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest
+bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest
 
 # With Chinese translation merging
-deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest \
+bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest \
   --tl /path/to/game/tl/chinese/
 
 # Specify a game name written into manifest.json
-deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest \
+bun run rpy2rrs /path/to/game/ -o assets/data/ --manifest \
   --game "My VN Game"
 ```
 
@@ -214,9 +214,9 @@ assets/data/*.rrs
 
 | Task | Command | Description |
 |------|---------|-------------|
-| `dev` | `deno task dev` | Start Vite dev server |
-| `build` | `deno task build` | Production build |
-| `rpy2rrs` | `deno task rpy2rrs <dir>` | Convert .rpy → .rrs (batch) |
-| `rrs:compile` | `deno task rrs:compile <file.rrs>` | Compile .rrs → engine JSON (debug) |
-| `rrs:decompile` | `deno task rrs:decompile <file.json>` | Decompile engine JSON → .rrs |
-| `rrs:roundtrip` | `deno task rrs:roundtrip <dir>` | Decompile + re-compile round-trip test |
+| `dev` | `bun run dev` | Start Vite dev server |
+| `build` | `bun run build` | Production build |
+| `rpy2rrs` | `bun run rpy2rrs <dir>` | Convert .rpy → .rrs (batch) |
+| `rrs:compile` | `bun run rrs:compile <file.rrs>` | Compile .rrs → engine JSON (debug) |
+| `rrs:decompile` | `bun run rrs:decompile <file.json>` | Decompile engine JSON → .rrs |
+| `rrs:roundtrip` | `bun run rrs:roundtrip <dir>` | Decompile + re-compile round-trip test |
