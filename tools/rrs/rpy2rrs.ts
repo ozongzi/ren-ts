@@ -18,7 +18,12 @@
 //   --verbose         Print generated rrs to stdout
 //   --script <path>   Path to script.rpy (required for asset/character maps)
 //   --tl <dir>        Path to tl/chinese directory for Chinese translations
-//   --no-tl           Disable Chinese translation merging
+//                     (translations are disabled by default; must be explicitly enabled)
+//   --no-tl           Kept for backward compatibility; now a no-op (no-tl is the default)
+//   --cook            Before converting story files, read the already-generated
+//                     script.rrs (or convert script.rpy first) to extract all
+//                     top-level variable definitions (audio.*, image.*) and
+//                     inline / hard-code resolved paths everywhere they appear
 //   --skip <pattern>  Skip files matching this glob/name pattern (repeatable)
 //   --stub-exit <label=var>  Inject `jump VAR;` when closing label LABEL
 //   --help, -h        Show this help
@@ -304,6 +309,43 @@ async function loadCharMapFromRrs(
   return map;
 }
 
+// ── Cook-mode: read top-level defines from an already-generated .rrs file ─────
+
+/**
+ * Read an already-generated .rrs file and extract top-level
+ * `audio.*` and `image.*` define declarations so the converter can
+ * resolve aliases to hard paths in --cook mode.
+ *
+ * Returns:
+ *   audio  — alias → path,  e.g. "outdoors" → "Audio/Ambient/outdoors.ogg"
+ *   image  — full dotted key → path,  e.g. "image.bg.tent_day" → "BGs/tent_day.jpg"
+ */
+async function loadCookedMapsFromRrs(rrsPath: string): Promise<{
+  audio: Map<string, string>;
+  image: Map<string, string>;
+}> {
+  const audio = new Map<string, string>();
+  const image = new Map<string, string>();
+  let text: string;
+  try {
+    text = await Deno.readTextFile(rrsPath);
+  } catch {
+    return { audio, image }; // file not yet available — return empty maps
+  }
+  // audio.NAME = "path/to/file.ogg";
+  const audioRe = /^audio\.(\w+)\s*=\s*"([^"]*)"\s*;/gm;
+  let m: RegExpExecArray | null;
+  while ((m = audioRe.exec(text)) !== null) {
+    audio.set(m[1], m[2]);
+  }
+  // image.NS.KEY = "path/to/file.ext";   (NS = bg / cg / sx / misc / …)
+  const imageRe = /^(image\.[a-zA-Z0-9_.]+)\s*=\s*"([^"]*)"\s*;/gm;
+  while ((m = imageRe.exec(text)) !== null) {
+    image.set(m[1], m[2]);
+  }
+  return { audio, image };
+}
+
 // ── Chinese translation loader ────────────────────────────────────────────────
 
 /**
@@ -482,6 +524,8 @@ class Converter {
     lines: string[],
     private readonly maps: AssetMaps,
     private readonly filename: string,
+    private readonly cookedAudio?: Map<string, string>,
+    private readonly cookedImage?: Map<string, string>,
   ) {
     this.lines = lines;
     this.charMap = maps.charMap;
@@ -626,7 +670,13 @@ class Converter {
     if (!this.maps.bg.has(key)) return `"BGs/<UNKNOWN:${key}>.jpg"`;
     // Strip the bg_ prefix for the var ref key: bg_bathroom2_sunset → bathroom2_sunset
     const refKey = key.startsWith("bg_") ? key.slice("bg_".length) : key;
-    return `image.bg.${refKey}`;
+    const varRef = `image.bg.${refKey}`;
+    // Cook mode: inline the hard path if available
+    if (this.cookedImage) {
+      const path = this.cookedImage.get(varRef);
+      if (path !== undefined) return `"${escStr(path)}"`;
+    }
+    return varRef;
   }
 
   /**
@@ -637,7 +687,13 @@ class Converter {
     if (!this.maps.cg.has(key)) return `"CGs/<UNKNOWN:${key}>.jpg"`;
     // Strip the cg_ prefix for the var ref key: cg_arrival1 → arrival1
     const refKey = key.startsWith("cg_") ? key.slice("cg_".length) : key;
-    return `image.cg.${refKey}`;
+    const varRef = `image.cg.${refKey}`;
+    // Cook mode: inline the hard path if available
+    if (this.cookedImage) {
+      const path = this.cookedImage.get(varRef);
+      if (path !== undefined) return `"${escStr(path)}"`;
+    }
+    return varRef;
   }
 
   /**
@@ -649,7 +705,13 @@ class Converter {
     if (!found) return `"CGs/<UNKNOWN:sx_${key}>.jpg"`;
     // Normalise: strip any sx_ prefix for the var ref key
     const refKey = key.startsWith("sx_") ? key.slice("sx_".length) : key;
-    return `image.sx.${refKey}`;
+    const varRef = `image.sx.${refKey}`;
+    // Cook mode: inline the hard path if available
+    if (this.cookedImage) {
+      const path = this.cookedImage.get(varRef);
+      if (path !== undefined) return `"${escStr(path)}"`;
+    }
+    return varRef;
   }
 
   /**
@@ -657,17 +719,22 @@ class Converter {
    * Falls back to null if the name is not in any map.
    */
   private miscVarRef(name: string): string | null {
+    let varRef: string | null = null;
     if (this.maps.cg.has(name)) {
       const refKey = name.startsWith("cg_") ? name.slice("cg_".length) : name;
-      return `image.cg.${refKey}`;
+      varRef = `image.cg.${refKey}`;
+    } else if (this.maps.bg.has("bg_" + name)) {
+      varRef = `image.bg.${name}`;
+    } else if (this.maps.misc.has(name)) {
+      varRef = `image.misc.${name}`;
     }
-    if (this.maps.bg.has("bg_" + name)) {
-      return `image.bg.${name}`;
+    if (varRef === null) return null;
+    // Cook mode: inline the hard path if available
+    if (this.cookedImage) {
+      const path = this.cookedImage.get(varRef);
+      if (path !== undefined) return `"${escStr(path)}"`;
     }
-    if (this.maps.misc.has(name)) {
-      return `image.misc.${name}`;
-    }
-    return null;
+    return varRef;
   }
 
   // ── Look-ahead helper ───────────────────────────────────────────────────────
@@ -988,12 +1055,15 @@ class Converter {
     if (playMusicMatch) {
       const varName = playMusicMatch[1];
       const fadein = playMusicMatch[2] ?? playMusicMatch[3];
+      const resolvedMusic = this.cookedAudio?.get(varName);
+      const musicArg =
+        resolvedMusic !== undefined ? `"${escStr(resolvedMusic)}"` : varName;
       if (fadein) {
         this.emit(
-          `${this.pad()}music::play(${varName}) | fadein(${fmtFloat(parseFloat(fadein))});`,
+          `${this.pad()}music::play(${musicArg}) | fadein(${fmtFloat(parseFloat(fadein))});`,
         );
       } else {
-        this.emit(`${this.pad()}music::play(${varName});`);
+        this.emit(`${this.pad()}music::play(${musicArg});`);
       }
       return;
     }
@@ -1001,21 +1071,30 @@ class Converter {
     // ── play sound NAME ───────────────────────────────────────────────────────
     const playSoundMatch = line.match(/^play\s+sound\s+(\S+)/);
     if (playSoundMatch) {
-      this.emit(`${this.pad()}sound::play(${playSoundMatch[1]});`);
+      const sn = playSoundMatch[1];
+      const resolvedSn = this.cookedAudio?.get(sn);
+      const snArg = resolvedSn !== undefined ? `"${escStr(resolvedSn)}"` : sn;
+      this.emit(`${this.pad()}sound::play(${snArg});`);
       return;
     }
 
     // ── play audio NAME [loop] ────────────────────────────────────────────────
     const playAudioMatch = line.match(/^play\s+audio\s+(\S+)/);
     if (playAudioMatch) {
-      this.emit(`${this.pad()}sound::play(${playAudioMatch[1]});`);
+      const an = playAudioMatch[1];
+      const resolvedAn = this.cookedAudio?.get(an);
+      const anArg = resolvedAn !== undefined ? `"${escStr(resolvedAn)}"` : an;
+      this.emit(`${this.pad()}sound::play(${anArg});`);
       return;
     }
 
     // ── play bgsound / bgsound2 NAME [loop] ───────────────────────────────────
     const playBgsoundMatch = line.match(/^play\s+bgsound2?\s+(\S+)/);
     if (playBgsoundMatch) {
-      this.emit(`${this.pad()}music::play(${playBgsoundMatch[1]});`);
+      const bn = playBgsoundMatch[1];
+      const resolvedBn = this.cookedAudio?.get(bn);
+      const bnArg = resolvedBn !== undefined ? `"${escStr(resolvedBn)}"` : bn;
+      this.emit(`${this.pad()}music::play(${bnArg});`);
       return;
     }
 
@@ -1773,8 +1852,14 @@ OPTIONS
                         successfully converted story .rrs files
   --script <path>       Path to script.rpy (used for asset + character maps)
   --tl <dir>            Path to tl/chinese directory for Chinese translations
-                        (auto-detected from --script path when present)
-  --no-tl               Disable Chinese translation merging
+                        (disabled by default; must be explicitly enabled)
+  --no-tl               Kept for backward compatibility; translations are now
+                        disabled by default
+  --cook                After converting script.rpy (or reading an existing
+                        script.rrs), read its top-level variable definitions
+                        and inline / hard-code resolved paths in all other
+                        files (audio aliases → quoted paths, image var-refs →
+                        quoted paths)
   --skip <name>         Additional filename to skip in directory mode (repeatable)
   --stub-exit <l=v>     When label L closes, inject \`jump v;\`  (repeatable)
                         Example: --stub-exit foreplay=label_afterforeplay
@@ -1804,7 +1889,8 @@ async function main(): Promise<void> {
   let outputArg: string | undefined;
   let scriptRpy: string | undefined;
   let tlDir: string | undefined;
-  let noTl = false;
+  let noTl = false; // kept for backward-compat; no-tl is now the default
+  let cook = false;
   let dryRun = false;
   let verbose = false;
   let writeManifest = false;
@@ -1821,7 +1907,9 @@ async function main(): Promise<void> {
     } else if (arg === "--tl") {
       tlDir = rawArgs[++i];
     } else if (arg === "--no-tl") {
-      noTl = true;
+      noTl = true; // no-op; kept for backward-compat
+    } else if (arg === "--cook") {
+      cook = true;
     } else if (arg === "--dry-run") {
       dryRun = true;
     } else if (arg === "--verbose") {
@@ -1885,15 +1973,31 @@ async function main(): Promise<void> {
     }
   }
 
-  // Auto-detect tl/chinese directory relative to the script.rpy location
-  if (!noTl && tlDir === undefined && scriptRpy) {
-    const gameDir = scriptRpy.replace(/\/[^/]+$/, "");
-    const candidate = `${gameDir}/tl/chinese`;
-    try {
-      const st = await Deno.stat(candidate);
-      if (st.isDirectory) tlDir = candidate;
-    } catch {
-      // not found — no translations
+  // Translations are opt-in only: use --tl <dir> to enable.
+  // (Auto-detection of tl/chinese has been removed; --no-tl is a no-op now.)
+  void noTl;
+
+  // ── Cook mode: build cooked maps from script.rrs ─────────────────────────
+  // When --cook is specified we read the already-generated (or about-to-be-
+  // generated) script.rrs and extract all top-level audio.* / image.* defines
+  // so that story files can inline hard paths instead of emitting variable refs.
+  let cookedAudio: Map<string, string> | undefined;
+  let cookedImage: Map<string, string> | undefined;
+
+  // Determine where script.rrs lives (mirrors the outPath logic for script.rpy)
+  let scriptRrsPath: string | undefined;
+  if (cook && scriptRpy) {
+    const scriptBaseName = scriptRpy
+      .split("/")
+      .pop()!
+      .replace(/\.rpy$/, ".rrs");
+    if (outputIsDir && outputArg) {
+      scriptRrsPath = `${outputArg.replace(/\/$/, "")}/${scriptBaseName}`;
+    } else if (outputArg && !outputIsDir) {
+      // Single-file mode — script.rrs would sit next to script.rpy
+      scriptRrsPath = scriptRpy.replace(/\.rpy$/, ".rrs");
+    } else {
+      scriptRrsPath = scriptRpy.replace(/\.rpy$/, ".rrs");
     }
   }
 
@@ -1918,6 +2022,36 @@ async function main(): Promise<void> {
       misc: new Map(),
       charMap: new Map(),
     };
+  }
+
+  // ── Cook: if script.rrs doesn't exist yet, convert script.rpy first ────────
+  if (cook && scriptRrsPath && scriptRpy) {
+    let scriptRrsExists = false;
+    try {
+      await Deno.stat(scriptRrsPath);
+      scriptRrsExists = true;
+    } catch {
+      scriptRrsExists = false;
+    }
+
+    if (!scriptRrsExists) {
+      console.log(
+        `[cook] script.rrs not found at ${scriptRrsPath}; converting script.rpy first …`,
+      );
+      await convertFile(scriptRpy, scriptRrsPath, maps, {
+        dryRun,
+        verbose,
+        tlDir,
+      });
+    }
+
+    console.log(`[cook] Loading cooked maps from ${scriptRrsPath} …`);
+    const cooked = await loadCookedMapsFromRrs(scriptRrsPath);
+    cookedAudio = cooked.audio;
+    cookedImage = cooked.image;
+    console.log(
+      `[cook]   audio aliases: ${cookedAudio.size}  image refs: ${cookedImage.size}`,
+    );
   }
 
   // Gather input files
@@ -1981,7 +2115,9 @@ async function main(): Promise<void> {
     const result = await convertFile(inputPath, outPath, maps, {
       dryRun,
       verbose,
-      tlDir: noTl ? undefined : tlDir,
+      tlDir,
+      cookedAudio,
+      cookedImage,
     });
 
     if (result.ok) {
@@ -2052,7 +2188,13 @@ async function convertFile(
   inputPath: string,
   outputPath: string,
   maps: AssetMaps,
-  opts: { dryRun: boolean; verbose: boolean; tlDir?: string },
+  opts: {
+    dryRun: boolean;
+    verbose: boolean;
+    tlDir?: string;
+    cookedAudio?: Map<string, string>;
+    cookedImage?: Map<string, string>;
+  },
   skipFiles?: Set<string>,
 ): Promise<ConvertResult> {
   // If this is script.rpy, we still convert it (for label start etc.) — it is
@@ -2138,7 +2280,13 @@ async function convertFile(
     effectiveMaps = { ...effectiveMaps, tl };
   }
 
-  const converter = new Converter(lines, effectiveMaps, filename);
+  const converter = new Converter(
+    lines,
+    effectiveMaps,
+    filename,
+    opts.cookedAudio,
+    opts.cookedImage,
+  );
   let result: string;
   try {
     result = converter.convert();
