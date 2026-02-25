@@ -19,7 +19,6 @@ export const TitleScreen: React.FC = () => {
 
   const gameTitle = useGameStore((s) => s.gameTitle);
   const displayTitle = gameTitle ?? "Ren'Py Reader";
-  const [logoError, setLogoError] = useState(false);
   const [importing, setImporting] = useState(false);
   const [newGamePending, setNewGamePending] = useState(false);
 
@@ -87,23 +86,6 @@ export const TitleScreen: React.FC = () => {
 
   return (
     <div className="title-screen">
-      {/* Background image */}
-      <img
-        className="title-bg"
-        src="/assets/images/BGs/campsite_day.jpg"
-        alt=""
-        draggable={false}
-        onError={(e) => {
-          const el = e.currentTarget;
-          if (!el.dataset.tried) {
-            el.dataset.tried = "1";
-            el.src = "/assets/images/campbuddy.png";
-          } else {
-            el.style.display = "none";
-          }
-        }}
-      />
-
       {/* Gradient overlay */}
       <div
         aria-hidden="true"
@@ -120,18 +102,8 @@ export const TitleScreen: React.FC = () => {
 
       {/* Content */}
       <div className="title-content">
-        {/* Logo / title */}
-        {!logoError ? (
-          <img
-            className="title-logo"
-            src="/assets/images/UI/logo.png"
-            alt={displayTitle}
-            draggable={false}
-            onError={() => setLogoError(true)}
-          />
-        ) : (
-          <h1 className="title-fallback-text">{displayTitle}</h1>
-        )}
+        {/* Title */}
+        <h1 className="title-fallback-text">{displayTitle}</h1>
 
         {/* Main menu */}
         <nav className="title-menu" aria-label="主菜单">

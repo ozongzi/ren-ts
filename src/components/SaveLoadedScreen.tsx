@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import { useGameStore } from "../store";
 import { formatLabel, autoSaveAvailable } from "../save";
 import { isTauri } from "../tauri_bridge";
@@ -30,8 +30,6 @@ export const SaveLoadedScreen: React.FC = () => {
   const saveFileName = useGameStore((s) => s.saveFileName);
   const saveFilePath = useGameStore((s) => s.saveFilePath);
 
-  const [logoError, setLogoError] = useState(false);
-
   // Build a short human-readable description of where we are in the story.
   const locationLabel = formatLabel(currentLabel);
   const snippetText = dialogue?.text
@@ -43,23 +41,6 @@ export const SaveLoadedScreen: React.FC = () => {
 
   return (
     <div className="title-screen">
-      {/* ── Background image (same as title) ── */}
-      <img
-        className="title-bg"
-        src="/assets/images/BGs/campsite_day.jpg"
-        alt=""
-        draggable={false}
-        onError={(e) => {
-          const el = e.currentTarget;
-          if (!el.dataset.tried) {
-            el.dataset.tried = "1";
-            el.src = "/assets/images/campbuddy.png";
-          } else {
-            el.style.display = "none";
-          }
-        }}
-      />
-
       {/* ── Gradient overlay ── */}
       <div
         aria-hidden="true"
@@ -76,18 +57,8 @@ export const SaveLoadedScreen: React.FC = () => {
 
       {/* ── Content ── */}
       <div className="title-content">
-        {/* Logo */}
-        {!logoError ? (
-          <img
-            className="title-logo"
-            src="/assets/images/UI/logo.png"
-            alt={displayTitle}
-            draggable={false}
-            onError={() => setLogoError(true)}
-          />
-        ) : (
-          <h1 className="title-fallback-text">{displayTitle}</h1>
-        )}
+        {/* Title */}
+        <h1 className="title-fallback-text">{displayTitle}</h1>
 
         {/* ── Save info badge ── */}
         <div
