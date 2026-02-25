@@ -18,9 +18,10 @@ import type {
   StackFrame,
   DialogueState,
 } from "./types";
-import { getLabel, getManifestStart } from "./loader";
-import { evaluateCondition, applySetStep, defaultVars } from "./evaluate";
+import { getLabel, getManifestStart, getDefineVars } from "./loader";
+import { evaluateCondition, applySetStep } from "./evaluate";
 import { resolveAsset } from "./assets";
+import { VarStore } from "./vars";
 
 // ─── Maximum steps to execute per tick (safety limit) ────────────────────────
 const MAX_STEPS_PER_TICK = 2000;
@@ -56,11 +57,10 @@ export type AdvanceAction =
 export function createInitialState(): GameState {
   return {
     phase: "title",
-
     currentLabel: "start",
     stepIndex: 0,
     callStack: [],
-    vars: defaultVars(),
+    vars: VarStore.empty(),
 
     backgroundSrc: null,
     bgFilter: null,
@@ -97,13 +97,12 @@ export function resumeFromSave(state: GameState): GameState {
 }
 
 export function startNewGame(state: GameState): GameState {
-  // Read the entry-point label from the manifest (defaults to "start" per
-  // Ren'Py convention if the manifest does not specify one).
   const startLabel = getManifestStart();
   const fresh: GameState = {
     ...createInitialState(),
     phase: "playing",
-    // Preserve completed routes across new games
+    // Seed vars with all .rrs defines so image/char/audio resolve at runtime.
+    vars: VarStore.fromDefines(getDefineVars()),
     completedRoutes: state.completedRoutes,
     currentLabel: startLabel,
     stepIndex: 0,
@@ -291,6 +290,47 @@ interface StepResult {
   blocked: boolean;
 }
 
+// ─── Runtime var resolvers ────────────────────────────────────────────────────
+//
+// All helpers accept VarStore so they can call .get() which checks gameVars
+// first then defineVars, without merging the two into a plain object.
+
+function resolveImageSrc(src: string, vars: VarStore): string {
+  if (!src) return src;
+  if (src.startsWith("#") || src.includes("/")) return src;
+  const key = "image." + src;
+  const resolved = vars.get(key);
+  if (typeof resolved === "string") return resolved;
+  console.error(`[engine] image var not found: ${key}`);
+  return src;
+}
+
+function resolveCharName(who: string | null, vars: VarStore): string | null {
+  if (!who) return null;
+  const key = "char." + who;
+  if (vars.has(key)) {
+    const name = vars.get(key);
+    if (name === "" || name === null || name === undefined) return null;
+    return String(name);
+  }
+  return who;
+}
+
+function resolveAudioSrc(
+  src: string | undefined,
+  vars: VarStore,
+): string | undefined {
+  if (!src) return undefined;
+  if (src.includes("/")) return src;
+  const key = src.startsWith("audio.") ? src : "audio." + src;
+  const resolved = vars.get(key);
+  if (typeof resolved === "string") return resolved;
+  console.error(`[engine] audio var not found: ${key}`);
+  return undefined;
+}
+
+// ─── Step executor ────────────────────────────────────────────────────────────
+
 function executeStep(state: GameState, step: Step): StepResult {
   const advance = (s: GameState): StepResult => ({
     state: { ...s, stepIndex: s.stepIndex + 1 },
@@ -304,13 +344,16 @@ function executeStep(state: GameState, step: Step): StepResult {
   switch (step.type) {
     // ── Variable assignment ─────────────────────────────────────────────────
     case "set": {
-      const vars = applySetStep(state.vars, step);
+      // applySetStep works on a plain Record; feed it the merged view and
+      // write the result back into the gameVars layer only.
+      const merged = applySetStep(state.vars.toRecord(), step);
+      const vars = state.vars.replaceGameVars(merged);
       return advance({ ...state, vars });
     }
 
     // ── Scene (background swap) ─────────────────────────────────────────────
     case "scene": {
-      const backgroundSrc = resolveAsset(step.src);
+      const backgroundSrc = resolveAsset(resolveImageSrc(step.src, state.vars));
       // A `scene` command hides all sprites
       return advance({
         ...state,
@@ -334,12 +377,9 @@ function executeStep(state: GameState, step: Step): StepResult {
     // replaced in-place (preserving z-index and position).
     case "show": {
       const newTag = spriteTag(step.sprite);
-      // When no explicit src was compiled (image not in imageMap), fall back
-      // to resolving the sprite key itself — resolveAsset() will apply the
-      // dot→underscore heuristic:
-      //   "keitaro_casual"  → /assets/images/keitaro_casual.jpg
-      //   "keitaro.normal1" → /assets/images/keitaro_normal1.jpg
-      const src = resolveAsset(step.src ?? step.sprite);
+      // Resolve sprite src via vars["image." + sprite]; step.src is no longer
+      // pre-resolved at compile time.
+      const src = resolveAsset(resolveImageSrc(step.sprite, state.vars));
 
       // Inherit position from existing same-tag sprite when not specified
       const existingIdx = state.sprites.findIndex(
@@ -411,16 +451,17 @@ function executeStep(state: GameState, step: Step): StepResult {
 
     // ── Say (character dialogue) ─────────────────────────────────────────────
     case "say": {
+      const resolvedVoice = resolveAudioSrc(step.voice, state.vars);
       const dialogue: DialogueState = {
-        who: step.who,
+        who: resolveCharName(step.who, state.vars),
         text: step.text,
-        voice: step.voice,
+        voice: resolvedVoice,
       };
       return block({
         ...state,
         stepIndex: state.stepIndex + 1,
         dialogue,
-        voiceSrc: step.voice ? resolveAsset(step.voice) : null,
+        voiceSrc: resolvedVoice ? resolveAsset(resolvedVoice) : null,
         waitingForInput: true,
         autoAdvanceDelay: null,
       });
@@ -428,16 +469,17 @@ function executeStep(state: GameState, step: Step): StepResult {
 
     // ── Narrate (no speaker) ─────────────────────────────────────────────────
     case "narrate": {
+      const resolvedVoice = resolveAudioSrc(step.voice, state.vars);
       const dialogue: DialogueState = {
         who: null,
         text: step.text,
-        voice: step.voice,
+        voice: resolvedVoice,
       };
       return block({
         ...state,
         stepIndex: state.stepIndex + 1,
         dialogue,
-        voiceSrc: step.voice ? resolveAsset(step.voice) : null,
+        voiceSrc: resolvedVoice ? resolveAsset(resolvedVoice) : null,
         waitingForInput: true,
         autoAdvanceDelay: null,
       });
@@ -446,17 +488,18 @@ function executeStep(state: GameState, step: Step): StepResult {
     // ── Extend (append to previous dialogue) ────────────────────────────────
     case "extend": {
       const prev = state.dialogue;
+      const resolvedVoice = resolveAudioSrc(step.voice, state.vars);
       const dialogue: DialogueState = {
         who: prev?.who ?? null,
         text: (prev?.text ?? "") + step.text,
-        voice: step.voice ?? prev?.voice,
+        voice: resolvedVoice ?? prev?.voice,
       };
       return block({
         ...state,
         stepIndex: state.stepIndex + 1,
         dialogue,
-        voiceSrc: step.voice
-          ? resolveAsset(step.voice)
+        voiceSrc: resolvedVoice
+          ? resolveAsset(resolvedVoice)
           : prev?.voice
             ? resolveAsset(prev.voice)
             : state.voiceSrc,
@@ -468,7 +511,11 @@ function executeStep(state: GameState, step: Step): StepResult {
     // ── Music ───────────────────────────────────────────────────────────────
     case "music": {
       if (step.action === "play" && step.src) {
-        return advance({ ...state, bgmSrc: resolveAsset(step.src) });
+        const resolved = resolveAudioSrc(step.src, state.vars);
+        return advance({
+          ...state,
+          bgmSrc: resolved ? resolveAsset(resolved) : null,
+        });
       }
       if (step.action === "stop") {
         return advance({ ...state, bgmSrc: null });
@@ -479,7 +526,11 @@ function executeStep(state: GameState, step: Step): StepResult {
     // ── Sound ───────────────────────────────────────────────────────────────
     case "sound": {
       if (step.action === "play" && step.src) {
-        return advance({ ...state, sfxSrc: resolveAsset(step.src) });
+        const resolved = resolveAudioSrc(step.src, state.vars);
+        return advance({
+          ...state,
+          sfxSrc: resolved ? resolveAsset(resolved) : null,
+        });
       }
       if (step.action === "stop") {
         return advance({ ...state, sfxSrc: null });
@@ -489,10 +540,9 @@ function executeStep(state: GameState, step: Step): StepResult {
 
     // ── Menu (player choice) ─────────────────────────────────────────────────
     case "menu": {
-      // Filter options by condition
       const choices: MenuOption[] = step.options.filter((opt) => {
         if (!opt.condition) return true;
-        return evaluateCondition(opt.condition, state.vars);
+        return evaluateCondition(opt.condition, state.vars.toRecord());
       });
 
       if (choices.length === 0) {
@@ -531,7 +581,7 @@ function executeStep(state: GameState, step: Step): StepResult {
     // ── If / else-if / else ──────────────────────────────────────────────────
     case "if": {
       for (const branch of step.branches) {
-        if (evaluateCondition(branch.condition, state.vars)) {
+        if (evaluateCondition(branch.condition, state.vars.toRecord())) {
           if (branch.steps.length === 0) {
             // Empty branch — advance past the if block
             return advance(state);
@@ -558,11 +608,9 @@ function executeStep(state: GameState, step: Step): StepResult {
 
     // ── Jump ─────────────────────────────────────────────────────────────────
     case "jump": {
-      // Resolve target: if no static label exists, treat the target string as a
-      // variable name and use its value (Ren'Py-style dynamic jump via variable).
       let target = step.target;
       if (!_getSteps(target)) {
-        const varVal = state.vars[target];
+        const varVal = state.vars.get(target);
         if (typeof varVal === "string" && _getSteps(varVal)) {
           target = varVal;
         } else {
@@ -606,10 +654,9 @@ function executeStep(state: GameState, step: Step): StepResult {
 
     // ── Call ─────────────────────────────────────────────────────────────────
     case "call": {
-      // Same variable-resolution logic as jump.
       let target = step.target;
       if (!_getSteps(target)) {
-        const varVal = state.vars[target];
+        const varVal = state.vars.get(target);
         if (typeof varVal === "string" && _getSteps(varVal)) {
           target = varVal;
         } else {

@@ -267,15 +267,16 @@ function resolveOperand(token: string, vars: Vars): unknown {
   const n = Number(token);
   if (!isNaN(n) && token !== "") return n;
 
-  // dotted token handling: try direct key then nested lookup (vars["a.b"] or vars.a.b).
-  // If unresolved and token is a persistent.* or renpy.* reference, treat as False.
-  if (token.includes(".")) {
-    // Direct lookup: vars["persistent.animations"]
-    if (token in vars) return vars[token];
+  // Variable lookup — handles both plain keys and dotted keys like
+  // "persistent.animations" that were injected into vars as flat entries.
+  if (token in vars) return vars[token];
 
-    // Nested object traversal: vars.persistent && vars.persistent.animations
+  // Dotted token not found as a flat key: try object-chain traversal
+  // e.g. vars = { persistent: { animations: true } }, token = "persistent.animations"
+  if (token.includes(".")) {
     const parts = token.split(".");
-    if (parts.length > 0 && parts[0] in vars) {
+    if (parts[0] in vars) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let cur: any = (vars as any)[parts[0]];
       let found = true;
       for (let i = 1; i < parts.length; i++) {
@@ -294,14 +295,11 @@ function resolveOperand(token: string, vars: Vars): unknown {
       if (found) return cur;
     }
 
-    // Fall back: treat persistent.* and renpy.* as False when unresolved
+    // Still unresolved: persistent.* and renpy.* → False
     if (token.startsWith("persistent.") || token.startsWith("renpy.")) {
       return false;
     }
   }
-
-  // Variable lookup
-  if (token in vars) return vars[token];
 
   // Nested expression in parens
   if (token.startsWith("(") && token.endsWith(")")) {

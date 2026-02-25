@@ -1,4 +1,5 @@
 // ─── Ren'Py step types (mirrors the JSON schema) ────────────────────────────
+import type { VarStore } from "./vars";
 
 export interface SetStep {
   type: "set";
@@ -130,6 +131,8 @@ export type Step =
 export interface ScriptFile {
   source: string;
   labels: Record<string, Step[]>;
+  /** Flat key→value map of all top-level defines in this file (image.*, char.*, audio.*, etc.) */
+  defines: Record<string, string>;
 }
 
 // ─── Gallery types ────────────────────────────────────────────────────────────
@@ -250,7 +253,13 @@ export interface GameState {
   currentLabel: string;
   stepIndex: number;
   callStack: StackFrame[];
-  vars: Record<string, unknown>;
+  /** Game vars only — serialised to disk (define vars excluded). */
+  /**
+   * Two-layer variable store.
+   * - defineVars: image.*, char.*, audio.*, persistent.* defaults — NOT saved
+   * - gameVars:   written during play — the only part persisted to save files
+   */
+  vars: VarStore;
 
   // ── Visual state ──
   backgroundSrc: string | null; // CSS color or resolved asset URL

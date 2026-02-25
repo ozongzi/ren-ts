@@ -24,6 +24,8 @@
 //     applySave(base, save)→ merges a SaveData snapshot into a GameState
 
 import type { GameState, SaveData, SpriteState } from "./types";
+import { VarStore } from "./vars";
+import { getDefineVars } from "./loader";
 import {
   isTauri,
   pickAndReadTextFile,
@@ -86,7 +88,7 @@ export function stateToSave(state: GameState): SaveData {
     currentLabel: state.currentLabel,
     stepIndex: state.stepIndex,
     callStack: state.callStack,
-    vars: { ...state.vars },
+    vars: state.vars.stored(),
     completedRoutes: [...state.completedRoutes],
     backgroundSrc: state.backgroundSrc,
     bgFilter: state.bgFilter,
@@ -473,7 +475,7 @@ export function applySave(base: GameState, save: SaveData): GameState {
     currentLabel: save.currentLabel,
     stepIndex: save.stepIndex,
     callStack: save.callStack,
-    vars: { ...save.vars },
+    vars: VarStore.fromSave(save.vars, getDefineVars()),
     completedRoutes: save.completedRoutes,
 
     // Restore visual / audio snapshot from the save

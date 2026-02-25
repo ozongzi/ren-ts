@@ -1,14 +1,19 @@
 // ── Code generator: .rrs AST → engine JSON steps ─────────────────────────────
 //
-// Key responsibilities:
+// Responsibilities:
 //   • Emit engine-compatible JSON step objects for every AST node
-//   • Resolve image keys via the flat defines dict:
-//       show cg.arrival2  →  lookup "image.cg.arrival2"  →  "CGs/cg1_arrival2.jpg"
-//       scene bg_entrance_day  →  lookup "image.bg_entrance_day"  →  "BGs/entrance_day.jpg"
-//   • Resolve character names via char.* entries
-//   • Resolve audio aliases via audio.* entries
-//   • NO hardcoded sprite path conventions (Sprites/Body/…, Sprites/Faces/…)
-//   • NO game-specific prefix heuristics (cg_, bg_, sx_)
+//   • Collect all top-level define declarations into a flat key→value dict
+//     (image.*, char.*, audio.*, position.*, everything else)
+//   • NO compile-time resolution of image/char/audio — all keys are emitted
+//     as-is and resolved at runtime via GameState.vars
+//
+// Runtime resolution contract (handled by engine.ts):
+//   scene bg_entrance_day   → look up vars["image.bg_entrance_day"]
+//   show  keitaro.normal1   → look up vars["image.keitaro.normal1"]
+//   speak k "text"          → look up vars["char.k"] for display name
+//   music::play(audio.foo)  → look up vars["audio.foo"]
+//   voice | audio.vo_001    → look up vars["audio.vo_001"]
+//   Literal paths ("BGs/…", "#000") → used as-is (contain "/" or start with "#")
 
 import type {
   AssignStmt,
@@ -37,83 +42,55 @@ import type {
 
 import { registerPosition } from "../assets";
 
-// ── Define map builder ────────────────────────────────────────────────────────
+// ── Define collector ──────────────────────────────────────────────────────────
 
 /**
- * Build resolution maps from the top-level define declarations.
+ * Collect all top-level define declarations into a flat key→value dict.
  *
- * All top-level `A = B;` declarations go into a single flat dict.
- * Entries are split by key prefix:
+ * Every define is stored verbatim — no special processing by prefix, except
+ * for position.* which are also forwarded to registerPosition() so the CSS
+ * layout helper (atToLeftPercent) can use them without touching vars.
  *
- *   char.*      → charMap   (abbr → full name)
- *   audio.*     → audioMap  (alias → path)
- *   image.*     → imageMap  (full "image.x.y" key → file path)
- *   position.*  → registered directly with registerPosition()
- *   everything else → ignored (constants, game-state vars, etc.)
- *
- * Image keys keep the full `image.` prefix so lookups from genShow/genScene
- * can prepend "image." to the DSL key and query the map directly:
- *   DSL key "cg.arrival2"  →  lookup "image.cg.arrival2"
- *   DSL key "bg_entrance_day"  →  lookup "image.bg_entrance_day"
+ * The resulting dict is merged into GameState.vars at game start so that
+ * all image, char, audio and other defines are available for runtime lookup.
  */
-export function buildDefineMaps(
-  defines: DefineDecl[],
-  globalCharMap?: Map<string, string>,
-  globalImageMap?: Map<string, string>,
-): {
-  charMap: Map<string, string>;
-  audioMap: Map<string, string>;
-  imageMap: Map<string, string>;
-} {
-  const charMap = new Map<string, string>(globalCharMap);
-  const audioMap = new Map<string, string>();
-  const imageMap = new Map<string, string>(globalImageMap);
-
+export function collectDefines(defines: DefineDecl[]): Record<string, string> {
+  const result: Record<string, string> = {};
   for (const d of defines) {
-    if (d.key.startsWith("char.")) {
-      charMap.set(d.key.slice("char.".length), d.value);
-    } else if (d.key.startsWith("audio.")) {
-      audioMap.set(d.key.slice("audio.".length), d.value);
-    } else if (d.key.startsWith("image.")) {
-      // Store with full key including "image." prefix
-      imageMap.set(d.key, d.value);
-    } else if (d.key.startsWith("position.")) {
+    if (d.value === "") continue; // skip unparseable complex values
+    result[d.key] = d.value;
+
+    // position.* also goes to the CSS layout helper so atToLeftPercent() works
+    // without needing access to vars at render time.
+    if (d.key.startsWith("position.")) {
       const xpos = parseFloat(d.value);
       if (!isNaN(xpos)) registerPosition(d.key.slice("position.".length), xpos);
     }
-    // Other entries (constants, game-state vars, etc.) are not needed at
-    // codegen time and are intentionally ignored here.
   }
-
-  return { charMap, audioMap, imageMap };
+  return result;
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /**
  * Compile a parsed .rrs program into a ScriptFile (engine-ready JSON).
+ *
+ * Returns both the label steps and the flat defines dict.  The loader
+ * accumulates defines from all files into a single dict that becomes the
+ * initial GameState.vars for every new game.
  */
-export function compile(
-  program: Program,
-  sourceName: string,
-  globalCharMap?: Map<string, string>,
-  globalImageMap?: Map<string, string>,
-): JsonFile {
+export function compile(program: Program, sourceName: string): JsonFile {
   program = hoistNestedLabels(program);
 
+  const defines = collectDefines(program.defines);
   const labels: Record<string, JsonLabel> = {};
-  const { charMap, audioMap, imageMap } = buildDefineMaps(
-    program.defines,
-    globalCharMap,
-    globalImageMap,
-  );
 
   for (const label of program.labels) {
-    const ctx = new CodegenContext(charMap, audioMap, imageMap);
+    const ctx = new CodegenContext();
     labels[label.name] = ctx.genLabel(label);
   }
 
-  return { source: sourceName, labels };
+  return { source: sourceName, defines, labels };
 }
 
 /**
@@ -164,43 +141,19 @@ function hoistNestedLabels(prog: Program): Program {
   return { ...prog, labels: [...newLabels, ...extraLabels] };
 }
 
-// ── Code generation context (one instance per label) ─────────────────────────
+// ── Code generation context ───────────────────────────────────────────────────
+//
+// Stateless: no charMap / audioMap / imageMap.
+// All keys are passed through raw; runtime (engine.ts) resolves them via vars.
 
 class CodegenContext {
-  /**
-   * Character abbreviation → full name  (from top-level `char.*` declarations).
-   */
-  private charMap: Map<string, string>;
-
-  /**
-   * Audio alias → full path  (from `audio.*` declarations).
-   */
-  private audioMap: Map<string, string>;
-
-  /**
-   * Full image key (with "image." prefix) → file path.
-   * e.g. "image.cg.arrival2" → "CGs/cg1_arrival2.jpg"
-   *      "image.keitaro_casual" → "Sprites/Body/keitaro1_b_casual.png"
-   */
-  private imageMap: Map<string, string>;
-
-  constructor(
-    charMap: Map<string, string> = new Map(),
-    audioMap: Map<string, string> = new Map(),
-    imageMap: Map<string, string> = new Map(),
-  ) {
-    this.charMap = charMap;
-    this.audioMap = audioMap;
-    this.imageMap = imageMap;
-  }
-
-  // ── Label ─────────────────────────────────────────────────────────────────
+  // ── Label ──────────────────────────────────────────────────────────────────
 
   genLabel(label: LabelDecl): JsonLabel {
     return label.body.flatMap((s) => this.genStmt(s));
   }
 
-  // ── Statement dispatch ────────────────────────────────────────────────────
+  // ── Statement dispatch ─────────────────────────────────────────────────────
 
   genStmt(stmt: Stmt): JsonStep[] {
     switch (stmt.kind) {
@@ -233,190 +186,98 @@ class CodegenContext {
       case "Return":
         return this.genReturn(stmt);
       case "Label":
-        // Already hoisted; nothing to emit inline.
-        return this.genNestedLabel(stmt);
+        return []; // already hoisted
     }
   }
 
-  private genNestedLabel(_stmt: LabelStmt): JsonStep[] {
-    return [];
-  }
-
-  // ── Assign ────────────────────────────────────────────────────────────────
+  // ── Assign ─────────────────────────────────────────────────────────────────
 
   private genAssign(stmt: AssignStmt): JsonStep[] {
     return [{ type: "set", var: stmt.name, op: stmt.op, value: stmt.value }];
   }
 
-  // ── Image resolution ──────────────────────────────────────────────────────
-
-  /**
-   * Resolve a DSL image variable reference to its file path.
-   *
-   * DSL key: "cg.arrival2"      →  lookup "image.cg.arrival2" in imageMap
-   * DSL key: "bg_entrance_day"  →  lookup "image.bg_entrance_day"
-   *
-   * Only call this for identifier variable references (not string literals or
-   * hex colours — those must be passed through unchanged without a lookup).
-   * Logs console.error and returns undefined when the key is absent from the
-   * imageMap so callers can decide how to handle the missing asset.
-   */
-  private resolveImageKey(key: string): string | undefined {
-    const lookupKey = "image." + key;
-    const resolved = this.imageMap.get(lookupKey);
-    if (resolved !== undefined) return resolved;
-
-    console.error(`[codegen] image variable not found: ${lookupKey}`);
-    return undefined;
-  }
-
-  // ── Scene ─────────────────────────────────────────────────────────────────
+  // ── Scene ──────────────────────────────────────────────────────────────────
+  //
+  // src is emitted as-is:
+  //   - Literal path/color (contains "/" or starts with "#"): used directly
+  //   - Image key (e.g. "bg_entrance_day", "cg.black"): runtime looks up
+  //     vars["image." + src]
 
   private genScene(stmt: SceneStmt): JsonStep[] {
-    let src: string;
-    if (stmt.srcIsLiteral) {
-      // Quoted string literal or hex colour — use the path/value as-is,
-      // no imageMap lookup needed.
-      src = stmt.src;
-    } else {
-      // Identifier variable reference — must resolve via imageMap.
-      // console.error is emitted by resolveImageKey when not found.
-      src = this.resolveImageKey(stmt.src) ?? stmt.src;
-    }
-
-    const step: JsonStep = { type: "scene", src };
+    const step: JsonStep = { type: "scene", src: stmt.src };
     if (stmt.filter) step.filter = stmt.filter;
     if (stmt.transition) step.transition = stmt.transition;
     return [step];
   }
 
-  // ── Music ─────────────────────────────────────────────────────────────────
+  // ── Music ──────────────────────────────────────────────────────────────────
+  //
+  // src is emitted as-is:
+  //   - "audio.bgm_main"        → runtime looks up vars["audio.bgm_main"]
+  //   - "Audio/BGM/foo.ogg"     → runtime uses directly (has "/")
+  //   - "outdoors" (bare alias) → runtime looks up vars["audio.outdoors"]
 
   private genMusic(stmt: MusicStmt): JsonStep[] {
     const step: JsonStep = { type: "music", action: stmt.action };
-    if (stmt.src !== undefined) {
-      const resolved = this.resolveAudioAlias(stmt.src);
-      if (resolved !== undefined) step.src = resolved;
-    }
+    if (stmt.src !== undefined) step.src = stmt.src;
     if (stmt.fadeout !== undefined) step.fadeout = stmt.fadeout;
     if (stmt.fadein !== undefined) step.fadein = stmt.fadein;
     return [step];
   }
 
-  // ── Sound ─────────────────────────────────────────────────────────────────
+  // ── Sound ──────────────────────────────────────────────────────────────────
 
   private genSound(stmt: SoundStmt): JsonStep[] {
     const step: JsonStep = { type: "sound", action: stmt.action };
-    if (stmt.src !== undefined) {
-      const resolved = this.resolveAudioAlias(stmt.src);
-      if (resolved !== undefined) step.src = resolved;
-    }
+    if (stmt.src !== undefined) step.src = stmt.src;
     return [step];
   }
 
-  // ── Show ──────────────────────────────────────────────────────────────────
+  // ── Show ───────────────────────────────────────────────────────────────────
+  //
+  // sprite key is emitted as-is; runtime looks up vars["image." + sprite]
+  // for the actual file path.
 
-  /**
-   * Emit a single `show` step.
-   *
-   * The sprite key in the JSON step is the dot-joined DSL key
-   * (e.g. "cg.arrival2", "keitaro.normal1", "keitaro_casual").
-   *
-   * The engine uses the TAG (portion before the first ".") to determine
-   * which existing sprite to replace:
-   *   show keitaro.grin1  →  replaces any sprite with tag "keitaro"
-   *   show keitaro_casual →  replaces any sprite with tag "keitaro_casual"
-   *   show cg.arrival2    →  replaces any sprite with tag "cg"
-   *
-   * `show` always uses identifier variable references (never a quoted string
-   * literal), so the imageMap lookup is always performed and an error is
-   * logged when the variable is not declared.
-   */
   private genShow(stmt: ShowStmt): JsonStep[] {
-    // show always uses identifier variable references — must resolve via imageMap.
-    // resolveImageKey logs console.error when not found.
-    const resolvedSrc = this.resolveImageKey(stmt.key);
-
     const step: JsonStep = { type: "show", sprite: stmt.key };
-    if (resolvedSrc !== undefined) {
-      step.src = resolvedSrc;
-    }
-
     if (stmt.at) step.at = stmt.at;
     if (stmt.transition) step.transition = stmt.transition;
     return [step];
   }
 
-  // ── Hide ──────────────────────────────────────────────────────────────────
+  // ── Hide ───────────────────────────────────────────────────────────────────
 
-  /**
-   * Emit a single `hide` step.
-   *
-   * The engine removes all sprites whose TAG matches stmt.tag.
-   * Tag = first dot-segment of sprite key, or whole key if no dots.
-   *   hide keitaro       →  removes "keitaro.normal1", "keitaro.grin1", …
-   *   hide keitaro_casual →  removes exactly "keitaro_casual"
-   *   hide cg            →  removes "cg.arrival2", etc.
-   */
   private genHide(stmt: HideStmt): JsonStep[] {
     return [{ type: "hide", sprite: stmt.tag }];
   }
 
-  // ── With ──────────────────────────────────────────────────────────────────
+  // ── With ───────────────────────────────────────────────────────────────────
 
   private genWith(stmt: WithStmt): JsonStep[] {
     return [{ type: "with", transition: stmt.transition }];
   }
 
-  // ── Speak ─────────────────────────────────────────────────────────────────
+  // ── Speak ──────────────────────────────────────────────────────────────────
+  //
+  // who is the raw abbreviation (e.g. "k"); runtime resolves via vars["char.k"].
+  // voice is emitted as-is; runtime resolves via vars[voice] if it starts with
+  // "audio.", or uses it directly if it contains "/".
 
   private genSpeak(stmt: SpeakStmt): JsonStep[] {
-    const who = this.charMap.get(stmt.who) ?? stmt.who;
     return stmt.lines.map((line) => {
-      const step: JsonStep = { type: "say", who, text: line.text };
-      if (line.voice) {
-        const resolved = this.resolveAudioAlias(line.voice);
-        // Only set voice when the alias resolved to a real path.
-        // For dotted references (audio.xxx) that are not in the audioMap,
-        // resolveAudioAlias returns undefined — we omit the field entirely
-        // rather than emitting a broken / hardcoded path.
-        if (resolved !== undefined) step.voice = resolved;
-      }
+      const step: JsonStep = { type: "say", who: stmt.who, text: line.text };
+      if (line.voice) step.voice = line.voice;
       return step;
     });
   }
 
-  // ── Audio alias resolution ────────────────────────────────────────────────
-
-  /**
-   * Expand an audio alias to its full path.
-   *
-   * Handles:
-   *   1. `audio.bgm_main`  — dotted variable-reference form.
-   *      Only the audioMap is consulted; if the key is not present,
-   *      returns undefined (no hardcoded path prefix is applied).
-   *   2. `outdoors`        — bare alias name; looked up in audioMap,
-   *      then returned as-is if not found (assumed to be a plain path).
-   *   3. Plain path string — returned unchanged.
-   */
-  private resolveAudioAlias(src: string): string | undefined {
-    if (src.startsWith("audio.")) {
-      // Dotted form: pure variable-name lookup only.
-      // Return undefined when the key is absent — callers must not
-      // apply any hardcoded directory prefix as a fallback.
-      const alias = src.slice("audio.".length);
-      return this.audioMap.get(alias);
-    }
-    return this.audioMap.get(src) ?? src;
-  }
-
-  // ── Wait ──────────────────────────────────────────────────────────────────
+  // ── Wait ───────────────────────────────────────────────────────────────────
 
   private genWait(stmt: WaitStmt): JsonStep[] {
     return [{ type: "pause", duration: stmt.duration }];
   }
 
-  // ── If ────────────────────────────────────────────────────────────────────
+  // ── If ─────────────────────────────────────────────────────────────────────
 
   private genIf(stmt: IfStmt): JsonStep[] {
     const branches = stmt.branches.map((branch) => ({
@@ -426,7 +287,7 @@ class CodegenContext {
     return [{ type: "if", branches }];
   }
 
-  // ── Menu ──────────────────────────────────────────────────────────────────
+  // ── Menu ───────────────────────────────────────────────────────────────────
 
   private genMenu(stmt: MenuStmt): JsonStep[] {
     const options = stmt.choices.map((choice) => ({
@@ -437,7 +298,7 @@ class CodegenContext {
     return [{ type: "menu", options }];
   }
 
-  // ── Jump / Call / Return ──────────────────────────────────────────────────
+  // ── Jump / Call / Return ───────────────────────────────────────────────────
 
   private genJump(stmt: JumpStmt): JsonStep[] {
     return [{ type: "jump", target: stmt.target }];

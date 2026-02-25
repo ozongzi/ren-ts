@@ -273,5 +273,7 @@ export type JsonLabel = JsonStep[];
 
 export type JsonFile = {
   source: string;
+  /** Flat key→value map of all top-level defines (image.*, char.*, audio.*, position.*, etc.) */
+  defines: Record<string, string>;
   labels: Record<string, JsonLabel>;
 };

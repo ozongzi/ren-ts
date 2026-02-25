@@ -1,9 +1,8 @@
 import type { Step, ScriptFile, Manifest, GalleryEntry } from "./types";
-import { parseScript, extractCharMap, extractImageMap } from "./rrs/index";
+import { parseScript } from "./rrs/index";
 import { isTauri, getActiveAssetsDir } from "./tauri_bridge";
 
 // ─── Label registry ───────────────────────────────────────────────────────────
-// Maps every label name → its steps array, loaded lazily from .rrs files.
 
 const labelIndex: Map<string, Step[]> = new Map();
 let loadedFiles: Set<string> = new Set();
@@ -12,26 +11,16 @@ let manifestStart: string = "start";
 let manifestGame: string | undefined = undefined;
 let manifestGallery: GalleryEntry[] = [];
 
-// Global character abbreviation → display name map, populated from script.rrs.
-// All other files are compiled with this map so `speak k "text"` resolves to
-// speaker "Keitaro" even though story files carry no `define` declarations.
-let globalCharMap: Map<string, string> = new Map();
+// ─── Define vars ─────────────────────────────────────────────────────────────
+// All top-level defines from every .rrs file are merged here.
+// Keys are stored verbatim: "image.bg.foo", "char.k", "audio.bgm_main", etc.
+// This dict is injected into GameState.vars before the game starts so the
+// engine can resolve image paths, character names and audio aliases at runtime.
 
-// Global image var-ref → file path map, populated from script.rrs.
-// All other files are compiled with this map so `scene image.bg.foo` resolves
-// to the correct path even though story files may not declare that image.
-let globalImageMap: Map<string, string> = new Map();
+let defineVars: Record<string, string> = {};
 
 // ─── Data file reader ─────────────────────────────────────────────────────────
 
-/**
- * Read a data file by filename (e.g. "manifest.json", "day1.rrs").
- *
- * - Tauri mode: reads directly from <assetsDir>/data/<filename> via the
- *   Tauri filesystem plugin (no HTTP server required in production).
- * - Web / dev mode: fetches from /assets/data/<filename> via HTTP (served by
- *   the Vite dev-server middleware).
- */
 async function readDataFile(filename: string): Promise<string> {
   if (isTauri) {
     const assetsDir = getActiveAssetsDir();
@@ -40,14 +29,11 @@ async function readDataFile(filename: string): Promise<string> {
         `[loader] Cannot read "${filename}": assets directory has not been selected yet.`,
       );
     }
-    // Dynamic import keeps the Tauri plugin out of web builds entirely.
-    // deno-ignore-next-line
     // @ts-ignore
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     return readTextFile(`${assetsDir}/data/${filename}`);
   }
 
-  // Web / dev mode — served by the Vite static-dirs middleware
   const url = `/assets/data/${filename}`;
   const resp = await fetch(url, {
     cache: "no-store",
@@ -62,9 +48,9 @@ async function readDataFile(filename: string): Promise<string> {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Load the manifest and eagerly parse all .rrs files into the
- * label index.  Call this once on startup (after assetsDir is known in
- * Tauri mode).
+ * Load the manifest and eagerly parse all .rrs files.
+ * All top-level defines from every file are merged into defineVars.
+ * All labels from every file are registered in labelIndex.
  */
 export async function loadAll(): Promise<void> {
   const manifestText = await readDataFile("manifest.json");
@@ -77,7 +63,6 @@ export async function loadAll(): Promise<void> {
   }
 
   manifestFiles = manifest.files;
-  // Ren'Py convention: entry label is always "start". Fall back if not set.
   manifestStart = manifest.start ?? "start";
   manifestGame = manifest.game;
   manifestGallery = manifest.gallery ?? [];
@@ -88,44 +73,14 @@ export async function loadAll(): Promise<void> {
       `First 3: ${manifest.files.slice(0, 3).join(", ")}`,
   );
 
-  // ── Two-pass loading ───────────────────────────────────────────────────────
-  // Pass 1: load script.rrs first (if present) and extract the global
-  //         character map from its `char.k = "Keitaro";` declarations and the
-  //         global image map from its `image.bg.foo = "..."` declarations.
-  //         Story files carry no such declarations and rely on these maps.
-  // Pass 2: load all remaining files in parallel, passing both global maps
-  //         so speaker abbreviations and image var refs are resolved correctly.
+  // Load all files in parallel — no ordering dependency now that codegen no
+  // longer needs a global charMap / imageMap from script.rrs.
+  await Promise.all(manifest.files.map(loadFile));
 
-  const SCRIPT_FILE = "script.rrs";
-  if (manifest.files.includes(SCRIPT_FILE)) {
-    await loadFile(SCRIPT_FILE);
-
-    // Extract character and image definitions from the already-loaded raw
-    // source.  We re-fetch the text here rather than threading the raw source
-    // through loadFile() — the file is small and the cost is negligible.
-    try {
-      const scriptSrc = await readDataFile(SCRIPT_FILE);
-      globalCharMap = extractCharMap(scriptSrc);
-      globalImageMap = extractImageMap(scriptSrc);
-      console.info(
-        `[loader] Extracted ${globalCharMap.size} character definition(s) and ` +
-          `${globalImageMap.size} image definition(s) from ${SCRIPT_FILE}`,
-      );
-    } catch {
-      console.warn(
-        `[loader] Could not re-read ${SCRIPT_FILE} for map extraction`,
-      );
-    }
-  }
-
-  // Load all remaining files in parallel (script.rrs is already loaded above)
-  await Promise.all(
-    manifest.files.filter((f) => f !== SCRIPT_FILE).map(loadFile),
-  );
-
-  // Summary log — visible in browser DevTools / Tauri WebView console
   const labelCount = labelIndex.size;
+  const defineCount = Object.keys(defineVars).length;
   const fileCount = manifest.files.length;
+
   if (labelCount === 0) {
     console.error(
       `[loader] ⚠️  No labels loaded from ${fileCount} files! ` +
@@ -133,13 +88,13 @@ export async function loadAll(): Promise<void> {
     );
   } else {
     console.info(
-      `[loader] ✓ Loaded ${labelCount} labels from ${fileCount} script files.`,
+      `[loader] ✓ Loaded ${labelCount} labels and ${defineCount} defines from ${fileCount} files.`,
     );
   }
 }
 
 /**
- * Load a single .rrs file, parse it, and register its labels.
+ * Load a single .rrs file, parse it, and register its labels + defines.
  * Safe to call multiple times for the same file (no-op on second call).
  */
 export async function loadFile(filename: string): Promise<void> {
@@ -154,8 +109,6 @@ export async function loadFile(filename: string): Promise<void> {
     return;
   }
 
-  // Peek at Content-Type in web mode — if the server returns HTML (e.g. a
-  // 404 page with status 200) we'll catch it early.
   if (src.trimStart().startsWith("<!")) {
     console.warn(
       `[loader] ✗ ${filename} — received HTML instead of script text. ` +
@@ -164,7 +117,6 @@ export async function loadFile(filename: string): Promise<void> {
     return;
   }
 
-  // Sanity-check: a valid rrs file should contain at least one "label" keyword.
   if (!src.includes("label ")) {
     console.warn(
       `[loader] ✗ ${filename} — content does not look like a .rrs file ` +
@@ -175,11 +127,15 @@ export async function loadFile(filename: string): Promise<void> {
 
   let script: ScriptFile;
   try {
-    script = parseScript(src, filename, globalCharMap, globalImageMap);
+    script = parseScript(src, filename);
   } catch (e) {
     console.warn(`[loader] Parse error in ${filename}:`, e);
     return;
   }
+
+  // Merge this file's defines into the global defineVars dict.
+  // Later files win on collision (last-writer-wins, consistent with Ren'Py).
+  Object.assign(defineVars, script.defines);
 
   const newLabels = Object.keys(script.labels);
   if (newLabels.length === 0) {
@@ -189,9 +145,6 @@ export async function loadFile(filename: string): Promise<void> {
 
   for (const [label, steps] of Object.entries(script.labels)) {
     if (labelIndex.has(label)) {
-      // In the original game multiple files can define labels with the same
-      // name (e.g. helper labels). Last writer wins — consistent with how
-      // Ren'Py processes files alphabetically.
       console.warn(
         `[loader] Duplicate label "${label}" in ${filename} – overwriting`,
       );
@@ -200,63 +153,56 @@ export async function loadFile(filename: string): Promise<void> {
   }
 }
 
-/**
- * Return the steps for a given label, or null if unknown.
- * If the label hasn't been loaded yet this returns null; callers should
- * ensure loadAll() has completed first.
- */
+/** Return the steps for a given label, or null if unknown. */
 export function getLabel(name: string): Step[] | null {
   return labelIndex.get(name) ?? null;
 }
 
-/**
- * Return true if the label exists in the index.
- */
+/** Return true if the label exists in the index. */
 export function hasLabel(name: string): boolean {
   return labelIndex.has(name);
 }
 
-/**
- * Return all known label names (useful for debugging / gallery).
- */
+/** Return all known label names. */
 export function allLabels(): string[] {
   return Array.from(labelIndex.keys());
 }
 
-/**
- * Return the list of filenames from the manifest.
- */
+/** Return the list of filenames from the manifest. */
 export function getManifestFiles(): string[] {
   return manifestFiles;
 }
 
-/**
- * Return the entry-point label name from the manifest.
- * Defaults to "start" (Ren'Py convention) if not specified.
- */
+/** Return the entry-point label name from the manifest (defaults to "start"). */
 export function getManifestStart(): string {
   return manifestStart;
 }
 
-/**
- * Return the game display name from the manifest, if present.
- */
+/** Return the game display name from the manifest, if present. */
 export function getManifestGame(): string | undefined {
   return manifestGame;
 }
 
-/**
- * Return the gallery entries parsed from manifest.json (populated by
- * parse_gallery.ts from gallery_images.rpy).
- * Returns an empty array if the manifest has no "gallery" field.
- */
+/** Return the gallery entries from the manifest. */
 export function getGallery(): GalleryEntry[] {
   return manifestGallery;
 }
 
 /**
- * Clear everything — used in tests / hot-reload scenarios.
+ * Return the merged defines dict from all loaded .rrs files.
+ *
+ * This is used by the engine to populate the initial GameState.vars so that
+ * every image path, character name and audio alias is available at runtime:
+ *   vars["image.bg.entrance_day"] = "BGs/entrance_day.jpg"
+ *   vars["char.k"]                = "Keitaro"
+ *   vars["audio.bgm_main"]        = "Audio/BGM/main.ogg"
+ *   vars["persistent.animations"] = "true"
  */
+export function getDefineVars(): Record<string, string> {
+  return { ...defineVars };
+}
+
+/** Clear everything — used in tests / hot-reload scenarios. */
 export function reset(): void {
   labelIndex.clear();
   loadedFiles = new Set();
@@ -264,5 +210,5 @@ export function reset(): void {
   manifestStart = "start";
   manifestGame = undefined;
   manifestGallery = [];
-  globalCharMap = new Map();
+  defineVars = {};
 }
