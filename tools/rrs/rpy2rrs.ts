@@ -61,25 +61,6 @@ function safeDefineKey(abbr: string): string {
   return abbr.replace(/[^a-zA-Z0-9_]/g, "_");
 }
 
-/**
- * Normalise a raw asset path from a Ren'Py image/define statement.
- *
- * Ren'Py stores all game files relative to the `game/` directory, so paths
- * like `"images/CGs/taiga/..."` are common.  Our engine's `resolveAsset()`
- * already prefixes image paths with `/assets/images/`, so we must strip the
- * redundant leading `images/` segment here to avoid a double-prefix.
- *
- * Also fixes known capitalisation typos in the original Ren'Py source:
- *   "Bgs/" → "BGs/"  (the actual assets directory is "BGs/")
- */
-function normAssetPath(p: string): string {
-  // Strip redundant images/ prefix
-  if (p.startsWith("images/")) p = p.slice("images/".length);
-  // Fix capitalisation typos: "Bgs/" should be "BGs/"
-  if (p.startsWith("Bgs/")) p = "BGs/" + p.slice("Bgs/".length);
-  return p;
-}
-
 /** Normalize a Ren'Py transition name to .rrs equivalent */
 function normTransition(raw: string): string {
   const t = raw.trim();
@@ -234,23 +215,23 @@ async function loadAssetMaps(scriptRpyPath: string): Promise<AssetMaps> {
     );
     if (bgMatch) {
       const bgKey = bgMatch[2] ? bgMatch[1] + "_" + bgMatch[2] : bgMatch[1];
-      bg.set(bgKey, normAssetPath(bgMatch[3]));
+      bg.set(bgKey, bgMatch[3]);
       // Also store the base key (without modifier) so bare `scene bg_NAME` still resolves
-      if (bgMatch[2]) bg.set(bgMatch[1], normAssetPath(bgMatch[3]));
+      if (bgMatch[2]) bg.set(bgMatch[1], bgMatch[3]);
       continue;
     }
 
     // image cg NAME = "PATH"  (multi-word key, e.g. "cg black" → cg_black)
     const cgSpaceMatch = trimmed.match(/^image\s+cg\s+(\S+)\s*=\s*"([^"]+)"/);
     if (cgSpaceMatch) {
-      cg.set("cg_" + cgSpaceMatch[1], normAssetPath(cgSpaceMatch[2]));
+      cg.set("cg_" + cgSpaceMatch[1], cgSpaceMatch[2]);
       continue;
     }
 
     // image cg_NAME = "PATH"  (underscore key)
     const cgUnderMatch = trimmed.match(/^image\s+(cg_\S+)\s*=\s*"([^"]+)"/);
     if (cgUnderMatch) {
-      cg.set(cgUnderMatch[1], normAssetPath(cgUnderMatch[2]));
+      cg.set(cgUnderMatch[1], cgUnderMatch[2]);
       continue;
     }
 
@@ -259,16 +240,16 @@ async function loadAssetMaps(scriptRpyPath: string): Promise<AssetMaps> {
     const sxMatch = trimmed.match(/^image\s+sx\s+(.*?)\s*=\s*"([^"]+)"/);
     if (sxMatch) {
       const rawKey = sxMatch[1].trim().replace(/\s+/g, "_");
-      sx.set("sx_" + rawKey, normAssetPath(sxMatch[2]));
+      sx.set("sx_" + rawKey, sxMatch[2]);
       // Also store without prefix for resolution via raw name
-      sx.set(rawKey, normAssetPath(sxMatch[2]));
+      sx.set(rawKey, sxMatch[2]);
       continue;
     }
 
     // sx_ underscore images
     const sxUnderMatch = trimmed.match(/^image\s+(sx_\S+)\s*=\s*"([^"]+)"/);
     if (sxUnderMatch) {
-      sx.set(sxUnderMatch[1], normAssetPath(sxUnderMatch[2]));
+      sx.set(sxUnderMatch[1], sxUnderMatch[2]);
       continue;
     }
 
@@ -276,7 +257,7 @@ async function loadAssetMaps(scriptRpyPath: string): Promise<AssetMaps> {
     // Only store single-word image names to avoid capturing ATL/Movie defs
     const miscMatch = trimmed.match(/^image\s+([a-zA-Z0-9_]+)\s*=\s*"([^"]+)"/);
     if (miscMatch) {
-      misc.set(miscMatch[1], normAssetPath(miscMatch[2]));
+      misc.set(miscMatch[1], miscMatch[2]);
       continue;
     }
 
@@ -286,7 +267,7 @@ async function loadAssetMaps(scriptRpyPath: string): Promise<AssetMaps> {
       /^image\s+([a-zA-Z0-9_]+)\s*=\s*Movie\s*\(\s*play\s*=\s*"([^"]+\.webm)"/,
     );
     if (movieMatch) {
-      misc.set(movieMatch[1], normAssetPath(movieMatch[2]));
+      misc.set(movieMatch[1], movieMatch[2]);
       continue;
     }
   }
@@ -637,37 +618,55 @@ class Converter {
     return this.maps.audio.get(varName) ?? `Audio/???/${varName}.ogg`;
   }
 
-  private resolveBg(name: string): string {
-    return this.maps.bg.get(name) ?? `BGs/<UNKNOWN:${name}>.jpg`;
-  }
-
-  private resolveCg(name: string): string {
-    return this.maps.cg.get(name) ?? `CGs/<UNKNOWN:${name}>.jpg`;
-  }
-
-  private resolveSx(name: string): string {
-    return (
-      this.maps.sx.get("sx_" + name) ??
-      this.maps.sx.get(name) ??
-      `CGs/<UNKNOWN:sx_${name}>.jpg`
-    );
+  /**
+   * Return the image var-ref string for a bg image.
+   * Falls back to a quoted unknown marker if the key is not in the map.
+   */
+  private bgVarRef(key: string): string {
+    if (!this.maps.bg.has(key)) return `"BGs/<UNKNOWN:${key}>.jpg"`;
+    // Strip the bg_ prefix for the var ref key: bg_bathroom2_sunset → bathroom2_sunset
+    const refKey = key.startsWith("bg_") ? key.slice("bg_".length) : key;
+    return `image.bg.${refKey}`;
   }
 
   /**
-   * Try to resolve a bare scene name (no prefix) by attempting bg_NAME lookup,
-   * then misc image lookup. Returns null if completely unknown.
+   * Return the image var-ref string for a cg image.
+   * Falls back to a quoted unknown marker if the key is not in the map.
    */
-  private resolveBareName(name: string): string | null {
-    // Try bg_NAME first
-    const bgKey = "bg_" + name;
-    const bgPath = this.maps.bg.get(bgKey);
-    if (bgPath) return bgPath;
-    // Try CG map — handles `scene cg_black` (underscore-form) and similar
-    const cgPath = this.maps.cg.get(name);
-    if (cgPath) return cgPath;
-    // Try misc image map
-    const miscPath = this.maps.misc.get(name);
-    if (miscPath) return miscPath;
+  private cgVarRef(key: string): string {
+    if (!this.maps.cg.has(key)) return `"CGs/<UNKNOWN:${key}>.jpg"`;
+    // Strip the cg_ prefix for the var ref key: cg_arrival1 → arrival1
+    const refKey = key.startsWith("cg_") ? key.slice("cg_".length) : key;
+    return `image.cg.${refKey}`;
+  }
+
+  /**
+   * Return the image var-ref string for a sx image.
+   * Falls back to a quoted unknown marker if the key is not in the map.
+   */
+  private sxVarRef(key: string): string {
+    const found = this.maps.sx.has("sx_" + key) || this.maps.sx.has(key);
+    if (!found) return `"CGs/<UNKNOWN:sx_${key}>.jpg"`;
+    // Normalise: strip any sx_ prefix for the var ref key
+    const refKey = key.startsWith("sx_") ? key.slice("sx_".length) : key;
+    return `image.sx.${refKey}`;
+  }
+
+  /**
+   * Return the image var-ref string for a misc image.
+   * Falls back to null if the name is not in any map.
+   */
+  private miscVarRef(name: string): string | null {
+    if (this.maps.cg.has(name)) {
+      const refKey = name.startsWith("cg_") ? name.slice("cg_".length) : name;
+      return `image.cg.${refKey}`;
+    }
+    if (this.maps.bg.has("bg_" + name)) {
+      return `image.bg.${name}`;
+    }
+    if (this.maps.misc.has(name)) {
+      return `image.misc.${name}`;
+    }
     return null;
   }
 
@@ -720,6 +719,30 @@ class Converter {
       if (line === '"' || line === "'") return;
     }
 
+    // ── Ren'Py image declarations → top-level .rrs image var declarations ─────
+    // Instead of silently discarding these, emit them as `image.ns.key = "path"`
+    // top-level defines so the codegen can resolve them via the imageMap.
+    if (
+      line.startsWith("image ") &&
+      (line.includes(" = Movie(") ||
+        /\s=\s*"/.test(line) ||
+        /\s=\s*im\./.test(line))
+    ) {
+      this.processImageDecl(line);
+      return;
+    }
+
+    // ── define audio.VAR = "path" → emit as top-level audio alias ─────────────
+    // `define audio.xxx = "path"` becomes `audio.xxx = "path";` in the .rrs
+    // output so that play music / bgsound can reference the alias by name.
+    const audioDefineMatch = line.match(
+      /^define\s+(audio\.\w+)\s*=\s*"([^"]+)"/,
+    );
+    if (audioDefineMatch) {
+      this.emit(`${audioDefineMatch[1]} = "${escStr(audioDefineMatch[2])}";`);
+      return;
+    }
+
     // ── Statements we always skip ─────────────────────────────────────────────
     if (
       line.startsWith("$renpy.free_memory") ||
@@ -732,9 +755,6 @@ class Converter {
       line.startsWith("$ shuffle_menu") ||
       line === "window hide" ||
       line === "window show" ||
-      // Ren'Py image declarations (not needed at runtime)
-      (line.startsWith("image ") &&
-        (line.includes(" = Movie(") || line.includes(' = "'))) ||
       line.startsWith("define ") ||
       line === "init:" ||
       line.startsWith("init ") ||
@@ -968,13 +988,12 @@ class Converter {
     if (playMusicMatch) {
       const varName = playMusicMatch[1];
       const fadein = playMusicMatch[2] ?? playMusicMatch[3];
-      const path = this.resolveAudio(varName);
       if (fadein) {
         this.emit(
-          `${this.pad()}music::play("${path}") | fadein(${fmtFloat(parseFloat(fadein))});`,
+          `${this.pad()}music::play(${varName}) | fadein(${fmtFloat(parseFloat(fadein))});`,
         );
       } else {
-        this.emit(`${this.pad()}music::play("${path}");`);
+        this.emit(`${this.pad()}music::play(${varName});`);
       }
       return;
     }
@@ -982,27 +1001,21 @@ class Converter {
     // ── play sound NAME ───────────────────────────────────────────────────────
     const playSoundMatch = line.match(/^play\s+sound\s+(\S+)/);
     if (playSoundMatch) {
-      this.emit(
-        `${this.pad()}sound::play("${this.resolveAudio(playSoundMatch[1])}");`,
-      );
+      this.emit(`${this.pad()}sound::play(${playSoundMatch[1]});`);
       return;
     }
 
     // ── play audio NAME [loop] ────────────────────────────────────────────────
     const playAudioMatch = line.match(/^play\s+audio\s+(\S+)/);
     if (playAudioMatch) {
-      this.emit(
-        `${this.pad()}sound::play("${this.resolveAudio(playAudioMatch[1])}");`,
-      );
+      this.emit(`${this.pad()}sound::play(${playAudioMatch[1]});`);
       return;
     }
 
     // ── play bgsound / bgsound2 NAME [loop] ───────────────────────────────────
     const playBgsoundMatch = line.match(/^play\s+bgsound2?\s+(\S+)/);
     if (playBgsoundMatch) {
-      this.emit(
-        `${this.pad()}music::play("${this.resolveAudio(playBgsoundMatch[1])}");`,
-      );
+      this.emit(`${this.pad()}music::play(${playBgsoundMatch[1]});`);
       return;
     }
 
@@ -1040,12 +1053,8 @@ class Converter {
       } else if (cgName === "white") {
         this.emit(`${this.pad()}scene #ffffff${transPart};`);
       } else {
-        const path = this.resolveCg("cg_" + cgName);
-        if (path.startsWith("#")) {
-          this.emit(`${this.pad()}scene ${path}${transPart};`);
-        } else {
-          this.emit(`${this.pad()}scene "${path}"${transPart};`);
-        }
+        const ref = this.cgVarRef("cg_" + cgName);
+        this.emit(`${this.pad()}scene ${ref}${transPart};`);
       }
       return;
     }
@@ -1071,19 +1080,24 @@ class Converter {
         modifier && !isTransition && !isFilter
           ? bgBase + "_" + modifier
           : bgBase;
-      const bgPath =
-        this.maps.bg.get(bgKey) ??
-        (modifier && !isTransition && !isFilter
-          ? this.maps.bg.get(bgBase + " " + modifier)
-          : undefined) ??
-        this.resolveBg(bgKey);
+      const resolvedKey = this.maps.bg.has(bgKey)
+        ? bgKey
+        : modifier &&
+            !isTransition &&
+            !isFilter &&
+            this.maps.bg.has(bgBase + " " + modifier)
+          ? bgBase + " " + modifier
+          : bgKey;
+      const ref = this.bgVarRef(resolvedKey);
       const trans = transRaw
         ? normTransition(transRaw)
         : modifier && isTransition
           ? normTransition(modifier)
           : "";
+      // Preserve visual filter keyword in .rrs output so codegen/engine can apply it.
+      const filterPart = isFilter ? ` ${modifier!.toLowerCase()}` : "";
       const transPart = trans ? ` | ${trans}` : "";
-      this.emit(`${this.pad()}scene "${bgPath}"${transPart};`);
+      this.emit(`${this.pad()}scene ${ref}${filterPart}${transPart};`);
       return;
     }
 
@@ -1098,10 +1112,12 @@ class Converter {
       const trans = transRaw ? normTransition(transRaw) : "";
       const transPart = trans ? ` | ${trans}` : "";
       const lookupKey = afterSx.replace(/\s+/g, "_");
-      const sxPath =
-        this.maps.sx.get("sx_" + lookupKey) ?? this.maps.sx.get(lookupKey);
-      if (sxPath) {
-        this.emit(`${this.pad()}scene "${sxPath}"${transPart};`);
+      const hasSx =
+        this.maps.sx.has("sx_" + lookupKey) || this.maps.sx.has(lookupKey);
+      if (hasSx) {
+        this.emit(
+          `${this.pad()}scene ${this.sxVarRef(lookupKey)}${transPart};`,
+        );
       } else {
         this.emit(`${this.pad()}expr sx::${lookupKey}${transPart};`);
       }
@@ -1118,10 +1134,10 @@ class Converter {
         ? normTransition(sceneSxUnderMatch[3])
         : "";
       const transPart = trans ? ` | ${trans}` : "";
-      const sxPath =
-        this.maps.sx.get(sxKey) ?? this.maps.sx.get(sceneSxUnderMatch[1]);
-      if (sxPath) {
-        this.emit(`${this.pad()}scene "${sxPath}"${transPart};`);
+      const hasSxKey =
+        this.maps.sx.has(sxKey) || this.maps.sx.has(sceneSxUnderMatch[1]);
+      if (hasSxKey) {
+        this.emit(`${this.pad()}scene ${this.sxVarRef(sxKey)}${transPart};`);
       } else {
         this.emit(`${this.pad()}expr sx::${sxKey}${transPart};`);
       }
@@ -1160,9 +1176,9 @@ class Converter {
         this.emit(`${this.pad()}scene #ffffff${transPart};`);
         return;
       }
-      const resolved = this.resolveBareName(name);
-      if (resolved) {
-        this.emit(`${this.pad()}scene "${resolved}"${transPart};`);
+      const ref = this.miscVarRef(name);
+      if (ref) {
+        this.emit(`${this.pad()}scene ${ref}${transPart};`);
       } else {
         // Unknown bare name — emit with a comment so it's visible but parseable
         this.emit(`${this.pad()}scene "<UNKNOWN:${name}>"${transPart};`);
@@ -1184,11 +1200,11 @@ class Converter {
       const transPart = trans ? ` | ${trans}` : "";
       // Join all key words with underscores (e.g. "natsumi6 face1" → "natsumi6_face1")
       const lookupKey = afterSx.replace(/\s+/g, "_");
-      const sxPath =
-        this.maps.sx.get("sx_" + lookupKey) ?? this.maps.sx.get(lookupKey);
-      if (sxPath) {
+      const hasSx =
+        this.maps.sx.has("sx_" + lookupKey) || this.maps.sx.has(lookupKey);
+      if (hasSx) {
         this.emit(`${this.pad()}show sx_${lookupKey}${transPart} {`);
-        this.emit(`${this.pad(1)}src: "${sxPath}";`);
+        this.emit(`${this.pad(1)}src: ${this.sxVarRef(lookupKey)};`);
         this.emit(`${this.pad()}};`);
       } else {
         this.emit(`${this.pad()}expr sx::${lookupKey}${transPart};`);
@@ -1212,13 +1228,13 @@ class Converter {
     if (showCgSpaceMatch) {
       // Strip trailing colon — Ren'Py ATL blocks use `show cg NAME:` syntax
       const cgKey = "cg_" + showCgSpaceMatch[1].replace(/:$/, "");
-      const cgPath = this.resolveCg(cgKey);
+      const ref = this.cgVarRef(cgKey);
       const trans = showCgSpaceMatch[2]
         ? normTransition(showCgSpaceMatch[2])
         : "";
       const transPart = trans ? ` | ${trans}` : "";
       this.emit(`${this.pad()}show ${cgKey}${transPart} {`);
-      this.emit(`${this.pad(1)}src: "${cgPath}";`);
+      this.emit(`${this.pad(1)}src: ${ref};`);
       this.emit(`${this.pad()}};`);
       return;
     }
@@ -1229,15 +1245,15 @@ class Converter {
     );
     if (showCgUnderMatch) {
       const cgKey = showCgUnderMatch[1];
-      const cgPath = this.resolveCg(cgKey);
+      const ref = this.cgVarRef(cgKey);
       const at = showCgUnderMatch[2] ? ` @ ${showCgUnderMatch[2]}` : "";
       const trans = showCgUnderMatch[3]
         ? normTransition(showCgUnderMatch[3])
         : "";
       const transPart = trans ? ` | ${trans}` : "";
-      if (!cgPath.includes("<UNKNOWN")) {
+      if (!ref.includes("<UNKNOWN")) {
         this.emit(`${this.pad()}show ${cgKey}${transPart} {`);
-        this.emit(`${this.pad(1)}src: "${cgPath}";`);
+        this.emit(`${this.pad(1)}src: ${ref};`);
         this.emit(`${this.pad()}};`);
       } else {
         this.emit(`${this.pad()}show ${cgKey}${at}${transPart};`);
@@ -1250,11 +1266,11 @@ class Converter {
       /^show\s+(bg_\S+)(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
     );
     if (showBgMatch) {
-      const bgPath = this.resolveBg(showBgMatch[1]);
+      const ref = this.bgVarRef(showBgMatch[1]);
       const at = showBgMatch[2] ? ` @ ${showBgMatch[2]}` : "";
       const trans = showBgMatch[3] ? normTransition(showBgMatch[3]) : "";
       const transPart = trans ? ` | ${trans}` : "";
-      this.emit(`${this.pad()}show "${bgPath}"${at}${transPart};`);
+      this.emit(`${this.pad()}show ${ref}${at}${transPart};`);
       return;
     }
 
@@ -1493,6 +1509,109 @@ class Converter {
 
     // ── Anything unrecognised: emit as a comment ──────────────────────────────
     this.emit(`${this.pad()}// UNHANDLED: ${line}`);
+  }
+
+  // ── Image declaration emitter ────────────────────────────────────────────────
+
+  /**
+   * Parse a Ren'Py `image X = "PATH"` or `image X = Movie(...)` line and emit
+   * a top-level .rrs declaration of the form:
+   *   image.bg.bathroom2_sunset = "BGs/bathroom2_sunset.jpg";
+   *   image.cg.yoshinori1_5     = "CGs/cg_yoshinori_1_5.jpg";
+   *   image.sx.hiro10_9         = "CGs/SX/hiro10_9.jpg";
+   *   image.misc.montage_bg     = "CGs/montage_bg.jpg";
+   *
+   * Paths are stored verbatim as declared in the .rpy source (no stripping).
+   * The codegen resolves them at compile time via the imageMap built from
+   * these declarations.
+   */
+  private processImageDecl(line: string): void {
+    // image cg NAME = "PATH"  (space-separated two-word key, e.g. "cg yoshinori1_5")
+    const cgSpace = line.match(/^image\s+cg\s+(\S+)\s*=\s*"([^"]+)"/);
+    if (cgSpace) {
+      const key = cgSpace[1].replace(/\s+/g, "_");
+      this.emit(`image.cg.${key} = "${escStr(cgSpace[2])}";`);
+      return;
+    }
+
+    // image bg_NAME [STATE] = "PATH"
+    const bgUnder = line.match(
+      /^image\s+(bg_\S+)(?:\s+(\w+))?\s*=\s*"([^"]+)"/,
+    );
+    if (bgUnder) {
+      const base = bgUnder[1].slice("bg_".length); // strip bg_ prefix
+      const state = bgUnder[2];
+      const key = state ? base + "_" + state : base;
+      this.emit(`image.bg.${key} = "${escStr(bgUnder[3])}";`);
+      if (state) {
+        // Also emit base key for scenes that reference without modifier
+        this.emit(`image.bg.${base} = "${escStr(bgUnder[3])}";`);
+      }
+      return;
+    }
+
+    // image cg_NAME = "PATH"  (underscore form)
+    const cgUnder = line.match(/^image\s+(cg_\S+)\s*=\s*"([^"]+)"/);
+    if (cgUnder) {
+      const key = cgUnder[1].slice("cg_".length); // strip cg_ prefix
+      this.emit(`image.cg.${key} = "${escStr(cgUnder[2])}";`);
+      return;
+    }
+
+    // image sx NAME... = "PATH"  (space-separated key, e.g. "sx hiro10_9")
+    const sxSpace = line.match(/^image\s+sx\s+(.*?)\s*=\s*"([^"]+)"/);
+    if (sxSpace) {
+      const key = sxSpace[1].trim().replace(/\s+/g, "_");
+      this.emit(`image.sx.${key} = "${escStr(sxSpace[2])}";`);
+      return;
+    }
+
+    // image sx_NAME = "PATH"  (underscore form)
+    const sxUnder = line.match(/^image\s+(sx_\S+)\s*=\s*"([^"]+)"/);
+    if (sxUnder) {
+      const key = sxUnder[1].slice("sx_".length); // strip sx_ prefix
+      this.emit(`image.sx.${key} = "${escStr(sxUnder[2])}";`);
+      return;
+    }
+
+    // image NAME = Movie(play="PATH.webm")  — animated CG / sprite movie
+    const movie = line.match(
+      /^image\s+([a-zA-Z0-9_]+)\s*=\s*Movie\s*\(\s*play\s*=\s*"([^"]+\.webm)"/,
+    );
+    if (movie) {
+      this.emit(`image.misc.${movie[1]} = "${escStr(movie[2])}";`);
+      return;
+    }
+
+    // image NAME... FILTER = im.SomeEffect("PATH")  — image filter variants (e.g. im.Sepia)
+    // The sepia/filter word is the last name token; strip it so the key matches the base
+    // image declaration (e.g. `image lee_sleep sepia = im.Sepia(...)` → `image.misc.lee_sleep`).
+    // This intentionally produces the same key as the plain `image lee_sleep = "..."` definition;
+    // duplicate definitions with identical paths are harmless — last writer wins in the map.
+    const KNOWN_IMG_FILTERS = new Set(["sepia"]);
+    const imEffect = line.match(
+      /^image\s+((?:\w+\s+)*\w+)\s*=\s*im\.\w+\s*\(\s*"([^"]+)"/,
+    );
+    if (imEffect) {
+      const words = imEffect[1].trim().split(/\s+/);
+      // Strip trailing filter word if recognised (e.g. "sepia")
+      if (
+        words.length > 1 &&
+        KNOWN_IMG_FILTERS.has(words[words.length - 1].toLowerCase())
+      ) {
+        words.pop();
+      }
+      const key = words.join("_");
+      this.emit(`image.misc.${key} = "${escStr(imEffect[2])}";`);
+      return;
+    }
+
+    // image NAME = "PATH"  (generic misc — single or multi-word key)
+    const misc = line.match(/^image\s+((?:\w+\s+)*\w+)\s*=\s*"([^"]+)"/);
+    if (misc) {
+      const key = misc[1].trim().replace(/\s+/g, "_");
+      this.emit(`image.misc.${key} = "${escStr(misc[2])}";`);
+    }
   }
 
   private wouldCloseBlocks(indent: number): boolean {
@@ -1958,15 +2077,15 @@ async function convertFile(
   const filename = sourceBaseName + ".rrs";
   const lines = src.split("\n");
 
-  // Scan the source file for local image definitions (e.g. jmg_taiga1.rpy
-  // defines its own image names at the top level outside of script.rpy).
-  // These are merged into a file-local copy of the misc map so the converter
-  // can resolve them.
-  // Normalise paths from local file defs the same way as the global map loader.
-  function normLocalPath(p: string): string {
-    return p.startsWith("images/") ? p.slice("images/".length) : p;
-  }
-
+  // Local image definitions (e.g. bg/cg/misc images defined in individual
+  // story .rpy files rather than in script.rpy) are now handled by
+  // processImageDecl() at conversion time — they are emitted as top-level
+  // image.* declarations in the output .rrs file.  The Converter's maps are
+  // still used to determine the correct var-ref namespace (bg/cg/sx/misc) for
+  // scene/show commands that reference those images.
+  //
+  // We perform a quick pre-scan of the file to populate file-local map entries
+  // so that the Converter can emit correct var-refs for locally-defined images.
   const localMisc = new Map(maps.misc);
   const localBg = new Map(maps.bg);
   const localCg = new Map(maps.cg);
@@ -1976,26 +2095,26 @@ async function convertFile(
     const bgM = t.match(/^image\s+(bg_\S+)(?:\s+(\w+))?\s*=\s*"([^"]+)"/);
     if (bgM) {
       const key = bgM[2] ? bgM[1] + "_" + bgM[2] : bgM[1];
-      localBg.set(key, normLocalPath(bgM[3]));
-      if (bgM[2]) localBg.set(bgM[1], normLocalPath(bgM[3]));
+      localBg.set(key, bgM[3]);
+      if (bgM[2]) localBg.set(bgM[1], bgM[3]);
       continue;
     }
     // image cg NAME = "PATH"
     const cgM = t.match(/^image\s+cg\s+(\S+)\s*=\s*"([^"]+)"/);
     if (cgM) {
-      localCg.set("cg_" + cgM[1], normLocalPath(cgM[2]));
+      localCg.set("cg_" + cgM[1], cgM[2]);
       continue;
     }
     // image cg_NAME = "PATH"
     const cgUM = t.match(/^image\s+(cg_\S+)\s*=\s*"([^"]+)"/);
     if (cgUM) {
-      localCg.set(cgUM[1], normLocalPath(cgUM[2]));
+      localCg.set(cgUM[1], cgUM[2]);
       continue;
     }
     // image NAME = "PATH"  (single-word misc)
     const miscM = t.match(/^image\s+([a-zA-Z0-9_]+)\s*=\s*"([^"]+)"/);
     if (miscM) {
-      localMisc.set(miscM[1], normLocalPath(miscM[2]));
+      localMisc.set(miscM[1], miscM[2]);
       continue;
     }
     // image NAME = Movie(play="PATH", ...)  — animated CG / sprite movie
@@ -2003,7 +2122,7 @@ async function convertFile(
       /^image\s+([a-zA-Z0-9_]+)\s*=\s*Movie\s*\(\s*play\s*=\s*"([^"]+\.webm)"/,
     );
     if (movieM) {
-      localMisc.set(movieM[1], normLocalPath(movieM[2]));
+      localMisc.set(movieM[1], movieM[2]);
     }
   }
 

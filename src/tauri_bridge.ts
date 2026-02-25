@@ -142,7 +142,10 @@ export function setActiveAssetsDir(dir: string | null): void {
  */
 export function buildNativeImagePath(assetsDir: string, src: string): string {
   // Strip any leading slash from src (defensive)
-  const rel = src.startsWith("/") ? src.slice(1) : src;
+  let rel = src.startsWith("/") ? src.slice(1) : src;
+  // Some verbatim .rpy paths already include the "images/" segment; strip it
+  // before prepending so we never produce a double "images/images/" prefix.
+  if (rel.startsWith("images/")) rel = rel.slice("images/".length);
   return `${assetsDir}/images/${rel}`;
 }
 

@@ -249,7 +249,23 @@ class Parser {
     throw this.err(`Unknown statement keyword '${tok.value}'`);
   }
 
+  // ── Collect a dotted identifier chain: a.b.c ─────────────────────────────
+  //    Used for image var refs like image.bg.foo in scene / show src fields.
+
+  private parseDottedIdent(): string {
+    let name = this.expectKind("Ident").value;
+    while (this.check(".") && this.peek(1).kind === "Ident") {
+      this.advance(); // consume "."
+      name += "." + this.advance().value;
+    }
+    return name;
+  }
+
   // ── scene "path" | transition ;
+  //    scene image.bg.foo | transition ;  (image var reference)
+
+  // Known visual filter keywords that may appear between the src and | transition.
+  private static readonly SCENE_FILTERS = new Set(["sepia"]);
 
   private parseScene(): Stmt {
     let src: string;
@@ -258,8 +274,23 @@ class Parser {
       src = this.advance().value;
     } else if (tok.kind === "Str") {
       src = this.advance().value;
+    } else if (tok.kind === "Ident") {
+      // Dotted ident var reference, e.g. image.bg.bathroom2_sunset
+      src = this.parseDottedIdent();
     } else {
-      throw this.err(`Expected scene path or colour, got '${tok.value}'`);
+      throw this.err(
+        `Expected scene path, colour, or image var ref, got '${tok.value}'`,
+      );
+    }
+
+    // Optional visual filter keyword, e.g. `scene image.bg.tent_day sepia | dissolve`
+    let filter: string | undefined;
+    const filterTok = this.peek();
+    if (
+      filterTok.kind === "Ident" &&
+      Parser.SCENE_FILTERS.has(filterTok.value)
+    ) {
+      filter = this.advance().value;
     }
 
     let transition: string | undefined;
@@ -270,7 +301,7 @@ class Parser {
 
     this.eatSemi();
     const kind = "Scene" as const;
-    return { kind, src, transition };
+    return { kind, src, filter, transition };
   }
 
   // ── music::play("path") | fadeout(2.0) | fadein(1.0) ;
@@ -282,7 +313,12 @@ class Parser {
     this.expectKind("(");
     let src: string | undefined;
     if (this.check("Str")) {
+      // Quoted string path: music::play("Audio/BGM/foo.ogg")
       src = this.advance().value;
+    } else if (this.peek().kind === "Ident") {
+      // Bare audio alias identifier: music::play(outdoors)
+      // Resolved to the actual path at codegen time via the audioMap.
+      src = this.parseDottedIdent();
     }
     this.expectKind(")");
 
@@ -313,7 +349,11 @@ class Parser {
     this.expectKind("(");
     let src: string | undefined;
     if (this.check("Str")) {
+      // Quoted string path: sound::play("Audio/SFX/foo.ogg")
       src = this.advance().value;
+    } else if (this.peek().kind === "Ident") {
+      // Bare audio alias identifier: sound::play(alarmclock)
+      src = this.parseDottedIdent();
     }
     this.expectKind(")");
     this.eatSemi();
@@ -375,7 +415,13 @@ class Parser {
       while (!this.check("}") && !this.check("EOF")) {
         const key = this.expectKind("Ident").value;
         this.expectKind(":");
-        const val = this.expectKind("Str").value;
+        // Value is either a quoted string literal or a dotted ident var ref
+        let val: string;
+        if (this.check("Str")) {
+          val = this.advance().value;
+        } else {
+          val = this.parseDottedIdent();
+        }
         if (key === "src" || key === "src_body") src = val;
         else if (key === "src_face") faceSrc = val;
         else if (key === "key") spriteKeyOverride = val;

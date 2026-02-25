@@ -1,5 +1,5 @@
 import type { Step, ScriptFile, Manifest } from "./types";
-import { parseScript, extractCharMap } from "./rrs/index";
+import { parseScript, extractCharMap, extractImageMap } from "./rrs/index";
 import { isTauri, getActiveAssetsDir } from "./tauri_bridge";
 
 // ─── Label registry ───────────────────────────────────────────────────────────
@@ -15,6 +15,11 @@ let manifestGame: string | undefined = undefined;
 // All other files are compiled with this map so `speak k "text"` resolves to
 // speaker "Keitaro" even though story files carry no `define` declarations.
 let globalCharMap: Map<string, string> = new Map();
+
+// Global image var-ref → file path map, populated from script.rrs.
+// All other files are compiled with this map so `scene image.bg.foo` resolves
+// to the correct path even though story files may not declare that image.
+let globalImageMap: Map<string, string> = new Map();
 
 // ─── Data file reader ─────────────────────────────────────────────────────────
 
@@ -83,27 +88,30 @@ export async function loadAll(): Promise<void> {
 
   // ── Two-pass loading ───────────────────────────────────────────────────────
   // Pass 1: load script.rrs first (if present) and extract the global
-  //         character map from its `char.k = "Keitaro";` declarations.
-  //         Story files carry no char declarations and rely on this map.
-  // Pass 2: load all remaining files in parallel, passing the global charMap
-  //         so speaker abbreviations are resolved correctly.
+  //         character map from its `char.k = "Keitaro";` declarations and the
+  //         global image map from its `image.bg.foo = "..."` declarations.
+  //         Story files carry no such declarations and rely on these maps.
+  // Pass 2: load all remaining files in parallel, passing both global maps
+  //         so speaker abbreviations and image var refs are resolved correctly.
 
   const SCRIPT_FILE = "script.rrs";
   if (manifest.files.includes(SCRIPT_FILE)) {
     await loadFile(SCRIPT_FILE);
 
-    // Extract character definitions from the already-loaded raw source.
-    // We re-fetch the text here rather than threading the raw source through
-    // loadFile() — the file is tiny and the cost is negligible.
+    // Extract character and image definitions from the already-loaded raw
+    // source.  We re-fetch the text here rather than threading the raw source
+    // through loadFile() — the file is small and the cost is negligible.
     try {
       const scriptSrc = await readDataFile(SCRIPT_FILE);
       globalCharMap = extractCharMap(scriptSrc);
+      globalImageMap = extractImageMap(scriptSrc);
       console.info(
-        `[loader] Extracted ${globalCharMap.size} character definition(s) from ${SCRIPT_FILE}`,
+        `[loader] Extracted ${globalCharMap.size} character definition(s) and ` +
+          `${globalImageMap.size} image definition(s) from ${SCRIPT_FILE}`,
       );
     } catch {
       console.warn(
-        `[loader] Could not re-read ${SCRIPT_FILE} for charMap extraction`,
+        `[loader] Could not re-read ${SCRIPT_FILE} for map extraction`,
       );
     }
   }
@@ -165,7 +173,7 @@ export async function loadFile(filename: string): Promise<void> {
 
   let script: ScriptFile;
   try {
-    script = parseScript(src, filename, globalCharMap);
+    script = parseScript(src, filename, globalCharMap, globalImageMap);
   } catch (e) {
     console.warn(`[loader] Parse error in ${filename}:`, e);
     return;

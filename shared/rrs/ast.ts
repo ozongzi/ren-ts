@@ -88,12 +88,20 @@ export type AssignStmt = {
 
 /** scene "path/bg.jpg" | dissolve ;
  *  scene #000000 ;
+ *  scene image.bg.tent_day sepia | dissolve ;
  */
 export type SceneStmt = {
   kind: "Scene";
   /** File path string OR hex colour like "#000000" */
   src: string;
   transition?: string;
+  /**
+   * Optional visual filter applied to the background.
+   * Currently only "sepia" is recognised; maps directly to CSS filter: sepia(1).
+   * Written as a bare keyword between the src and the | transition:
+   *   scene image.bg.tent_day sepia | dissolve ;
+   */
+  filter?: string;
 };
 
 /** music::play("Audio/BGM/foo.ogg") ;

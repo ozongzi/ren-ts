@@ -82,7 +82,11 @@ export function resolveAsset(src: string): string {
   // ── Web mode ──
   if (isAudioPath(src)) return `/assets/${src}`;
   // Image asset (BGs, CGs, Sprites, UI, FX, Animated CGs, …)
-  return `/assets/images/${src}`;
+  // Some verbatim .rpy paths already include the "images/" segment
+  // (e.g. "images/BGs/foo.jpg"); strip it before prepending so we never
+  // produce a double "images/images/" prefix.
+  const imgSrc = src.startsWith("images/") ? src.slice("images/".length) : src;
+  return `/assets/images/${imgSrc}`;
 }
 
 /**

@@ -41,46 +41,58 @@ import type {
 // ── Define maps ───────────────────────────────────────────────────────────────
 
 /**
- * Build the two resolution maps from the top-level define declarations.
+ * Build the resolution maps from the top-level define declarations.
  *
  * charMap   : abbr  → full name   (from `char.<abbr> = "Name"`)
  * audioMap  : alias → path        (from `audio.<alias> = "path"`)
+ * imageMap  : full key → path     (from `image.<ns>.<key> = "path"`)
+ *               e.g. "image.bg.bathroom2_sunset" → "BGs/bathroom2_sunset.jpg"
  *
  * Declarations are written as plain bare assignments at the top level
  * (outside any label block), with no keyword:
  *   char.k = "Keitaro";
+ *   image.bg.bathroom2_sunset = "BGs/bathroom2_sunset.jpg";
  * Legacy bare-key format (`k = "Keitaro"`) is also accepted for
  * backward compatibility with previously generated .rrs files.
  */
 export function buildDefineMaps(
   defines: DefineDecl[],
   globalCharMap?: Map<string, string>,
+  globalImageMap?: Map<string, string>,
 ): {
   charMap: Map<string, string>;
   audioMap: Map<string, string>;
+  imageMap: Map<string, string>;
 } {
   // Start from the global char map (populated from script.rrs) so that
   // story files which carry no char declarations can still resolve
   // speaker abbreviations.
   const charMap = new Map<string, string>(globalCharMap);
   const audioMap = new Map<string, string>();
+  // Start from the global image map so that story files can reference images
+  // declared in script.rrs.
+  const imageMap = new Map<string, string>(globalImageMap);
 
   for (const d of defines) {
     if (d.key.startsWith("audio.")) {
-      // audio alias: `define audio.bgm_main = "Audio/BGM/main.ogg";`
+      // audio alias: `audio.bgm_main = "Audio/BGM/main.ogg";`
       audioMap.set(d.key.slice("audio.".length), d.value);
     } else if (d.key.startsWith("char.")) {
       // canonical character declaration: `char.k = "Keitaro";`
       // File-local definitions override the global map.
       charMap.set(d.key.slice("char.".length), d.value);
+    } else if (d.key.startsWith("image.")) {
+      // image path declaration: `image.bg.bathroom2_sunset = "BGs/...";`
+      // Store with full key so lookups use the same form as the DSL.
+      imageMap.set(d.key, d.value);
     } else {
-      // Legacy bare-key character declaration: `define k = "Keitaro";`
+      // Legacy bare-key character declaration: `k = "Keitaro";`
       // Kept for backward compatibility with older generated .rrs files.
       charMap.set(d.key, d.value);
     }
   }
 
-  return { charMap, audioMap };
+  return { charMap, audioMap, imageMap };
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -99,15 +111,20 @@ export function compile(
   program: Program,
   sourceName: string,
   globalCharMap?: Map<string, string>,
+  globalImageMap?: Map<string, string>,
 ): JsonFile {
   // Hoist nested label declarations to top-level before code generation.
   program = hoistNestedLabels(program);
 
   const labels: Record<string, JsonLabel> = {};
-  const { charMap, audioMap } = buildDefineMaps(program.defines, globalCharMap);
+  const { charMap, audioMap, imageMap } = buildDefineMaps(
+    program.defines,
+    globalCharMap,
+    globalImageMap,
+  );
 
   for (const label of program.labels) {
-    const ctx = new CodegenContext(charMap, audioMap);
+    const ctx = new CodegenContext(charMap, audioMap, imageMap);
     labels[label.name] = ctx.genLabel(label);
   }
 
@@ -196,17 +213,26 @@ class CodegenContext {
   private charMap: Map<string, string>;
 
   /**
-   * Audio alias → full path  (from `define audio.*` declarations).
+   * Audio alias → full path  (from `audio.*` declarations).
    * Used by genMusic(), genSound(), and voice resolution to expand aliases.
    */
   private audioMap: Map<string, string>;
 
+  /**
+   * Image var ref → file path  (from `image.*` declarations).
+   * Key is the full dotted name, e.g. "image.bg.bathroom2_sunset".
+   * Used by genScene() and genShow() to resolve ident src references.
+   */
+  private imageMap: Map<string, string>;
+
   constructor(
     charMap: Map<string, string> = new Map(),
     audioMap: Map<string, string> = new Map(),
+    imageMap: Map<string, string> = new Map(),
   ) {
     this.charMap = charMap;
     this.audioMap = audioMap;
+    this.imageMap = imageMap;
   }
 
   // ── Label ─────────────────────────────────────────────────────────────────
@@ -267,10 +293,31 @@ class CodegenContext {
     return [{ type: "set", var: stmt.name, op: stmt.op, value: stmt.value }];
   }
 
+  /**
+   * Resolve an image var reference to its file path.
+   *
+   * If `src` is a dotted ident like "image.bg.bathroom2_sunset" it is looked
+   * up in the imageMap.  Plain string paths (containing "/" or starting with
+   * "#") are returned as-is.
+   */
+  private resolveImageRef(src: string): string {
+    if (src.startsWith("image.")) {
+      const resolved = this.imageMap.get(src);
+      if (resolved !== undefined) return resolved;
+      // Unknown var ref — preserve as marker so it's visible at runtime
+      console.warn(`[codegen] unresolved image ref: ${src}`);
+    }
+    return src;
+  }
+
   private genScene(stmt: SceneStmt): JsonStep[] {
     // A scene change clears all sprite state
     this.spriteState.clear();
-    const step: JsonStep = { type: "scene", src: stmt.src };
+    const step: JsonStep = {
+      type: "scene",
+      src: this.resolveImageRef(stmt.src),
+    };
+    if (stmt.filter) step.filter = stmt.filter;
     if (stmt.transition) step.transition = stmt.transition;
     return [step];
   }
@@ -316,7 +363,7 @@ class CodegenContext {
       const bodyStep: JsonStep = {
         type: "show",
         sprite: bodyKey,
-        src: src ?? bodySrc,
+        src: this.resolveImageRef(src ?? bodySrc),
       };
       if (at) bodyStep.at = at;
 
@@ -324,7 +371,7 @@ class CodegenContext {
         type: "show",
         sprite: faceKey,
         // Use explicit faceSrc if provided; fall back to derived path
-        src: faceSrc ?? derivedFaceSrc,
+        src: this.resolveImageRef(faceSrc ?? derivedFaceSrc),
       };
       if (at) faceStep.at = at;
 
@@ -349,7 +396,7 @@ class CodegenContext {
     const step: JsonStep = { type: "show", sprite: spriteKey };
 
     if (src) {
-      step.src = src;
+      step.src = this.resolveImageRef(src);
     } else if (!bodyKey.toLowerCase().startsWith("cg_")) {
       // Attempt to auto-derive src for a plain body sprite
       try {
@@ -486,16 +533,23 @@ class CodegenContext {
   }
 
   /**
-   * Expand an audio alias (e.g. "audio.bgm_main") to its full path.
-   * If the value starts with "audio." and the alias is known, return the path.
-   * Otherwise return the value unchanged.
+   * Expand an audio alias to its full path.
+   *
+   * Handles three forms:
+   *   1. `audio.bgm_main`  — dotted form from define declarations
+   *   2. `outdoors`        — bare alias name emitted by the converter for
+   *                          `play music outdoors` / `play bgsound birds`
+   *   3. Plain path string — returned unchanged (legacy .rrs files that
+   *                          already contain the resolved file path)
    */
   private resolveAudioAlias(src: string): string {
     if (src.startsWith("audio.")) {
       const alias = src.slice("audio.".length);
       return this.audioMap.get(alias) ?? src;
     }
-    return src;
+    // Bare alias name: look it up directly in the audioMap.
+    // Falls back to the original value so plain file paths pass through.
+    return this.audioMap.get(src) ?? src;
   }
 
   private genWait(stmt: WaitStmt): JsonStep[] {
