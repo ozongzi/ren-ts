@@ -10,9 +10,6 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "rrs:compile": "bun run tools/rrs/cli.ts",
-    "rrs:decompile": "bun run tools/rrs/decompile.ts",
-    "rrs:roundtrip": "bun run tools/rrs/batch_roundtrip.ts",
     "rpy2rrs": "bun run tools/rrs/rpy2rrs.ts"
   },
   "dependencies": {
