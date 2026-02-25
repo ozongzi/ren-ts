@@ -388,7 +388,7 @@ function parseTranslationBlocks(
             const cm = inner.match(
               /^#\s+[\w_]+\s+"((?:[^"\\]|\\.)*)"\s*(?:with\s+\S+)?\s*$/,
             );
-            if (cm) englishText = cm[1];
+            if (cm) englishText = cm[1].replace(/\{[^{}]*\}/g, "").trim();
           }
           i++;
           continue;
@@ -402,7 +402,7 @@ function parseTranslationBlocks(
         if (inner.startsWith("old ") || inner.startsWith("new ")) {
           const om = inner.match(/^old\s+"((?:[^"\\]|\\.)*)"\s*$/);
           if (om) {
-            englishText = om[1];
+            englishText = om[1].replace(/\{[^{}]*\}/g, "").trim();
             i++;
             continue;
           }
