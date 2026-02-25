@@ -125,8 +125,8 @@ function normCondition(cond: string): string {
   return (
     cond
       .trim()
-      // Python attribute access → spaces around dot (but careful with numbers)
-      .replace(/(\w)\.([\w_])/g, (_m, a, b) => `${a} . ${b}`)
+      // Python attribute access — keep dots as-is (do not insert spaces)
+      .replace(/(\w)\.([\w_])/g, (_m, a, b) => `${a}.${b}`)
       // Python boolean operators
       .replace(/\band\b/g, "&&")
       .replace(/\bor\b/g, "||")

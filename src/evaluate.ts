@@ -248,11 +248,14 @@ function findTopLevel(haystack: string, needle: string): number {
 
 /** Resolve a single operand to a JavaScript value */
 function resolveOperand(token: string, vars: Vars): unknown {
-  token = token.trim();
+  // Normalize token: trim and collapse any spaces around dots so expressions
+  // like `persistent . animations` are treated the same as
+  // `persistent.animations`.
+  token = token.trim().replace(/\s*\.\s*/g, ".");
 
   // Boolean literals
-  if (token === "True") return true;
-  if (token === "False") return false;
+  if (token === "True" || token === "true") return true;
+  if (token === "False" || token === "false") return false;
   if (token === "None") return null;
 
   // String literal
