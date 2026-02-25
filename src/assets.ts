@@ -79,15 +79,15 @@ export function resolveAsset(src: string): string {
   if (!src) return "";
   if (isCssColor(src)) return src;
 
-  // ── Unresolved image key fallback ──────────────────────────────────────────
+  // ── Unresolved image key handling ─────────────────────────────────────────
   // Keys reach here when the codegen couldn't find the image in the imageMap.
-  // They have no "/" and are not a colour.  Convert to a best-guess path.
+  // They have no "/" and are not a colour.  Previously we attempted a best-guess
+  // fallback by converting dots to underscores and trying images/<name>.jpg.
+  // That behavior has been removed: now we log an error and return an empty src
+  // so the renderer does not attempt to load a guessed file.
   if (!src.includes("/") && !src.startsWith("#")) {
-    // "cg.arrival2" → "cg_arrival2", "bg_entrance_day" → "bg_entrance_day"
-    const filename = src.replace(/\./g, "_");
-    // Recurse with the fallback path (defaults to .jpg; games should declare
-    // all images explicitly to avoid this path)
-    return resolveAsset(`images/${filename}.jpg`);
+    console.error(`[assets] Unresolved image key: ${src}`);
+    return "";
   }
 
   if (isTauri) {

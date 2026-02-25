@@ -267,9 +267,37 @@ function resolveOperand(token: string, vars: Vars): unknown {
   const n = Number(token);
   if (!isNaN(n) && token !== "") return n;
 
-  // persistent.* and renpy.* → False
-  if (token.startsWith("persistent.") || token.startsWith("renpy.")) {
-    return false;
+  // dotted token handling: try direct key then nested lookup (vars["a.b"] or vars.a.b).
+  // If unresolved and token is a persistent.* or renpy.* reference, treat as False.
+  if (token.includes(".")) {
+    // Direct lookup: vars["persistent.animations"]
+    if (token in vars) return vars[token];
+
+    // Nested object traversal: vars.persistent && vars.persistent.animations
+    const parts = token.split(".");
+    if (parts.length > 0 && parts[0] in vars) {
+      let cur: any = (vars as any)[parts[0]];
+      let found = true;
+      for (let i = 1; i < parts.length; i++) {
+        if (
+          cur !== undefined &&
+          cur !== null &&
+          typeof cur === "object" &&
+          parts[i] in cur
+        ) {
+          cur = cur[parts[i]];
+        } else {
+          found = false;
+          break;
+        }
+      }
+      if (found) return cur;
+    }
+
+    // Fall back: treat persistent.* and renpy.* as False when unresolved
+    if (token.startsWith("persistent.") || token.startsWith("renpy.")) {
+      return false;
+    }
   }
 
   // Variable lookup

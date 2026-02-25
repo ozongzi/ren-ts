@@ -633,6 +633,20 @@ class Converter {
       return;
     }
 
+    // ── default VAR = VALUE ───────────────────────────────────────────────────
+    // Treat Ren'Py `default X = Y` as an emitted assignment so persistent
+    // defaults and other defaulted variables are present in the generated .rrs.
+    // Example: `default persistent.animations = True` → `persistent.animations = true;`
+    const defaultMatch = line.match(/^default\s+([\w.]+)\s*=\s*(.+)$/);
+    if (defaultMatch) {
+      const varName = defaultMatch[1];
+      let val = defaultMatch[2].trim();
+      // Normalize Python booleans to JS/rrs booleans
+      val = val.replace(/\bTrue\b/g, "true").replace(/\bFalse\b/g, "false");
+      this.emit(`${this.pad()}${varName} = ${val};`);
+      return;
+    }
+
     // ── Statements we always skip ─────────────────────────────────────────────
     if (
       line.startsWith("$renpy.free_memory") ||
@@ -646,7 +660,6 @@ class Converter {
       line.startsWith("define ") ||
       line === "init:" ||
       line.startsWith("init ") ||
-      line.startsWith("default ") ||
       line.startsWith("python:") ||
       /^(zoom|xalign|yalign|xpos|ypos|alpha|ease|linear)\s/.test(line) ||
       line.match(/^\$\s*working\s*=/) !== null ||
