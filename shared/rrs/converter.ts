@@ -1,14 +1,13 @@
-// ── converter.ts ──────────────────────────────────────────────────────────────
+// ── shared/rrs/converter.ts ───────────────────────────────────────────────────
 //
-// Browser-compatible Ren'Py → .rrs converter.
+// Canonical Ren'Py → .rrs converter.  Pure TypeScript — no Deno or Node I/O.
 //
-// This module contains the core conversion logic extracted from
-// tools/rrs/rpy2rrs.ts, rewritten to depend only on standard TypeScript
-// (no Deno APIs).  It can be imported by:
-//   - The React UI (ConvertScreen.tsx) for in-browser conversion
-//   - Any bundler-based entry point that needs the conversion logic
+// Importable by:
+//   - The React UI  (via src/converter.ts re-export)
+//   - The CLI tool  (tools/rrs/rpy2rrs.ts)
+//   - Any other bundler-based or Deno-based entry point
 //
-// For full batch conversion with asset-map resolution, use the CLI tool:
+// For batch conversion with file I/O, use the CLI:
 //   deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest
 //
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,17 +21,53 @@ export interface AssetMaps {
   bg: Map<string, string>;
   /** cg_NAME → file path */
   cg: Map<string, string>;
-  /** sfx_NAME → file path */
+  /** sfx/sx_NAME → file path */
   sx: Map<string, string>;
-  /** misc_NAME → file path */
+  /** misc image name → file path */
   misc: Map<string, string>;
-  /** character abbreviation → full name */
+  /** character abbreviation → full display name */
   charMap: Map<string, string>;
-  /** optional dialogue translation map */
+  /** optional dialogue translation map: English → translated */
   tl?: Map<string, string>;
 }
 
-// ── Translation block parser ───────────────────────────────────────────────────
+export interface ConversionResult {
+  /** Converted .rrs source text */
+  rrs: string;
+  /** true if the output contains at least one label block */
+  hasLabels: boolean;
+  /** base name of the source file (without extension) */
+  baseName: string;
+  /** number of source lines processed */
+  lineCount: number;
+  /** warnings accumulated during conversion */
+  warnings: string[];
+}
+
+/** Manifest written alongside the converted files */
+export interface Manifest {
+  start: string;
+  game?: string;
+  files: string[];
+}
+
+export interface BatchInput {
+  /** File name (e.g. "day1.rpy") */
+  name: string;
+  /** Full text content of the file */
+  text: string;
+}
+
+export interface BatchResult {
+  /** Converted files (only those that contained at least one label) */
+  files: Array<{ name: string; rrs: string; warnings: string[] }>;
+  /** Generated manifest */
+  manifest: Manifest;
+  /** Files that were skipped (no labels found) */
+  skipped: string[];
+}
+
+// ── Translation block parser ──────────────────────────────────────────────────
 
 /**
  * Parse a Ren'Py translation `.rpy` file (e.g. `tl/chinese/day1.rpy`) and
@@ -118,7 +153,7 @@ export function parseTranslationBlocks(content: string): Map<string, string> {
           continue;
         }
 
-        // Speaker "translated text"  — the Chinese line
+        // Speaker "translated text"  — the translated line
         const dm = inner.match(
           /^[\w_]+\s+"((?:[^"\\]|\\.)*)"\s*(?:with\s+\S+)?\s*$/,
         );
@@ -142,25 +177,7 @@ export function parseTranslationBlocks(content: string): Map<string, string> {
   return out;
 }
 
-export interface ConversionResult {
-  /** Converted .rrs source text */
-  rrs: string;
-  /** true if the output contains at least one label block */
-  hasLabels: boolean;
-  /** base name of the source file (without extension) */
-  baseName: string;
-  /** number of source lines processed */
-  lineCount: number;
-  /** warnings accumulated during conversion */
-  warnings: string[];
-}
-
-/** Manifest written alongside the converted files */
-export interface Manifest {
-  start: string;
-  game?: string;
-  files: string[];
-}
+// ── Asset map helpers ─────────────────────────────────────────────────────────
 
 export function emptyAssetMaps(): AssetMaps {
   return {
@@ -173,12 +190,19 @@ export function emptyAssetMaps(): AssetMaps {
   };
 }
 
-// ── Parse script.rpy content (in-memory) to extract asset + char maps ─────────
-
 /**
  * Parse the text content of a Ren'Py `script.rpy` (or similar file) and
- * return populated AssetMaps.  This is the browser equivalent of
- * `loadAssetMaps()` in rpy2rrs.ts.
+ * return populated AssetMaps.  This is the pure-text equivalent of the
+ * file-I/O `loadAssetMaps()` used by the CLI tool.
+ *
+ * Handles all image-definition variants found in the wild:
+ *   - `define audio.VAR = "PATH"`
+ *   - `define/$ abbr = Character("Name", ...)`
+ *   - `image bg_NAME = "PATH"` and `image bg_NAME STATE = "PATH"`
+ *   - `image cg NAME = "PATH"` and `image cg_NAME = "PATH"`
+ *   - `image sx NAME_PARTS = "PATH"` and `image sx_NAME = "PATH"`
+ *   - `image NAME = Movie(play="PATH", ...)` animated sprites/CGs
+ *   - Generic `image NAME = "PATH"` (misc)
  */
 export function parseAssetMaps(scriptRpyText: string): AssetMaps {
   const audio = new Map<string, string>();
@@ -191,14 +215,14 @@ export function parseAssetMaps(scriptRpyText: string): AssetMaps {
   for (const line of scriptRpyText.split("\n")) {
     const trimmed = line.trim();
 
-    // define audio.VAR = "PATH"
+    // ── define audio.VAR = "PATH" ────────────────────────────────────────────
     const audioMatch = trimmed.match(/^define\s+audio\.(\w+)\s*=\s*"([^"]+)"/);
     if (audioMatch) {
       audio.set(audioMatch[1], audioMatch[2]);
       continue;
     }
 
-    // Character definitions — four forms found in the wild:
+    // ── Character definitions — four forms found in the wild ─────────────────
     //   define abbr = Character("Name", ...)       standard Ren'Py define
     //   define $abbr = Character("Name", ...)      dollar-prefixed define
     //   $abbr = Character("Name", ...)             Python assignment (init block)
@@ -215,42 +239,75 @@ export function parseAssetMaps(scriptRpyText: string): AssetMaps {
       continue;
     }
 
-    // image bg NAME = "PATH"
+    // ── image bg_NAME [STATE] = "PATH" ────────────────────────────────────────
+    // Handles both single-word (bg_cabin) and two-word (bg_cabin night) keys.
+    // Store both the combined key (bg_NAME_STATE) and the base key (bg_NAME)
+    // so bare `scene bg_NAME` without a state modifier still resolves.
     const bgMatch = trimmed.match(
-      /^image\s+bg\s+([\w_]+(?:\s+[\w_]+)*)\s*=\s*"([^"]+)"/,
+      /^image\s+(bg_\S+)(?:\s+(\w+))?\s*=\s*"([^"]+)"/,
     );
     if (bgMatch) {
-      const bgKey = "bg_" + bgMatch[1].replace(/\s+/g, "_");
-      bg.set(bgKey, normAssetPath(bgMatch[2]));
+      const base = bgMatch[1];
+      const state = bgMatch[2];
+      const path = normAssetPath(bgMatch[3]);
+      if (state) {
+        bg.set(base + "_" + state, path);
+        // Also store the base key so unqualified lookups fall back to this path
+        if (!bg.has(base)) bg.set(base, path);
+      } else {
+        bg.set(base, path);
+      }
       continue;
     }
 
-    // image cg NAME = "PATH" (space-separated CG name)
-    const cgSpaceMatch = trimmed.match(
-      /^image\s+(cg[\w_]*(?:\s+[\w_]+)*)\s*=\s*"([^"]+)"/,
-    );
+    // ── image cg NAME = "PATH"  (space-separated CG key) ─────────────────────
+    const cgSpaceMatch = trimmed.match(/^image\s+cg\s+(\S+)\s*=\s*"([^"]+)"/);
     if (cgSpaceMatch) {
-      const cgKey = cgSpaceMatch[1].replace(/\s+/g, "_");
-      cg.set(cgKey, normAssetPath(cgSpaceMatch[2]));
+      cg.set("cg_" + cgSpaceMatch[1], normAssetPath(cgSpaceMatch[2]));
       continue;
     }
 
-    // image sfx/sx NAME = "PATH"
-    const sxMatch = trimmed.match(
-      /^image\s+(sfx|sx)\s+([\w_]+)\s*=\s*"([^"]+)"/i,
+    // ── image cg_NAME = "PATH"  (underscore CG key) ──────────────────────────
+    const cgUnderMatch = trimmed.match(/^image\s+(cg_\S+)\s*=\s*"([^"]+)"/);
+    if (cgUnderMatch) {
+      cg.set(cgUnderMatch[1], normAssetPath(cgUnderMatch[2]));
+      continue;
+    }
+
+    // ── image sx NAME_PARTS = "PATH"  (space-separated sx key) ──────────────
+    // e.g. "image sx hiro10_9 = ..." or "image sx natsumi6 face1 = ..."
+    const sxSpaceMatch = trimmed.match(/^image\s+sx\s+(.*?)\s*=\s*"([^"]+)"/);
+    if (sxSpaceMatch) {
+      const rawKey = sxSpaceMatch[1].trim().replace(/\s+/g, "_");
+      const path = normAssetPath(sxSpaceMatch[2]);
+      sx.set("sx_" + rawKey, path);
+      // Also store without prefix for resolution via raw name
+      sx.set(rawKey, path);
+      continue;
+    }
+
+    // ── image sx_NAME = "PATH"  (underscore sx key) ───────────────────────────
+    const sxUnderMatch = trimmed.match(/^image\s+(sx_\S+)\s*=\s*"([^"]+)"/);
+    if (sxUnderMatch) {
+      sx.set(sxUnderMatch[1], normAssetPath(sxUnderMatch[2]));
+      continue;
+    }
+
+    // ── image NAME = Movie(play="PATH", ...)  (animated CG / sprite movie) ───
+    const movieMatch = trimmed.match(
+      /^image\s+([a-zA-Z0-9_]+)\s*=\s*Movie\s*\(\s*play\s*=\s*"([^"]+\.webm)"/,
     );
-    if (sxMatch) {
-      sx.set(sxMatch[2], normAssetPath(sxMatch[3]));
+    if (movieMatch) {
+      misc.set(movieMatch[1], normAssetPath(movieMatch[2]));
       continue;
     }
 
-    // generic image NAME = "PATH"
+    // ── image NAME = "PATH"  (generic single-word misc image) ─────────────────
     const miscMatch = trimmed.match(
-      /^image\s+([\w_]+(?:\s+[\w_]+)*)\s*=\s*"([^"]+\.(?:png|jpg|jpeg|webp))"/i,
+      /^image\s+([a-zA-Z0-9_]+)\s*=\s*"([^"]+\.(?:png|jpg|jpeg|webp))"/i,
     );
     if (miscMatch) {
-      const key = miscMatch[1].replace(/\s+/g, "_");
-      misc.set(key, normAssetPath(miscMatch[2]));
+      misc.set(miscMatch[1], normAssetPath(miscMatch[2]));
       continue;
     }
   }
@@ -258,16 +315,30 @@ export function parseAssetMaps(scriptRpyText: string): AssetMaps {
   return { audio, bg, cg, sx, misc, charMap };
 }
 
-// ── Convert a single .rpy file ────────────────────────────────────────────────
+/**
+ * Build a `manifest.json` object from a list of successfully converted files.
+ */
+export function buildManifest(
+  fileNames: string[],
+  opts?: { start?: string; game?: string },
+): Manifest {
+  return {
+    start: opts?.start ?? "start",
+    game: opts?.game,
+    files: fileNames,
+  };
+}
+
+// ── Single-file conversion ────────────────────────────────────────────────────
 
 /**
  * Convert the text of a single `.rpy` file to `.rrs`.
  *
- * @param rpyText   Full text content of the .rpy source file
- * @param fileName  Base name used in the `// Source:` comment (e.g. "day1.rpy")
- * @param maps      Asset + character maps (use emptyAssetMaps() for a quick
- *                  conversion without path resolution)
- * @param stubExitMap  Optional map of label → jump-target for stub exits
+ * @param rpyText     Full text content of the .rpy source file
+ * @param fileName    Base name used in the `// Source:` comment (e.g. "day1.rpy")
+ * @param maps        Asset + character maps (use emptyAssetMaps() for a quick
+ *                    conversion without path resolution)
+ * @param stubExitMap Optional map of label → jump-target for stub exits
  */
 export function convertRpyText(
   rpyText: string,
@@ -284,28 +355,78 @@ export function convertRpyText(
   return { rrs, hasLabels, baseName, lineCount: lines.length, warnings };
 }
 
+// ── Batch conversion ──────────────────────────────────────────────────────────
+
 /**
- * Build a `manifest.json` object from a list of successfully converted files.
+ * Convert a batch of .rpy files to .rrs.
+ *
+ * @param inputs       Array of { name, text } for each .rpy file to convert
+ * @param scriptText   Optional content of script.rpy for asset/char map extraction
+ * @param opts         Optional game name, start label, stub-exit map, and
+ *                     per-file translation maps
  */
-export function buildManifest(
-  fileNames: string[],
-  opts?: { start?: string; game?: string },
-): Manifest {
-  return {
-    start: opts?.start ?? "start",
-    ...(opts?.game ? { game: opts.game } : {}),
-    files: fileNames,
-  };
+export function convertBatch(
+  inputs: BatchInput[],
+  scriptText?: string,
+  opts?: {
+    game?: string;
+    start?: string;
+    stubExitMap?: Record<string, string>;
+    /** Map of stem (e.g. "day1") → translation Map<english, translated> */
+    translations?: Map<string, Map<string, string>>;
+  },
+): BatchResult {
+  const maps = scriptText ? parseAssetMaps(scriptText) : emptyAssetMaps();
+  const stubExitMap = opts?.stubExitMap ?? {};
+
+  const files: BatchResult["files"] = [];
+  const skipped: string[] = [];
+
+  for (const input of inputs) {
+    const stem = input.name.replace(/\.rpy$/i, "");
+    const tlMap = opts?.translations?.get(stem);
+    const effectiveMaps: AssetMaps = tlMap ? { ...maps, tl: tlMap } : maps;
+    const result = convertRpyText(
+      input.text,
+      input.name,
+      effectiveMaps,
+      stubExitMap,
+    );
+    if (!result.hasLabels) {
+      skipped.push(input.name);
+      continue;
+    }
+    const rrsName = input.name.replace(/\.rpy$/i, ".rrs");
+    files.push({ name: rrsName, rrs: result.rrs, warnings: result.warnings });
+  }
+
+  const manifest = buildManifest(
+    files.map((f) => f.name),
+    { start: opts?.start ?? "start", game: opts?.game },
+  );
+
+  return { files, manifest, skipped };
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/**
+ * Normalise a raw asset path from a Ren'Py image/define statement.
+ *
+ * Ren'Py stores all game files relative to the `game/` directory, so paths
+ * like `"images/CGs/taiga/..."` are common.  Our engine's `resolveAsset()`
+ * already prefixes image paths with `/assets/images/`, so we must strip the
+ * redundant leading `images/` segment here to avoid a double-prefix.
+ *
+ * Also fixes known capitalisation typos: "Bgs/" → "BGs/".
+ */
 function normAssetPath(p: string): string {
   if (p.startsWith("images/")) p = p.slice("images/".length);
   if (p.startsWith("Bgs/")) p = "BGs/" + p.slice("Bgs/".length);
   return p;
 }
 
+/** Normalize a Ren'Py transition name to its .rrs equivalent. */
 function normTransition(raw: string): string {
   const t = raw.trim();
   if (/^[Dd]issolve\s*\(/.test(t)) return "dissolve";
@@ -314,6 +435,7 @@ function normTransition(raw: string): string {
   if (t === "Fade" || /^Fade\s*\(/.test(t)) return "fade";
   if (/^flash/i.test(t)) return "flash";
   if (t === "None") return "";
+  // Ren'Py transitions without a .rrs equivalent — drop silently
   if (
     t === "movetransition" ||
     /^blinds/i.test(t) ||
@@ -336,14 +458,20 @@ function normTransition(raw: string): string {
     .trim();
 }
 
+/** Escape a string for use inside .rrs double-quote context. */
 function escStr(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+/**
+ * Strip Ren'Py inline text markup tags from a dialogue string.
+ * e.g. {i}text{/i} → text,  {color=#fff}text{/color} → text
+ */
 function stripRpyTags(s: string): string {
   return s.replace(/\{[^{}]*\}/g, "").trim();
 }
 
+/** Transform a Ren'Py condition expression to .rrs syntax. */
 function normCondition(cond: string): string {
   return cond
     .trim()
@@ -353,20 +481,27 @@ function normCondition(cond: string): string {
     .replace(/\bnot\s+/g, "! ");
 }
 
+/** Extract a Python string literal's content (handles 'x' or "x"). */
 function extractPyStr(raw: string): string {
   const m = raw.match(/^(['"])([\s\S]*?)\1$/);
   return m ? m[2] : raw;
 }
 
+/**
+ * Format a speaker token for a `speak` statement.
+ * Names containing non-identifier characters are wrapped in double quotes.
+ */
 function fmtSpeaker(name: string): string {
   if (/[^A-Za-z0-9_]/.test(name)) return `"${name}"`;
   return name;
 }
 
+/** Format a floating-point number without unnecessary decimal places. */
 function fmtFloat(n: number): string {
   return n === Math.floor(n) ? String(Math.floor(n)) : String(n);
 }
 
+/** Return the indentation level of a line (tabs count as 4 spaces). */
 function getIndent(line: string): number {
   let i = 0;
   while (i < line.length && (line[i] === " " || line[i] === "\t")) {
@@ -380,6 +515,7 @@ function getIndent(line: string): number {
 interface BlockInfo {
   type: "label" | "if" | "elif" | "else" | "menu" | "choice";
   rpyCol: number;
+  /** For type === "label": the label name (used for stub-exit injection). */
   labelName?: string;
 }
 
@@ -403,6 +539,12 @@ class Converter {
   private pendingVoice: string | null = null;
   private speakBuf: SpeakBuffer | null = null;
 
+  /**
+   * After we see `menu:` we enter preamble mode.
+   * In preamble mode all dialogue is skipped (it's always a `{fast}` repeat of
+   * what was just said before the menu). The first `"CHOICE":` line ends
+   * preamble and causes us to emit `menu {`.
+   */
   private menuPreamble = false;
   private menuOpen = false;
   private menuPreambleCol = -1;
@@ -417,9 +559,12 @@ class Converter {
     this.lines = lines;
   }
 
+  /** Translate a dialogue string: return translated text if available, else original. */
   private translate(text: string): string {
     return this.maps.tl?.get(text) ?? text;
   }
+
+  // ── Output helpers ──────────────────────────────────────────────────────────
 
   private depth(): number {
     return this.blockStack.length;
@@ -432,6 +577,8 @@ class Converter {
   private emit(line: string): void {
     this.out.push(line);
   }
+
+  // ── Block management ────────────────────────────────────────────────────────
 
   private closeBlocksAt(targetIndent: number): void {
     while (this.blockStack.length > 0) {
@@ -478,6 +625,8 @@ class Converter {
     }
   }
 
+  // ── Speak buffering ─────────────────────────────────────────────────────────
+
   private flushSpeak(): void {
     if (!this.speakBuf) return;
     const { who, lines } = this.speakBuf;
@@ -512,6 +661,8 @@ class Converter {
     this.speakBuf.lines.push({ text, voice: voice ?? undefined });
   }
 
+  // ── Asset resolution ────────────────────────────────────────────────────────
+
   private resolveAudio(key: string): string {
     return this.maps.audio.get(key) ?? key;
   }
@@ -537,6 +688,8 @@ class Converter {
     return this.maps.misc.get(name) ?? null;
   }
 
+  // ── Look-ahead ──────────────────────────────────────────────────────────────
+
   private peekNextFaceLine(charBase: string, fromIdx: number): number {
     for (let i = fromIdx; i < Math.min(fromIdx + 3, this.lines.length); i++) {
       const l = this.lines[i].trim();
@@ -555,6 +708,9 @@ class Converter {
     return false;
   }
 
+  // ── Main line processor ─────────────────────────────────────────────────────
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   private processLine(rawLine: string): void {
     const indent = getIndent(rawLine);
     let line = rawLine.trim();
@@ -585,6 +741,7 @@ class Converter {
         }
       }
       if (!line) return;
+      // Skip a bare lone quote (multiline string residue that wasn't joined)
       if (line === '"' || line === "'") return;
     }
 
@@ -600,6 +757,7 @@ class Converter {
       line.startsWith("$ shuffle_menu") ||
       line === "window hide" ||
       line === "window show" ||
+      // Ren'Py image declarations (not needed at runtime)
       (line.startsWith("image ") &&
         (line.includes(" = Movie(") || line.includes(' = "'))) ||
       line.startsWith("define ") ||
@@ -607,10 +765,15 @@ class Converter {
       line.startsWith("init ") ||
       line.startsWith("default ") ||
       line.startsWith("python:") ||
+      // ATL animation commands
       /^(zoom|xalign|yalign|xpos|ypos|alpha|ease|linear)\s/.test(line) ||
+      // Internal working flag
       line.match(/^\$\s*working\s*=/) !== null ||
+      // Time-transition cutscenes (video-only, no .rrs equivalent)
       line.match(/^\$\s*time_transition_\w+\s*\(/) !== null ||
+      // Ren'Py persistence/save
       line.match(/^\$\s*renpy\.save_persistent\s*\(/) !== null ||
+      // Ren'Py movie cutscene
       line.match(/^\$\s*renpy\.movie_cutscene\s*\(/) !== null
     ) {
       return;
@@ -642,11 +805,11 @@ class Converter {
     if (elifMatch) {
       this.flushSpeak();
       const last = this.blockStack[this.blockStack.length - 1];
-      const expectedClose =
+      const isDirectSibling =
         last &&
         (last.type === "if" || last.type === "elif") &&
         last.rpyCol === indent;
-      if (expectedClose) {
+      if (isDirectSibling) {
         this.blockStack.pop();
         this.emit(this.pad() + "}");
       } else {
@@ -661,11 +824,11 @@ class Converter {
     if (/^else\s*:/.test(line)) {
       this.flushSpeak();
       const last = this.blockStack[this.blockStack.length - 1];
-      const expectedClose =
+      const isDirectSibling =
         last &&
         (last.type === "if" || last.type === "elif") &&
         last.rpyCol === indent;
-      if (expectedClose) {
+      if (isDirectSibling) {
         this.blockStack.pop();
         this.emit(this.pad() + "}");
       } else {
@@ -751,6 +914,7 @@ class Converter {
     }
 
     // ── CHAR "text" ──────────────────────────────────────────────────────────
+    // Handles: `t "text"`, `t"text"`, `CHAR "text" with vpunch`, etc.
     const dialogMatch = line.match(
       /^([\w]+(?:_[\w]+)*)\s*"((?:[^"\\]|\\.)*)"\s*(?:with\s+\S+)?\s*$/,
     );
@@ -775,6 +939,9 @@ class Converter {
     this.closeBlocksAt(indent);
 
     // ── $ abbr = Character("Name", ...) → define abbr = "Name"; ─────────────
+    // Character definitions appear in script.rpy inside init: / python: blocks.
+    // We translate them into .rrs define declarations so that script.rrs becomes
+    // the single source of truth for speaker names.
     const charDefMatch = line.match(
       /^\$\s*(\w+)\s*=\s*Character\s*\(\s*(['"])([^'"]+)\2/,
     );
@@ -837,30 +1004,6 @@ class Converter {
       return;
     }
 
-    // ── jump LABEL ───────────────────────────────────────────────────────────
-    const rpyJumpMatch = line.match(/^jump\s+(\w+)\s*$/);
-    if (rpyJumpMatch) {
-      this.emit(`${this.pad()}jump ${rpyJumpMatch[1]};`);
-      return;
-    }
-
-    // ── call LABEL ───────────────────────────────────────────────────────────
-    const rpyCallMatch = line.match(/^call\s+(\w+)\s*$/);
-    if (rpyCallMatch) {
-      this.emit(`${this.pad()}call ${rpyCallMatch[1]};`);
-      return;
-    }
-
-    // ── return ───────────────────────────────────────────────────────────────
-    if (line === "return") return;
-
-    // ── pause N ──────────────────────────────────────────────────────────────
-    const pauseMatch = line.match(/^pause\s+([\d.]+)/);
-    if (pauseMatch) {
-      this.emit(`${this.pad()}wait(${fmtFloat(parseFloat(pauseMatch[1]))});`);
-      return;
-    }
-
     // ── play music NAME [fadein X] [loop] ─────────────────────────────────────
     const playMusicMatch = line.match(
       /^play\s+music\s+(\S+)(?:\s+fadein\s+([\d.]+))?(?:\s+loop)?(?:\s+fadein\s+([\d.]+))?/,
@@ -871,20 +1014,11 @@ class Converter {
       const path = this.resolveAudio(varName);
       if (fadein) {
         this.emit(
-          `${this.pad()}music::play("${escStr(path)}") | fadein(${fmtFloat(parseFloat(fadein))});`,
+          `${this.pad()}music::play("${path}") | fadein(${fmtFloat(parseFloat(fadein))});`,
         );
       } else {
-        this.emit(`${this.pad()}music::play("${escStr(path)}");`);
+        this.emit(`${this.pad()}music::play("${path}");`);
       }
-      return;
-    }
-
-    // ── play audio NAME [loop] ────────────────────────────────────────────────
-    const playAudioMatch = line.match(/^play\s+audio\s+(\S+)/);
-    if (playAudioMatch) {
-      this.emit(
-        `${this.pad()}sound::play("${escStr(this.resolveAudio(playAudioMatch[1]))}");`,
-      );
       return;
     }
 
@@ -892,21 +1026,30 @@ class Converter {
     const playSoundMatch = line.match(/^play\s+sound\s+(\S+)/);
     if (playSoundMatch) {
       this.emit(
-        `${this.pad()}sound::play("${escStr(this.resolveAudio(playSoundMatch[1]))}");`,
+        `${this.pad()}sound::play("${this.resolveAudio(playSoundMatch[1])}");`,
       );
       return;
     }
 
-    // ── play bgsound / bgsound2 NAME ─────────────────────────────────────────
+    // ── play audio NAME [loop] ────────────────────────────────────────────────
+    const playAudioMatch = line.match(/^play\s+audio\s+(\S+)/);
+    if (playAudioMatch) {
+      this.emit(
+        `${this.pad()}sound::play("${this.resolveAudio(playAudioMatch[1])}");`,
+      );
+      return;
+    }
+
+    // ── play bgsound / bgsound2 NAME [loop] ───────────────────────────────────
     const playBgsoundMatch = line.match(/^play\s+bgsound2?\s+(\S+)/);
     if (playBgsoundMatch) {
       this.emit(
-        `${this.pad()}music::play("${escStr(this.resolveAudio(playBgsoundMatch[1]))}");`,
+        `${this.pad()}music::play("${this.resolveAudio(playBgsoundMatch[1])}");`,
       );
       return;
     }
 
-    // ── stop music / bgsound / bgsound2 / sound / audio [fadeout N] ──────────
+    // ── stop music / bgsound / bgsound2 / sound / audio ──────────────────────
     const stopMatch = line.match(
       /^stop\s+(music|bgsound2?|sound|audio)(?:\s+fadeout\s+([\d.]+))?/,
     );
@@ -1324,6 +1467,25 @@ class Converter {
       return;
     }
 
+    // ── jump LABEL ───────────────────────────────────────────────────────────
+    const jumpMatch = line.match(/^jump\s+(\w+)/);
+    if (jumpMatch) {
+      this.emit(`${this.pad()}jump ${jumpMatch[1]};`);
+      return;
+    }
+
+    // ── call LABEL ───────────────────────────────────────────────────────────
+    const callMatch = line.match(/^call\s+(\w+)/);
+    if (callMatch) {
+      this.emit(`${this.pad()}call ${callMatch[1]};`);
+      return;
+    }
+
+    // ── return ────────────────────────────────────────────────────────────────
+    if (line === "return") {
+      return;
+    }
+
     // ── $ varName op= value  (Python assignment) → let varName = val ──────────
     const pyAssignMatch = line.match(
       /^\$\s*([\w.]+)\s*([+\-*/]?=)\s*([\s\S]+?)\s*$/,
@@ -1356,21 +1518,25 @@ class Converter {
     this.emit(`${this.pad()}// UNHANDLED: ${line}`);
   }
 
+  // ── Line preprocessor ───────────────────────────────────────────────────────
+
+  /**
+   * Join multi-line Ren'Py strings that are split across source lines.
+   * Ren'Py allows dialogue strings to span multiple lines; we join them with a
+   * space so the single-line parser can handle them.
+   */
   private preprocessLines(lines: string[]): string[] {
     const result: string[] = [];
     let i = 0;
     while (i < lines.length) {
       const raw = lines[i];
-      // Check for unclosed string spanning lines
       const hasUnclosed = (s: string): boolean => {
         let inStr = false;
         let strChar = "";
-        let count = 0;
         for (const ch of s) {
           if (!inStr && (ch === '"' || ch === "'")) {
             inStr = true;
             strChar = ch;
-            count++;
           } else if (inStr && ch === strChar) {
             inStr = false;
           }
@@ -1392,6 +1558,8 @@ class Converter {
     return result;
   }
 
+  // ── Entry point ─────────────────────────────────────────────────────────────
+
   convert(): string {
     this.emit(`// Source: ${this.filename}`);
     this.emit("");
@@ -1410,6 +1578,7 @@ class Converter {
 
     this.flushSpeak();
 
+    // Close any blocks still open at EOF (e.g. file ends without a blank line)
     while (this.blockStack.length > 0) {
       const top = this.blockStack.pop()!;
       if (!(top.type === "menu" && !this.menuOpen)) {
@@ -1430,65 +1599,4 @@ class Converter {
 
     return this.out.join("\n") + "\n";
   }
-}
-
-// ── Convenience: parse a batch of files ──────────────────────────────────────
-
-export interface BatchInput {
-  /** File name (e.g. "day1.rpy") */
-  name: string;
-  /** Full text content of the file */
-  text: string;
-}
-
-export interface BatchResult {
-  /** Converted files (only those that contained at least one label) */
-  files: Array<{ name: string; rrs: string; warnings: string[] }>;
-  /** Generated manifest */
-  manifest: Manifest;
-  /** Files that were skipped (no labels found) */
-  skipped: string[];
-}
-
-/**
- * Convert a batch of .rpy files to .rrs in the browser.
- *
- * @param inputs       Array of { name, text } for each .rpy file to convert
- * @param scriptText   Optional content of script.rpy for asset/char map extraction
- * @param opts         Optional game name, start label, and per-file translation maps
- */
-export function convertBatch(
-  inputs: BatchInput[],
-  scriptText?: string,
-  opts?: {
-    game?: string;
-    start?: string;
-    /** Map of stem (e.g. "day1") → translation Map<english, chinese> */
-    translations?: Map<string, Map<string, string>>;
-  },
-): BatchResult {
-  const maps = scriptText ? parseAssetMaps(scriptText) : emptyAssetMaps();
-
-  const files: BatchResult["files"] = [];
-  const skipped: string[] = [];
-
-  for (const input of inputs) {
-    const stem = input.name.replace(/\.rpy$/i, "");
-    const tlMap = opts?.translations?.get(stem);
-    const effectiveMaps: AssetMaps = tlMap ? { ...maps, tl: tlMap } : maps;
-    const result = convertRpyText(input.text, input.name, effectiveMaps);
-    if (!result.hasLabels) {
-      skipped.push(input.name);
-      continue;
-    }
-    const rrsName = input.name.replace(/\.rpy$/i, ".rrs");
-    files.push({ name: rrsName, rrs: result.rrs, warnings: result.warnings });
-  }
-
-  const manifest = buildManifest(
-    files.map((f) => f.name),
-    { start: opts?.start ?? "start", game: opts?.game },
-  );
-
-  return { files, manifest, skipped };
 }

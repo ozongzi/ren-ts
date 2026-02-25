@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import { useGameStore } from "../store";
 import { pickDirectory } from "../tauri_bridge";
-import { ConvertScreen } from "./ConvertScreen";
 
 /**
  * Shown on first launch inside Tauri when no assets directory has been chosen,
@@ -25,7 +24,6 @@ export const AssetsDirScreen: React.FC = () => {
 
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
-  const [showConvert, setShowConvert] = useState(false);
 
   const handlePick = async () => {
     if (picking || storeLoading) return;
@@ -155,7 +153,7 @@ export const AssetsDirScreen: React.FC = () => {
               >
                 .rrs
               </code>{" "}
-              脚本文件。如果你还没有转换剧本，请使用下方的迁移工具。
+              脚本文件。
             </p>
           </div>
         )}
@@ -321,74 +319,6 @@ export const AssetsDirScreen: React.FC = () => {
                 : "加载中…"
               : "📂 选择 Assets 文件夹"}
           </button>
-
-          {/* Divider */}
-          <div
-            style={{
-              width: "100%",
-              display: "flex",
-              alignItems: "center",
-              gap: "0.75rem",
-              color: "rgba(255,255,255,0.2)",
-              fontSize: "0.75rem",
-            }}
-          >
-            <div
-              style={{
-                flex: 1,
-                height: "1px",
-                background: "rgba(255,255,255,0.1)",
-              }}
-            />
-            还没有 .rrs 脚本？
-            <div
-              style={{
-                flex: 1,
-                height: "1px",
-                background: "rgba(255,255,255,0.1)",
-              }}
-            />
-          </div>
-
-          {/* Convert button */}
-          <button
-            onClick={() => setShowConvert(true)}
-            disabled={isLoading}
-            style={{
-              width: "100%",
-              padding: "0.65rem 1.5rem",
-              fontSize: "0.92rem",
-              fontWeight: 600,
-              letterSpacing: "0.05em",
-              background: "rgba(100,160,255,0.12)",
-              color: isLoading
-                ? "rgba(140,190,255,0.35)"
-                : "rgba(160,205,255,0.85)",
-              border: "1px solid rgba(100,160,255,0.3)",
-              borderRadius: "8px",
-              cursor: isLoading ? "default" : "pointer",
-              transition: "background 0.2s, border-color 0.2s",
-            }}
-            onMouseEnter={(e) => {
-              if (!isLoading) {
-                (e.currentTarget as HTMLButtonElement).style.background =
-                  "rgba(100,160,255,0.22)";
-                (e.currentTarget as HTMLButtonElement).style.borderColor =
-                  "rgba(100,160,255,0.55)";
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!isLoading) {
-                (e.currentTarget as HTMLButtonElement).style.background =
-                  "rgba(100,160,255,0.12)";
-                (e.currentTarget as HTMLButtonElement).style.borderColor =
-                  "rgba(100,160,255,0.3)";
-              }
-            }}
-            aria-label="打开 .rpy 转 .rrs 迁移工具"
-          >
-            🔄 打开迁移工具（.rpy → .rrs）
-          </button>
         </div>
 
         {/* ── Pick error message (dialog/OS-level errors) ── */}
@@ -427,9 +357,6 @@ export const AssetsDirScreen: React.FC = () => {
         {/* ── Spinner keyframes (inline) ── */}
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
-
-      {/* ── ConvertScreen overlay ── */}
-      {showConvert && <ConvertScreen onClose={() => setShowConvert(false)} />}
     </>
   );
 };

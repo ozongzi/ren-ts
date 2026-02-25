@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import { useGameStore } from "../store";
 import { fsaAvailable } from "../save";
 import { isTauri } from "../tauri_bridge";
-import { ConvertScreen } from "./ConvertScreen";
 
 /**
  * Title screen shown when phase === 'title'.
@@ -23,7 +22,6 @@ export const TitleScreen: React.FC = () => {
   const [logoError, setLogoError] = useState(false);
   const [importing, setImporting] = useState(false);
   const [newGamePending, setNewGamePending] = useState(false);
-  const [showConvert, setShowConvert] = useState(false);
 
   const handleNewGame = async () => {
     if (!manifestLoaded || newGamePending) return;
@@ -175,21 +173,6 @@ export const TitleScreen: React.FC = () => {
               : "⚠️ 当前浏览器不支持自动保存（请使用 Chrome / Edge）"}
         </p>
 
-        {/* Convert tool button */}
-        <button
-          className="title-btn"
-          onClick={() => setShowConvert(true)}
-          style={{
-            borderColor: "rgba(100,160,255,0.3)",
-            color: "rgba(180,210,255,0.7)",
-            fontSize: "0.82rem",
-            marginTop: "0.25rem",
-          }}
-          aria-label="打开 Ren'Py 转换工具"
-        >
-          🔄 转换 .rpy 文件
-        </button>
-
         {/* Version note */}
         {manifestLoaded && (
           <p
@@ -204,9 +187,6 @@ export const TitleScreen: React.FC = () => {
           </p>
         )}
       </div>
-
-      {/* Convert screen overlay */}
-      {showConvert && <ConvertScreen onClose={() => setShowConvert(false)} />}
     </div>
   );
 };
