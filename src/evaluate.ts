@@ -64,6 +64,53 @@ export function parseValue(raw: string | number | boolean): unknown {
 // ─── Variable operations ──────────────────────────────────────────────────────
 
 /**
+ * Helper: split a comma-separated argument list at top level (ignore commas
+ * inside nested parens or quotes). Returns array of trimmed arg strings.
+ */
+function splitTopLevelCommas(s: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let cur = "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      cur += ch;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      cur += ch;
+      continue;
+    }
+    if (inSingle || inDouble) {
+      cur += ch;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      cur += ch;
+      continue;
+    }
+    if (ch === ")") {
+      depth--;
+      cur += ch;
+      continue;
+    }
+    if (ch === "," && depth === 0) {
+      parts.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim() !== "") parts.push(cur.trim());
+  return parts;
+}
+
+/**
  * Apply a `set` step's operation to the vars map and return a new map.
  *
  * Supported operators: =  +=  -=  *=  /=
@@ -71,6 +118,10 @@ export function parseValue(raw: string | number | boolean): unknown {
  * The `value` field in the JSON is a raw Python expression string. We parse
  * it with parseValue(); if the result is a string that matches a known
  * variable name, we resolve it as a variable reference.
+ *
+ * Additionally, if the RHS is a function call like `renpy.random.randint(a,b)`
+ * we evaluate it at runtime via the evaluator so assignments such as
+ * `choicet = renpy.random.randint(1,2);` produce a concrete random integer.
  */
 export function applySetStep(
   vars: Vars,
@@ -78,13 +129,25 @@ export function applySetStep(
 ): Vars {
   const parsed = parseValue(step.value);
 
-  // Resolve variable references: if parsed is a string and there is a
-  // matching key in vars, use the variable's current value.
+  // Resolve variable references or evaluate simple function-call expressions.
   const rawStr = typeof step.value === "string" ? step.value : undefined;
-  let value: unknown =
-    typeof parsed === "string" && rawStr !== undefined && rawStr in vars
-      ? vars[rawStr]
-      : parsed;
+  let value: unknown = parsed;
+
+  if (typeof parsed === "string" && rawStr !== undefined) {
+    // Direct variable reference in the merged plain record
+    if (rawStr in vars) {
+      value = vars[rawStr];
+    } else {
+      // If RHS looks like a function call / expression, evaluate it with the
+      // evaluator so constructs like renpy.random.randint(a, b) work.
+      // Use a conservative heuristic: contains '(' and ')'.
+      if (rawStr.includes("(") && rawStr.includes(")")) {
+        value = _evaluate(rawStr, vars);
+      } else {
+        value = parsed;
+      }
+    }
+  }
 
   const current = vars[step.var] ?? 0;
 
@@ -252,6 +315,22 @@ function resolveOperand(token: string, vars: Vars): unknown {
   // like `persistent . animations` are treated the same as
   // `persistent.animations`.
   token = token.trim().replace(/\s*\.\s*/g, ".");
+
+  // Function call: renpy.random.randint(a,b)
+  // Allow optional spaces before '(' to tolerate minor formatting.
+  const randintMatch = token.match(/^renpy\.random\.randint\s*\((.*)\)$/);
+  if (randintMatch) {
+    const argStr = randintMatch[1];
+    const args = splitTopLevelCommas(argStr).map((a) => _evaluate(a, vars));
+    const a = Number(args[0]);
+    const b = Number(args[1]);
+    if (!isNaN(a) && !isNaN(b)) {
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      return Math.floor(Math.random() * (hi - lo + 1)) + lo;
+    }
+    return undefined;
+  }
 
   // Boolean literals
   if (token === "True" || token === "true") return true;
