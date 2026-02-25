@@ -1,20 +1,29 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useGameStore } from "../store";
+import { resolveAsset } from "../assets";
+import { getGallery } from "../loader";
+import type { GalleryEntry } from "../types";
 
-// ─── Lazy video hook ──────────────────────────────────────────────────────────
+// ─── Lazy-load hook ───────────────────────────────────────────────────────────
 
 /**
- * Returns a ref to attach to a container element.
- * `inView` becomes true once the element enters the viewport (never resets),
- * so the video src is only assigned when the thumbnail is actually visible.
+ * Returns [ref, inView].  `inView` flips to true once the element scrolls
+ * into the viewport and stays true (never resets), so the video src is only
+ * assigned once the thumbnail is actually visible.
  */
-function useInView(threshold = 0.1): [React.RefObject<HTMLElement>, boolean] {
+function useInView(threshold = 0.05): [React.RefObject<HTMLElement>, boolean] {
   const ref = useRef<HTMLElement>(null);
   const [inView, setInView] = useState(false);
 
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
-    if (inView) return; // already visible, no need to keep observing
+    if (!el || inView) return;
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
@@ -30,149 +39,58 @@ function useInView(threshold = 0.1): [React.RefObject<HTMLElement>, boolean] {
 
   return [ref as React.RefObject<HTMLElement>, inView];
 }
-import { useGameStore } from "../store";
-import { resolveAsset } from "../assets";
-import animatedSeqData from "../cg_animated_sequences.json";
-import staticSeqData from "../cg_sequences.json";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface CGEntry {
-  name: string;
-  /** All language-variant names that map to this same CG (including `name` itself). */
-  aliases: string[];
-  character: string;
-  frames: string[]; // relative paths passed through resolveAsset()
-  isAnimated: boolean; // true = webm, false = static jpg/png
-}
-
-// ─── Build combined entry list ────────────────────────────────────────────────
-
-const STATIC_CHARACTER_MAP: Record<string, string> = {
-  "Bondage Foreplay": "Yoichi",
-  "Jugueteo bondage": "Yoichi",
-  "Preliminares com Bondage": "Yoichi",
-  "Journal Writing": "Keitaro",
-  "Cabin Repairs": "Other",
-  "Fundraiser Montage": "Other",
-  Sportsfest: "Other",
-};
-
-// Collect animated entries from generated JSON
-const animatedNames = new Set(
-  (animatedSeqData as { entries: { name: string }[] }).entries.map(
-    (e) => e.name,
-  ),
-);
-
-const animatedEntries: CGEntry[] = (
-  animatedSeqData as {
-    entries: { name: string; character: string; frames: string[] }[];
-  }
-).entries.map((e) => ({
-  name: e.name,
-  aliases: [e.name],
-  character: e.character,
-  frames: e.frames,
-  isAnimated: true,
-}));
-
-/** Frames that are pure placeholder images (fade-to-black, no real artwork). */
-const PLACEHOLDER_FRAMES = new Set(["CGs/cg_fade.png"]);
-
-/** Returns true if every frame in the entry is a known placeholder. */
-function isPlaceholderEntry(frames: string[]): boolean {
-  return frames.length > 0 && frames.every((f) => PLACEHOLDER_FRAMES.has(f));
-}
-
-// Add static-only fallback entries (no animated equivalent)
-const staticEntries: CGEntry[] = Object.entries(
-  staticSeqData as Record<string, string[]>,
-)
-  .filter(
-    ([name, frames]) => !animatedNames.has(name) && !isPlaceholderEntry(frames),
-  )
-  .map(([name, frames]) => ({
-    name,
-    aliases: [name],
-    character: STATIC_CHARACTER_MAP[name] ?? "Other",
-    frames,
-    isAnimated: false,
-  }));
-
-const CHARACTER_ORDER = [
-  "Hiro",
-  "Hunter",
-  "Natsumi",
-  "Yoichi",
-  "Taiga",
-  "Keitaro",
-  "Other",
-];
-
-// Sort: character order first, then name
-const _ALL_ENTRIES_SORTED: CGEntry[] = [
-  ...animatedEntries,
-  ...staticEntries,
-].sort((a, b) => {
-  const ci =
-    CHARACTER_ORDER.indexOf(a.character) - CHARACTER_ORDER.indexOf(b.character);
-  return ci !== 0 ? ci : a.name.localeCompare(b.name);
-});
-
-// Deduplicate entries that are multilingual aliases of the same CG scene
-// (identical frame sets → merge into one entry, collecting all alias names).
-const ALL_ENTRIES: CGEntry[] = (() => {
-  const seen = new Map<string, CGEntry>();
-  for (const entry of _ALL_ENTRIES_SORTED) {
-    const key = entry.frames.join("|");
-    const existing = seen.get(key);
-    if (existing) {
-      // Accumulate the alias so unlock checks can match any language variant.
-      existing.aliases.push(entry.name);
-    } else {
-      seen.set(key, { ...entry, aliases: [...entry.aliases] });
-    }
-  }
-  return Array.from(seen.values());
-})();
-
-// Collect characters that actually have entries
-const ALL_CHARACTERS: string[] = CHARACTER_ORDER.filter((c) =>
-  ALL_ENTRIES.some((e) => e.character === c),
-);
-
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Main gallery component ───────────────────────────────────────────────────
 
 export const CGGallery: React.FC = () => {
   const closeGallery = useGameStore((s) => s.closeGallery);
-  const unlockedCGs = useGameStore((s) => s.unlockedCGs);
-  const unlockedSet = new Set(unlockedCGs);
-  /** Returns true if the entry or any of its multilingual aliases has been unlocked. */
-  const isUnlocked = (e: CGEntry) => e.aliases.some((a) => unlockedSet.has(a));
+
+  // All gallery entries come from manifest.json (injected by parse_gallery.ts).
+  // No game-specific data is hardcoded here.
+  const allEntries: GalleryEntry[] = useMemo(() => getGallery(), []);
+
+  // Derive the unique ordered character list from the entries themselves.
+  // Order is determined by first appearance in the entries array (which
+  // preserves the insertion order from gallery_images.rpy).
+  const characters: string[] = useMemo(() => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const e of allEntries) {
+      if (!seen.has(e.character)) {
+        seen.add(e.character);
+        result.push(e.character);
+      }
+    }
+    return result;
+  }, [allEntries]);
 
   const [activeChar, setActiveChar] = useState<string>(
-    ALL_CHARACTERS[0] ?? "Hiro",
+    () => characters[0] ?? "",
   );
+
+  // Reset active tab if entries change (e.g. on hot-reload)
+  useEffect(() => {
+    if (characters.length > 0 && !characters.includes(activeChar)) {
+      setActiveChar(characters[0]);
+    }
+  }, [characters, activeChar]);
+
   const [viewerState, setViewerState] = useState<{
-    entry: CGEntry;
+    entry: GalleryEntry;
     frameIdx: number;
   } | null>(null);
 
-  // Entries visible in the active tab
-  const tabEntries = ALL_ENTRIES.filter(
-    (e) => e.character === activeChar && isUnlocked(e),
+  const tabEntries = useMemo(
+    () => allEntries.filter((e) => e.character === activeChar),
+    [allEntries, activeChar],
   );
-
-  const totalUnlocked = ALL_ENTRIES.filter((e) => isUnlocked(e)).length;
 
   const handleBackdrop = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) closeGallery();
   };
 
-  const openViewer = (entry: CGEntry) => {
+  const openViewer = (entry: GalleryEntry) =>
     setViewerState({ entry, frameIdx: 0 });
-  };
 
   const closeViewer = () => setViewerState(null);
 
@@ -225,67 +143,64 @@ export const CGGallery: React.FC = () => {
               flexShrink: 0,
             }}
           >
-            已解锁{" "}
+            共{" "}
             <span style={{ color: "var(--color-accent)", fontWeight: 700 }}>
-              {totalUnlocked}
+              {allEntries.length}
             </span>{" "}
-            / {ALL_ENTRIES.length} 张 CG
+            个场景
           </p>
 
           {/* Character tabs */}
-          <div
-            style={{
-              display: "flex",
-              gap: "0.4rem",
-              flexWrap: "wrap",
-              marginBottom: "1rem",
-              flexShrink: 0,
-            }}
-          >
-            {ALL_CHARACTERS.map((char) => {
-              const count = ALL_ENTRIES.filter(
-                (e) => e.character === char && unlockedSet.has(e.name),
-              ).length;
-              const isActive = char === activeChar;
-              return (
-                <button
-                  key={char}
-                  onClick={() => setActiveChar(char)}
-                  style={{
-                    padding: "0.3rem 0.75rem",
-                    borderRadius: "20px",
-                    border: isActive
-                      ? "1.5px solid var(--color-accent)"
-                      : "1.5px solid rgba(255,255,255,0.15)",
-                    background: isActive
-                      ? "rgba(var(--color-accent-rgb, 200,160,80), 0.18)"
-                      : "rgba(255,255,255,0.04)",
-                    color: isActive
-                      ? "var(--color-accent)"
-                      : "var(--color-text-dim)",
-                    fontSize: "0.8rem",
-                    fontWeight: isActive ? 700 : 400,
-                    cursor: "pointer",
-                    transition: "all 0.15s ease",
-                  }}
-                >
-                  {char}{" "}
-                  <span
+          {characters.length > 1 && (
+            <div
+              style={{
+                display: "flex",
+                gap: "0.4rem",
+                flexWrap: "wrap",
+                marginBottom: "1rem",
+                flexShrink: 0,
+              }}
+            >
+              {characters.map((char) => {
+                const count = allEntries.filter(
+                  (e) => e.character === char,
+                ).length;
+                const isActive = char === activeChar;
+                return (
+                  <button
+                    key={char}
+                    onClick={() => setActiveChar(char)}
                     style={{
-                      opacity: 0.7,
-                      fontSize: "0.72rem",
+                      padding: "0.3rem 0.75rem",
+                      borderRadius: "20px",
+                      border: isActive
+                        ? "1.5px solid var(--color-accent)"
+                        : "1.5px solid rgba(255,255,255,0.15)",
+                      background: isActive
+                        ? "rgba(var(--color-accent-rgb, 200,160,80), 0.18)"
+                        : "rgba(255,255,255,0.04)",
+                      color: isActive
+                        ? "var(--color-accent)"
+                        : "var(--color-text-dim)",
+                      fontSize: "0.8rem",
+                      fontWeight: isActive ? 700 : 400,
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
                     }}
                   >
-                    ({count})
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+                    {char}{" "}
+                    <span style={{ opacity: 0.7, fontSize: "0.72rem" }}>
+                      ({count})
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Grid */}
           <div style={{ overflowY: "auto", flex: 1 }}>
-            {tabEntries.length === 0 ? (
+            {allEntries.length === 0 ? (
               <div
                 style={{
                   textAlign: "center",
@@ -293,16 +208,27 @@ export const CGGallery: React.FC = () => {
                   color: "var(--color-text-dim)",
                 }}
               >
-                <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🔒</div>
+                <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🖼️</div>
                 <p style={{ fontSize: "0.9rem" }}>
-                  {activeChar} 的 CG 尚未解锁
+                  暂无图鉴数据。请先运行 parse_gallery.ts 将图鉴数据注入
+                  manifest.json。
                 </p>
+              </div>
+            ) : tabEntries.length === 0 ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "3rem 1rem",
+                  color: "var(--color-text-dim)",
+                }}
+              >
+                <p style={{ fontSize: "0.9rem" }}>{activeChar} 暂无场景</p>
               </div>
             ) : (
               <div className="gallery-grid">
                 {tabEntries.map((entry) => (
                   <GalleryItem
-                    key={entry.name}
+                    key={entry.id}
                     entry={entry}
                     onClick={() => openViewer(entry)}
                   />
@@ -329,7 +255,7 @@ export const CGGallery: React.FC = () => {
 // ─── Gallery item ─────────────────────────────────────────────────────────────
 
 interface GalleryItemProps {
-  entry: CGEntry;
+  entry: GalleryEntry;
   onClick: () => void;
 }
 
@@ -340,29 +266,26 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
   const [containerRef, inView] = useInView(0.05);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Pick the first non-placeholder frame so entries whose sequence starts with
-  // cg_fade.png (a solid black transition image) don't show a black thumbnail.
-  const firstFrame =
-    entry.frames.find((f) => !PLACEHOLDER_FRAMES.has(f)) ?? entry.frames[0];
-  // Only assign src once the thumbnail scrolls into view, preventing
-  // dozens of webm files from racing to decode simultaneously on tab open.
+  // Use the first frame as the thumbnail
+  const firstFrame = entry.frames[0];
+  // Only assign the src once the item scrolls into view to avoid decoding
+  // dozens of webm files simultaneously on tab open.
   const src = inView && firstFrame ? resolveAsset(firstFrame) : null;
 
-  // Called by either onLoadedMetadata or onLoadedData — whichever fires first.
-  const handleVideoReady = () => setMediaLoaded(true);
+  // Detect whether the entry contains video frames
+  const isAnimated = firstFrame?.endsWith(".webm") ?? false;
 
-  // Play/pause the thumbnail video on hover (no autoPlay = no decoder race).
+  // Play/pause the thumbnail video on hover
   useEffect(() => {
     const vid = videoRef.current;
-    if (!vid || !entry.isAnimated) return;
+    if (!vid || !isAnimated) return;
     if (hovered && mediaLoaded) {
       vid.play().catch(() => {});
     } else {
       vid.pause();
-      // Only reset to start when leaving hover so next hover restarts cleanly
       if (!hovered) vid.currentTime = 0;
     }
-  }, [hovered, mediaLoaded, entry.isAnimated]);
+  }, [hovered, mediaLoaded, isAnimated]);
 
   return (
     <button
@@ -371,8 +294,8 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      aria-label={`查看 CG：${entry.name}`}
-      title={`${entry.name}（${entry.frames.length} 帧）`}
+      aria-label={`查看：${entry.id}`}
+      title={`${entry.id}（${entry.frames.length} 帧）`}
       style={{
         cursor: "pointer",
         background: "none",
@@ -381,9 +304,9 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
         position: "relative",
       }}
     >
-      {/* Media thumbnail */}
+      {/* Thumbnail media */}
       {src && !mediaError ? (
-        entry.isAnimated ? (
+        isAnimated ? (
           <video
             ref={videoRef}
             src={src}
@@ -391,16 +314,14 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
             loop
             muted
             playsInline
-            onLoadedMetadata={handleVideoReady}
-            onLoadedData={handleVideoReady}
+            onLoadedMetadata={() => setMediaLoaded(true)}
+            onLoadedData={() => setMediaLoaded(true)}
             onError={() => setMediaError(true)}
             style={{
               width: "100%",
               height: "100%",
               objectFit: "cover",
               display: "block",
-              // Keep video in DOM once loaded so it's ready to play on hover;
-              // hide it visually when not hovered so the play-icon overlay shows
               opacity: mediaLoaded && hovered ? 1 : 0,
               transition: "opacity 0.25s ease",
             }}
@@ -408,7 +329,7 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
         ) : (
           <img
             src={src}
-            alt={entry.name}
+            alt={entry.id}
             loading="lazy"
             onLoad={() => setMediaLoaded(true)}
             onError={() => setMediaError(true)}
@@ -423,7 +344,6 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
           />
         )
       ) : (
-        /* Placeholder shown before in-view or on error */
         <div
           style={{
             width: "100%",
@@ -436,16 +356,12 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
             gap: "0.4rem",
           }}
         >
-          <span style={{ fontSize: "1.5rem" }}>
-            {entry.isAnimated ? "▶" : "🖼️"}
-          </span>
+          <span style={{ fontSize: "1.5rem" }}>{isAnimated ? "▶" : "🖼️"}</span>
         </div>
       )}
 
-      {/* Loading spinner – only for static images waiting to load;
-          animated entries use metadata preload so spinner would be very brief,
-          but we suppress it entirely to avoid flicker */}
-      {src && !mediaLoaded && !mediaError && !entry.isAnimated && (
+      {/* Loading spinner for static images */}
+      {src && !mediaLoaded && !mediaError && !isAnimated && (
         <div
           style={{
             position: "absolute",
@@ -469,9 +385,8 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
         </div>
       )}
 
-      {/* Static poster overlay for animated entries – visible when loaded but
-          not yet hovered. Gives the user a visual cue that it's an animation. */}
-      {entry.isAnimated && mediaLoaded && !hovered && (
+      {/* Play-icon overlay for loaded animated entries not yet hovered */}
+      {isAnimated && mediaLoaded && !hovered && (
         <div
           style={{
             position: "absolute",
@@ -500,8 +415,8 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
         </div>
       )}
 
-      {/* Animated badge */}
-      {entry.isAnimated && mediaLoaded && (
+      {/* Animated badge: frame count */}
+      {isAnimated && mediaLoaded && (
         <div
           style={{
             position: "absolute",
@@ -519,7 +434,7 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
         </div>
       )}
 
-      {/* Label overlay */}
+      {/* Scene ID label at the bottom */}
       {mediaLoaded && (
         <div
           style={{
@@ -537,7 +452,7 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
             pointerEvents: "none",
           }}
         >
-          {entry.name}
+          {entry.id}
         </div>
       )}
     </button>
@@ -547,7 +462,7 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
 // ─── Fullscreen viewer ────────────────────────────────────────────────────────
 
 interface CGViewerProps {
-  entry: CGEntry;
+  entry: GalleryEntry;
   frameIdx: number;
   onNavigate: (delta: number) => void;
   onClose: () => void;
@@ -562,6 +477,7 @@ const CGViewer: React.FC<CGViewerProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const totalFrames = entry.frames.length;
   const currentSrc = resolveAsset(entry.frames[frameIdx]);
+  const isAnimated = entry.frames[frameIdx]?.endsWith(".webm") ?? false;
   const hasPrev = frameIdx > 0;
   const hasNext = frameIdx < totalFrames - 1;
 
@@ -590,11 +506,11 @@ const CGViewer: React.FC<CGViewerProps> = ({
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label={`查看 CG：${entry.name}`}
+      aria-label={`查看：${entry.id}`}
       style={{ userSelect: "none" }}
     >
       {/* Media */}
-      {entry.isAnimated ? (
+      {isAnimated ? (
         <video
           ref={videoRef}
           key={currentSrc}
@@ -605,23 +521,15 @@ const CGViewer: React.FC<CGViewerProps> = ({
           playsInline
           draggable={false}
           onClick={(e) => e.stopPropagation()}
-          style={{
-            maxWidth: "100%",
-            maxHeight: "100%",
-            objectFit: "contain",
-          }}
+          style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
         />
       ) : (
         <img
           src={currentSrc}
-          alt={entry.name}
+          alt={entry.id}
           draggable={false}
           onClick={(e) => e.stopPropagation()}
-          style={{
-            maxWidth: "100%",
-            maxHeight: "100%",
-            objectFit: "contain",
-          }}
+          style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
         />
       )}
 
@@ -703,7 +611,7 @@ const CGViewer: React.FC<CGViewerProps> = ({
         </button>
       )}
 
-      {/* Frame counter + label */}
+      {/* Frame counter + scene ID */}
       <div
         style={{
           position: "absolute",
@@ -727,7 +635,7 @@ const CGViewer: React.FC<CGViewerProps> = ({
             whiteSpace: "nowrap",
           }}
         >
-          {entry.name}
+          {entry.id}
         </div>
         {totalFrames > 1 && (
           <div

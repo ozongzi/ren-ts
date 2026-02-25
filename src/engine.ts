@@ -60,7 +60,6 @@ export function createInitialState(): GameState {
     loading: false,
     error: null,
 
-    unlockedCGs: [],
     completedRoutes: [],
   };
 }
@@ -85,8 +84,7 @@ export function startNewGame(state: GameState): GameState {
   const fresh: GameState = {
     ...createInitialState(),
     phase: "playing",
-    // Preserve unlocked CGs / completed routes across new games
-    unlockedCGs: state.unlockedCGs,
+    // Preserve completed routes across new games
     completedRoutes: state.completedRoutes,
     currentLabel: startLabel,
     stepIndex: 0,
@@ -676,15 +674,6 @@ function executeStep(state: GameState, step: Step): StepResult {
         },
         blocked: false,
       };
-    }
-
-    // ── Gallery unlock ───────────────────────────────────────────────────────
-    case "gallery_unlock": {
-      const name = step.name;
-      const unlockedCGs = state.unlockedCGs.includes(name)
-        ? state.unlockedCGs
-        : [...state.unlockedCGs, name];
-      return advance({ ...state, unlockedCGs });
     }
 
     // ── Pause ────────────────────────────────────────────────────────────────

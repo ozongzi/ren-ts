@@ -822,8 +822,6 @@ class Converter {
     if (
       line.startsWith("$renpy.free_memory") ||
       line.startsWith("$ renpy.free_memory") ||
-      line.startsWith("$persistent.sx_unlocked") ||
-      line.startsWith("$ persistent.sx_unlocked") ||
       line.startsWith("show screen ") ||
       line.startsWith("hide screen ") ||
       line.startsWith("$shuffle_menu") ||

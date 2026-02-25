@@ -102,11 +102,6 @@ export interface ReturnStep {
   type: "return";
 }
 
-export interface GalleryUnlockStep {
-  type: "gallery_unlock";
-  name: string;
-}
-
 export interface PauseStep {
   type: "pause";
   duration?: number;
@@ -128,7 +123,6 @@ export type Step =
   | JumpStep
   | CallStep
   | ReturnStep
-  | GalleryUnlockStep
   | PauseStep;
 
 // ─── Script data (mirrors JSON file structure) ───────────────────────────────
@@ -138,12 +132,36 @@ export interface ScriptFile {
   labels: Record<string, Step[]>;
 }
 
+// ─── Gallery types ────────────────────────────────────────────────────────────
+
+/**
+ * A single gallery entry representing one animated scene for a character.
+ * The `id` is derived from {character}_{groupId} (e.g. "hiro_g1").
+ * Each entry holds an ordered list of webm asset paths that form the sequence.
+ */
+export interface GalleryEntry {
+  /** Unique scene ID derived from "{charKey}_{groupSegment}", e.g. "char_g1" */
+  id: string;
+  /**
+   * Display name of the character, derived automatically from the image-name
+   * prefix (first letter capitalised).  No hardcoded name map is used.
+   */
+  character: string;
+  /** Ordered asset paths relative to the game's images/ directory */
+  frames: string[];
+}
+
 export interface Manifest {
   /** Entry-point label name. Defaults to "start" (Ren'Py convention). */
   start?: string;
   /** Display name of the game (optional, shown on title screen). */
   game?: string;
   files: string[];
+  /**
+   * Gallery entries parsed from gallery_images.rpy via parse_gallery.ts.
+   * Each entry is one animated scene (grouped by character + scene ID).
+   */
+  gallery?: GalleryEntry[];
 }
 
 // ─── Sprite display state ────────────────────────────────────────────────────
@@ -214,7 +232,6 @@ export interface SaveData {
   stepIndex: number;
   callStack: StackFrame[];
   vars: Record<string, unknown>;
-  unlockedCGs: string[];
   completedRoutes: string[];
   // snapshot of visible state — restored on load
   backgroundSrc: string | null;
@@ -257,6 +274,5 @@ export interface GameState {
   error: string | null;
 
   // ── Progression ──
-  unlockedCGs: string[];
   completedRoutes: string[];
 }

@@ -87,7 +87,6 @@ export function stateToSave(state: GameState): SaveData {
     stepIndex: state.stepIndex,
     callStack: state.callStack,
     vars: { ...state.vars },
-    unlockedCGs: [...state.unlockedCGs],
     completedRoutes: [...state.completedRoutes],
     backgroundSrc: state.backgroundSrc,
     bgFilter: state.bgFilter,
@@ -130,7 +129,6 @@ function validateSave(obj: unknown): SaveData {
       s.vars && typeof s.vars === "object" && !Array.isArray(s.vars)
         ? (s.vars as Record<string, unknown>)
         : {},
-    unlockedCGs: Array.isArray(s.unlockedCGs) ? s.unlockedCGs : [],
     completedRoutes: Array.isArray(s.completedRoutes) ? s.completedRoutes : [],
     backgroundSrc: typeof s.backgroundSrc === "string" ? s.backgroundSrc : null,
     bgFilter: typeof s.bgFilter === "string" ? s.bgFilter : null,
@@ -476,7 +474,6 @@ export function applySave(base: GameState, save: SaveData): GameState {
     stepIndex: save.stepIndex,
     callStack: save.callStack,
     vars: { ...save.vars },
-    unlockedCGs: save.unlockedCGs,
     completedRoutes: save.completedRoutes,
 
     // Restore visual / audio snapshot from the save

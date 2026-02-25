@@ -1,4 +1,4 @@
-import type { Step, ScriptFile, Manifest } from "./types";
+import type { Step, ScriptFile, Manifest, GalleryEntry } from "./types";
 import { parseScript, extractCharMap, extractImageMap } from "./rrs/index";
 import { isTauri, getActiveAssetsDir } from "./tauri_bridge";
 
@@ -10,6 +10,7 @@ let loadedFiles: Set<string> = new Set();
 let manifestFiles: string[] = [];
 let manifestStart: string = "start";
 let manifestGame: string | undefined = undefined;
+let manifestGallery: GalleryEntry[] = [];
 
 // Global character abbreviation → display name map, populated from script.rrs.
 // All other files are compiled with this map so `speak k "text"` resolves to
@@ -79,6 +80,7 @@ export async function loadAll(): Promise<void> {
   // Ren'Py convention: entry label is always "start". Fall back if not set.
   manifestStart = manifest.start ?? "start";
   manifestGame = manifest.game;
+  manifestGallery = manifest.gallery ?? [];
 
   console.info(
     `[loader] Manifest loaded. ${manifest.files.length} files listed. ` +
@@ -244,6 +246,15 @@ export function getManifestGame(): string | undefined {
 }
 
 /**
+ * Return the gallery entries parsed from manifest.json (populated by
+ * parse_gallery.ts from gallery_images.rpy).
+ * Returns an empty array if the manifest has no "gallery" field.
+ */
+export function getGallery(): GalleryEntry[] {
+  return manifestGallery;
+}
+
+/**
  * Clear everything — used in tests / hot-reload scenarios.
  */
 export function reset(): void {
@@ -252,5 +263,6 @@ export function reset(): void {
   manifestFiles = [];
   manifestStart = "start";
   manifestGame = undefined;
+  manifestGallery = [];
   globalCharMap = new Map();
 }

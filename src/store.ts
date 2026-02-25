@@ -467,7 +467,7 @@ export const selectDialogue = (s: Store) => ({
 export const selectChoices = (s: Store) => s.choices;
 export const selectBackground = (s: Store) => s.backgroundSrc;
 export const selectSprites = (s: Store) => s.sprites;
-export const selectUnlockedCGs = (s: Store) => s.unlockedCGs;
+
 export const selectUI = (s: Store) => ({
   showGallery: s.showGallery,
   showSettings: s.showSettings,
