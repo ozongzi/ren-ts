@@ -488,55 +488,7 @@ class Converter {
   // ── Asset resolution ────────────────────────────────────────────────────────
 
   private resolveAudio(varName: string): string {
-    // Return a variable reference: audio.VAR
-    // The runtime resolves it via the audio namespace defined in script.rrs
     return `audio.${varName}`;
-  }
-
-  /**
-   * Return the image var-ref string for a bg image.
-   * Falls back to a quoted unknown marker if the key is not in the map.
-   */
-  private bgVarRef(key: string): string {
-    // Strip the bg_ prefix for the var ref key: bg_bathroom2_sunset → bathroom2_sunset
-    const refKey = key.startsWith("bg_") ? key.slice("bg_".length) : key;
-    return `image.bg.${refKey}`;
-  }
-
-  /**
-   * Return the image var-ref string for a cg image.
-   * Falls back to a quoted unknown marker if the key is not in the map.
-   */
-  private cgVarRef(key: string): string {
-    // Strip the cg_ prefix for the var ref key: cg_arrival1 → arrival1
-    const refKey = key.startsWith("cg_") ? key.slice("cg_".length) : key;
-    return `image.cg.${refKey}`;
-  }
-
-  /**
-   * Return the image var-ref string for a sx image.
-   * Falls back to a quoted unknown marker if the key is not in the map.
-   */
-  private sxVarRef(key: string): string {
-    // Normalise: strip any sx_ prefix for the var ref key
-    const refKey = key.startsWith("sx_") ? key.slice("sx_".length) : key;
-    return `image.sx.${refKey}`;
-  }
-
-  /**
-   * Return the image var-ref string for a misc image.
-   * Falls back to null if the name is not in any map.
-   */
-  private miscVarRef(name: string): string | null {
-    if (this.maps.cg.has(name)) {
-      const refKey = name.startsWith("cg_") ? name.slice("cg_".length) : name;
-      return `image.cg.${refKey}`;
-    } else if (this.maps.bg.has("bg_" + name)) {
-      return `image.bg.${name}`;
-    } else if (this.maps.misc.has(name)) {
-      return `image.misc.${name}`;
-    }
-    return null;
   }
 
   // ── Look-ahead helper ───────────────────────────────────────────────────────
@@ -549,13 +501,76 @@ class Converter {
     return null;
   }
 
+  // ── Unified show/scene key builder ──────────────────────────────────────────
+
+  /**
+   * Given the words of a Ren'Py image reference (everything between the
+   * command keyword and any `at`/`with` clause), return the dot-joined key
+   * used in the .rrs output.
+   *
+   * Examples:
+   *   ["cg", "arrival2"]          → "cg.arrival2"
+   *   ["keitaro_casual"]          → "keitaro_casual"
+   *   ["keitaro", "normal1"]      → "keitaro.normal1"
+   *   ["hina", "sick", "normal1"] → "hina.sick.normal1"
+   *   ["bg_entrance_day"]         → "bg_entrance_day"
+   */
+  private static imageKey(words: string[]): string {
+    return words.join(".");
+  }
+
+  /**
+   * Parse the tail of a `show` or `scene` line (everything after the keyword)
+   * into { words, at, trans, filter }.
+   *
+   * Stops accumulating words when it encounters `at`, `with`, or a known
+   * filter keyword.  Trailing ATL colon (`:`) is stripped from the last word.
+   *
+   * show keitaro normal1 at center with dissolve
+   *   → words=["keitaro","normal1"] at="center" trans="dissolve"
+   * scene bg_entrance_day sepia with dissolve
+   *   → words=["bg_entrance_day"] filter="sepia" trans="dissolve"
+   */
+  private static parseShowTail(
+    tail: string,
+    forScene = false,
+  ): { words: string[]; at: string; trans: string; filter: string } {
+    const FILTERS = new Set(["sepia"]);
+    const parts = tail.trim().split(/\s+/);
+    const words: string[] = [];
+    let at = "";
+    let trans = "";
+    let filter = "";
+    let i = 0;
+    while (i < parts.length) {
+      const p = parts[i];
+      if (p === "with" && i + 1 < parts.length) {
+        trans = normTransition(parts[i + 1]);
+        i += 2;
+        continue;
+      }
+      if (p === "at" && i + 1 < parts.length) {
+        at = parts[i + 1];
+        i += 2;
+        continue;
+      }
+      // Filter keyword (only meaningful for scene)
+      if (forScene && FILTERS.has(p)) {
+        filter = p;
+        i++;
+        continue;
+      }
+      // Strip trailing ATL colon
+      words.push(p.replace(/:$/, ""));
+      i++;
+    }
+    return { words, at, trans, filter };
+  }
+
   // ── Main line processor ─────────────────────────────────────────────────────
 
   private processLine(rawLine: string): void {
     const indent = getIndent(rawLine);
-    // Strip Ren'Py inline comments (#...) that appear after a statement,
-    // but ONLY when the # is not inside a string literal.
-    // Simple heuristic: if the line has an unquoted #, strip from there.
     let line = rawLine.trim();
 
     // ── Blank / comment ───────────────────────────────────────────────────────
@@ -571,7 +586,7 @@ class Converter {
           if (ch === "\\") {
             ci++;
             continue;
-          } // skip escaped char
+          }
           if (ch === strChar) inStr = false;
         } else {
           if (ch === '"' || ch === "'") {
@@ -584,26 +599,23 @@ class Converter {
         }
       }
       if (!line) return;
-      // Skip a bare lone quote (multiline string residue that wasn't joined)
       if (line === '"' || line === "'") return;
     }
 
-    // ── Ren'Py image declarations → top-level .rrs image var declarations ─────
-    // Instead of silently discarding these, emit them as `image.ns.key = "path"`
-    // top-level defines so the codegen can resolve them via the imageMap.
+    // ── Ren'Py image declarations ─────────────────────────────────────────────
     if (
       line.startsWith("image ") &&
       (line.includes(" = Movie(") ||
+        /\s=\s*Movie\s*\(/.test(line) ||
         /\s=\s*"/.test(line) ||
-        /\s=\s*im\./.test(line))
+        /\s=\s*im\./.test(line) ||
+        /\s=\s*Composite\(/.test(line))
     ) {
       this.processImageDecl(line);
       return;
     }
 
-    // ── define audio.VAR = "path" → emit as top-level audio alias ─────────────
-    // `define audio.xxx = "path"` becomes `audio.xxx = "path";` in the .rrs
-    // output so that play music / bgsound can reference the alias by name.
+    // ── define audio.VAR = "path" ─────────────────────────────────────────────
     const audioDefineMatch = line.match(
       /^define\s+(audio\.\w+)\s*=\s*"([^"]+)"/,
     );
@@ -612,10 +624,7 @@ class Converter {
       return;
     }
 
-    // ── define VAR = Position(xpos=X, ...) → position.VAR = X; ──────────────
-    // Handles both:
-    //   define foo = Position(xpos=0.5, ...)   (top-level define)
-    //   $ foo = Position(xpos=0.5, ...)        (Python assignment in init block)
+    // ── define/$ VAR = Position(xpos=X, ...) ─────────────────────────────────
     const positionMatch = line.match(
       /^(?:define\s+|(?:\$\s*))(\w+)\s*=\s*Position\s*\(\s*xpos\s*=\s*([\d.]+)/,
     );
@@ -639,15 +648,10 @@ class Converter {
       line.startsWith("init ") ||
       line.startsWith("default ") ||
       line.startsWith("python:") ||
-      // ATL animation commands
       /^(zoom|xalign|yalign|xpos|ypos|alpha|ease|linear)\s/.test(line) ||
-      // Working flag is internal
       line.match(/^\$\s*working\s*=/) !== null ||
-      // Time-transition cutscenes (video-only, no .rrs equivalent)
       line.match(/^\$\s*time_transition_\w+\s*\(/) !== null ||
-      // Ren'Py save/ui calls
       line.match(/^\$\s*renpy\.save_persistent\s*\(/) !== null ||
-      // Ren'Py movie cutscene
       line.match(/^\$\s*renpy\.movie_cutscene\s*\(/) !== null
     ) {
       return;
@@ -921,391 +925,76 @@ class Converter {
       return;
     }
 
-    // ── scene cg black / white / NAME [with TRANS] ────────────────────────────
-    // Also matches `scene cg NAME:` (Ren'Py ATL block start — colon stripped).
-    const sceneCgMatch = line.match(
-      /^scene\s+cg\s+(\S+?)(?::)?(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (sceneCgMatch) {
-      // Strip trailing colon — Ren'Py ATL blocks use `scene cg NAME:` syntax
-      const cgName = sceneCgMatch[1].replace(/:$/, "");
-      const trans = sceneCgMatch[2] ? normTransition(sceneCgMatch[2]) : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      if (cgName === "black") {
-        this.emit(`${this.pad()}scene #000000${transPart};`);
-      } else if (cgName === "white") {
-        this.emit(`${this.pad()}scene #ffffff${transPart};`);
-      } else {
-        const ref = this.cgVarRef("cg_" + cgName);
-        this.emit(`${this.pad()}scene ${ref}${transPart};`);
-      }
-      return;
-    }
-
-    // ── scene bg_NAME [sepia|lightsoff|lightson|...] [with TRANS] ────────────
-    // Also handles multi-word bg keys like `bg_cabin_taiga_night lightsoff`.
-    const sceneBgMatch = line.match(
-      /^scene\s+(bg_\S+)(?:\s+(\w+))?(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (sceneBgMatch) {
-      const bgBase = sceneBgMatch[1];
-      const modifier = sceneBgMatch[2];
-      const transRaw = sceneBgMatch[3];
-      // Check if modifier is a known transition keyword
-      const isTransition =
-        modifier &&
-        /^(dissolve|fade|flash|move|with)$/.test(modifier.toLowerCase());
-      // Check if modifier is a visual filter (sepia, etc.) — these are Ren'Py
-      // display filters, NOT separate image variants; strip them from the key.
-      const isFilter = modifier && /^(sepia)$/i.test(modifier);
-      // If modifier is not a transition or filter, try bg_BASE_MODIFIER as key
-      const bgKey =
-        modifier && !isTransition && !isFilter
-          ? bgBase + "_" + modifier
-          : bgBase;
-      const resolvedKey = this.maps.bg.has(bgKey)
-        ? bgKey
-        : modifier &&
-            !isTransition &&
-            !isFilter &&
-            this.maps.bg.has(bgBase + " " + modifier)
-          ? bgBase + " " + modifier
-          : bgKey;
-      const ref = this.bgVarRef(resolvedKey);
-      const trans = transRaw
-        ? normTransition(transRaw)
-        : modifier && isTransition
-          ? normTransition(modifier)
-          : "";
-      // Preserve visual filter keyword in .rrs output so codegen/engine can apply it.
-      const filterPart = isFilter ? ` ${modifier!.toLowerCase()}` : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      this.emit(`${this.pad()}scene ${ref}${filterPart}${transPart};`);
-      return;
-    }
-
-    // ── scene sx NAME... [with TRANS] ─────────────────────────────────────────
-    // Handles: `scene sx hiro10_9`, `scene sx yoichi8body1 1`, multi-word keys.
-    if (/^scene\s+sx\s+/.test(line)) {
-      const withIdx = line.indexOf(" with ");
-      const afterSx = (withIdx === -1 ? line : line.slice(0, withIdx))
-        .replace(/^scene\s+sx\s+/, "")
-        .trim();
-      const transRaw = withIdx === -1 ? "" : line.slice(withIdx + 6).trim();
-      const trans = transRaw ? normTransition(transRaw) : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      const lookupKey = afterSx.replace(/\s+/g, "_");
-      const hasSx =
-        this.maps.sx.has("sx_" + lookupKey) || this.maps.sx.has(lookupKey);
-      if (hasSx) {
-        this.emit(
-          `${this.pad()}scene ${this.sxVarRef(lookupKey)}${transPart};`,
-        );
-      } else {
-        this.emit(`${this.pad()}expr sx::${lookupKey}${transPart};`);
-      }
-      return;
-    }
-
-    // ── scene sx_NAME FRAME (underscore-prefixed with numeric frame) ──────────
-    const sceneSxUnderMatch = line.match(
-      /^scene\s+(sx_\S+)\s+(\d+)(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (sceneSxUnderMatch) {
-      const sxKey = sceneSxUnderMatch[1] + "_" + sceneSxUnderMatch[2];
-      const trans = sceneSxUnderMatch[3]
-        ? normTransition(sceneSxUnderMatch[3])
-        : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      const hasSxKey =
-        this.maps.sx.has(sxKey) || this.maps.sx.has(sceneSxUnderMatch[1]);
-      if (hasSxKey) {
-        this.emit(`${this.pad()}scene ${this.sxVarRef(sxKey)}${transPart};`);
-      } else {
-        this.emit(`${this.pad()}expr sx::${sxKey}${transPart};`);
-      }
-      return;
-    }
-
-    // ── scene "PATH" [with TRANS] (literal path) ──────────────────────────────
-    const sceneLiteralMatch = line.match(
-      /^scene\s+("(?:[^"\\]|\\.)*")(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (sceneLiteralMatch) {
-      const trans = sceneLiteralMatch[2]
-        ? normTransition(sceneLiteralMatch[2])
-        : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      this.emit(`${this.pad()}scene ${sceneLiteralMatch[1]}${transPart};`);
-      return;
-    }
-
-    // ── scene NAME [with TRANS] (bare name — try bg_NAME or misc lookup) ──────
-    // Must come after all other `scene X` patterns.
-    // Also handles `scene cg_black` / `scene cg_white` (underscore CG form).
-    const sceneBareName = line.match(
-      /^scene\s+([a-zA-Z][a-zA-Z0-9_]*)(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (sceneBareName) {
-      const name = sceneBareName[1];
-      const trans = sceneBareName[2] ? normTransition(sceneBareName[2]) : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      // Special-case underscore CG colour aliases
-      if (name === "cg_black") {
-        this.emit(`${this.pad()}scene #000000${transPart};`);
+    // ── scene WORDS... [FILTER] [with TRANS] ─────────────────────────────────
+    // Unified scene handler: Ren'Py tag+attrs → dot-joined key.
+    //   scene cg black with dissolve  → scene cg.black | dissolve;
+    //   scene bg_entrance_day sepia   → scene bg_entrance_day sepia;
+    //   scene cg arrival1             → scene cg.arrival1;
+    if (/^scene\s+/.test(line)) {
+      const tail = line.slice("scene".length).trim();
+      // Literal quoted path (rare)
+      const litM = tail.match(/^("(?:[^"\\]|\\.)*")(?:\s+with\s+(\S+.*))?$/);
+      if (litM) {
+        const trans = litM[2] ? normTransition(litM[2]) : "";
+        const transPart = trans ? ` | ${trans}` : "";
+        this.emit(`${this.pad()}scene ${litM[1]}${transPart};`);
         return;
       }
-      if (name === "cg_white") {
-        this.emit(`${this.pad()}scene #ffffff${transPart};`);
+      const { words, at, trans, filter } = Converter.parseShowTail(tail, true);
+      if (words.length === 0) {
+        this.emit(`${this.pad()}// UNHANDLED scene: ${line}`);
         return;
       }
-      const ref = this.miscVarRef(name);
-      if (ref) {
-        this.emit(`${this.pad()}scene ${ref}${transPart};`);
-      } else {
-        // Unknown bare name — emit with a comment so it's visible but parseable
-        this.emit(`${this.pad()}scene "<UNKNOWN:${name}>"${transPart};`);
-      }
+      const key = Converter.imageKey(words);
+      const filterPart = filter ? ` ${filter}` : "";
+      const atPart = at ? ` @ ${at}` : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      this.emit(`${this.pad()}scene ${key}${filterPart}${atPart}${transPart};`);
       return;
     }
 
-    // ── show sx NAME... [with TRANS] ──────────────────────────────────────────
-    // Handles multi-word sx keys: `show sx hiro10_9`, `show sx yoichi8head1 1`,
-    // `show sx natsumi6 face1`, etc.
-    // All words between `sx` and optional `with TRANS` are joined with `_`.
-    if (/^show\s+sx\s+/.test(line)) {
-      const withIdx = line.indexOf(" with ");
-      const afterSx = (withIdx === -1 ? line : line.slice(0, withIdx))
-        .replace(/^show\s+sx\s+/, "")
+    // ── show WORDS... [at POS] [with TRANS] ──────────────────────────────────
+    // Unified show handler: Ren'Py tag+attrs → dot-joined key.
+    //   show cg arrival2 with dissolve      → show cg.arrival2 | dissolve;
+    //   show keitaro_casual at center       → show keitaro_casual @ center;
+    //   show keitaro normal1 at center      → show keitaro.normal1 @ center;
+    //   show hina sick normal1 at right2    → show hina.sick.normal1 @ right2;
+    //   show sx keitaro1 1 with dissolve    → show sx.keitaro1.1 | dissolve;
+    // `sepia` appearing between the key words and `at`/`with` is a Ren'Py
+    // display filter — it is silently dropped (not part of the image key).
+    if (/^show\s+/.test(line)) {
+      const tail = line.slice("show".length).trim();
+      const { words, at, trans } = Converter.parseShowTail(tail, false);
+      // Drop any standalone "sepia" word from the key words (display filter, not part of key)
+      const keyWords = words.filter((w) => w !== "sepia");
+      if (keyWords.length === 0) {
+        this.emit(`${this.pad()}// UNHANDLED show: ${line}`);
+        return;
+      }
+      const key = Converter.imageKey(keyWords);
+      const atPart = at ? ` @ ${at}` : "";
+      const transPart = trans ? ` | ${trans}` : "";
+      this.emit(`${this.pad()}show ${key}${atPart}${transPart};`);
+      return;
+    }
+
+    // ── hide WORDS... [with TRANS] ────────────────────────────────────────────
+    // Unified hide handler: only the TAG (first word) is used.
+    // Ren'Py hide ignores attributes — `hide keitaro grin1` ≡ `hide keitaro`.
+    //   hide keitaro_casual        → hide keitaro_casual;
+    //   hide keitaro grin1         → hide keitaro;
+    //   hide cg arrival2           → hide cg;
+    //   hide hina sick normal1     → hide hina;
+    if (/^hide\s+/.test(line)) {
+      const tail = line
+        .slice("hide".length)
+        .trim()
+        .replace(/\s+with\s+\S+.*$/, "") // strip optional "with TRANS"
         .trim();
-      const transRaw = withIdx === -1 ? "" : line.slice(withIdx + 6).trim();
-      const trans = transRaw ? normTransition(transRaw) : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      // Join all key words with underscores (e.g. "natsumi6 face1" → "natsumi6_face1")
-      const lookupKey = afterSx.replace(/\s+/g, "_");
-      const hasSx =
-        this.maps.sx.has("sx_" + lookupKey) || this.maps.sx.has(lookupKey);
-      if (hasSx) {
-        this.emit(`${this.pad()}show sx_${lookupKey}${transPart} {`);
-        this.emit(`${this.pad(1)}src: ${this.sxVarRef(lookupKey)};`);
-        this.emit(`${this.pad()}};`);
-      } else {
-        this.emit(`${this.pad()}expr sx::${lookupKey}${transPart};`);
+      const tag = tail.split(/\s+/)[0];
+      if (tag) {
+        this.emit(`${this.pad()}hide ${tag};`);
       }
-      return;
-    }
-
-    // ── hide sx NAME... ───────────────────────────────────────────────────────
-    if (/^hide\s+sx\s+/.test(line)) {
-      const afterSx = line.replace(/^hide\s+sx\s+/, "").trim();
-      const lookupKey = afterSx.replace(/\s+/g, "_");
-      this.emit(`${this.pad()}hide sx_${lookupKey};`);
-      return;
-    }
-
-    // ── show cg NAME [with TRANS] ─────────────────────────────────────────────
-    // Also matches `show cg NAME:` (Ren'Py ATL block start — colon stripped).
-    const showCgSpaceMatch = line.match(
-      /^show\s+cg\s+(\S+?)(?::)?(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (showCgSpaceMatch) {
-      // Strip trailing colon — Ren'Py ATL blocks use `show cg NAME:` syntax
-      const cgKey = "cg_" + showCgSpaceMatch[1].replace(/:$/, "");
-      const ref = this.cgVarRef(cgKey);
-      const trans = showCgSpaceMatch[2]
-        ? normTransition(showCgSpaceMatch[2])
-        : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      this.emit(`${this.pad()}show ${cgKey}${transPart} {`);
-      this.emit(`${this.pad(1)}src: ${ref};`);
-      this.emit(`${this.pad()}};`);
-      return;
-    }
-
-    // ── show cg_NAME [at POS] [with TRANS] (underscore form) ─────────────────
-    const showCgUnderMatch = line.match(
-      /^show\s+(cg_\S+)(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (showCgUnderMatch) {
-      const cgKey = showCgUnderMatch[1];
-      const ref = this.cgVarRef(cgKey);
-      const at = showCgUnderMatch[2] ? ` @ ${showCgUnderMatch[2]}` : "";
-      const trans = showCgUnderMatch[3]
-        ? normTransition(showCgUnderMatch[3])
-        : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      if (!ref.includes("<UNKNOWN")) {
-        this.emit(`${this.pad()}show ${cgKey}${transPart} {`);
-        this.emit(`${this.pad(1)}src: ${ref};`);
-        this.emit(`${this.pad()}};`);
-      } else {
-        this.emit(`${this.pad()}show ${cgKey}${at}${transPart};`);
-      }
-      return;
-    }
-
-    // ── show bg_NAME [at POS] [with TRANS] ────────────────────────────────────
-    const showBgMatch = line.match(
-      /^show\s+(bg_\S+)(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (showBgMatch) {
-      const ref = this.bgVarRef(showBgMatch[1]);
-      const at = showBgMatch[2] ? ` @ ${showBgMatch[2]}` : "";
-      const trans = showBgMatch[3] ? normTransition(showBgMatch[3]) : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      this.emit(`${this.pad()}show ${ref}${at}${transPart};`);
-      return;
-    }
-
-    // ── show CHAR_BODY [sepia] [at POS] [with TRANS] ──────────────────────────
-    // Body sprite: NAME_PART pattern (e.g. keitaro_casual, hiro2_camp).
-    // The optional `sepia` is a Ren'Py display filter — strip it, don't use it
-    // as a face expression.
-    // Looks ahead for a matching face line to combine into show BODY::FACE.
-    const showBodyMatch = line.match(
-      /^show\s+(\w+_\w+)(?:\s+sepia)?(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (showBodyMatch) {
-      const bodyKey = showBodyMatch[1];
-      const at = showBodyMatch[2];
-      const trans = showBodyMatch[3] ? normTransition(showBodyMatch[3]) : "";
-
-      const charBase = bodyKey.split("_")[0];
-
-      const nextFaceIdx = this.peekNextFaceLine(charBase, this.pos);
-      if (nextFaceIdx !== -1) {
-        const faceRaw = this.lines[nextFaceIdx];
-        const faceLine = faceRaw.trim();
-        // Note: also accepts sepia modifier on face lines (stripped).
-        const faceM = faceLine.match(
-          /^show\s+(\w+)\s+(\w+)(?:\s+sepia)?(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
-        );
-        if (faceM) {
-          const faceExpr = faceM[2];
-          const faceAt = faceM[3] ?? at;
-          const faceTrans = faceM[4] ? normTransition(faceM[4]) : trans;
-          this.lines[nextFaceIdx] = "";
-          const atPart = faceAt ? ` @ ${faceAt}` : "";
-          const transPart = faceTrans ? ` | ${faceTrans}` : "";
-          this.emit(
-            `${this.pad()}show ${bodyKey}::${faceExpr}${atPart}${transPart};`,
-          );
-          return;
-        }
-      }
-
-      const atPart = at ? ` @ ${at}` : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      this.emit(`${this.pad()}show ${bodyKey}${atPart}${transPart};`);
-      return;
-    }
-
-    // ── show CHAR MODIFIER EXPR [at POS] [with TRANS] ─────────────────────────
-    // Three-word face expression: char + state modifier + expression.
-    // e.g. `show hina sick normal1 at center` → expr hina_sick::normal1 @ center
-    // If the third word is "sepia" it is a visual filter, not an expression;
-    // emit a body-with-modifier show instead (no face expression).
-    const show3WordMatch = line.match(
-      /^show\s+(\w+)\s+(\w+)\s+(\w+)(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (show3WordMatch) {
-      const char = show3WordMatch[1];
-      const modifier = show3WordMatch[2];
-      const expr = show3WordMatch[3];
-      const at = show3WordMatch[4];
-      const trans = show3WordMatch[5] ? normTransition(show3WordMatch[5]) : "";
-      const atPart = at ? ` @ ${at}` : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      if (expr === "sepia") {
-        // sepia is a display filter — emit body+modifier sprite without face expr.
-        this.emit(
-          `${this.pad()}show ${char}_${modifier}${atPart}${transPart};`,
-        );
-      } else {
-        this.emit(
-          `${this.pad()}expr ${char}_${modifier}::${expr}${atPart}${transPart};`,
-        );
-      }
-      return;
-    }
-
-    // ── show CHAR EXPR [sepia] [at POS] [with TRANS] ──────────────────────────
-    // Two-word face expression; `sepia` modifier is allowed and stripped.
-    // Guard: if the second word IS "sepia" the line is actually a body-only
-    // sprite with a filter (no face expression) — emit show CHAR instead.
-    const showFaceMatch = line.match(
-      /^show\s+(\w+)\s+(\w+)(?:\s+sepia)?(?:\s+at\s+(\S+))?(?:\s+with\s+(\S+.*))?$/,
-    );
-    if (showFaceMatch) {
-      const char = showFaceMatch[1];
-      const expr = showFaceMatch[2];
-      const at = showFaceMatch[3];
-      const trans = showFaceMatch[4] ? normTransition(showFaceMatch[4]) : "";
-      const atPart = at ? ` @ ${at}` : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      if (expr === "sepia") {
-        // sepia is a display filter — emit a plain show for the body sprite.
-        this.emit(`${this.pad()}show ${char}${atPart}${transPart};`);
-      } else {
-        this.emit(`${this.pad()}expr ${char}::${expr}${atPart}${transPart};`);
-      }
-      return;
-    }
-
-    // ── show NAME [with TRANS] (simple / animated CG / movie sprite) ──────────
-    const showSimpleMatch = line.match(/^show\s+(\S+)(?:\s+with\s+(\S+.*))?$/);
-    if (showSimpleMatch) {
-      const name = showSimpleMatch[1];
-      const trans = showSimpleMatch[2]
-        ? normTransition(showSimpleMatch[2])
-        : "";
-      const transPart = trans ? ` | ${trans}` : "";
-      this.emit(`${this.pad()}show ${name}${transPart};`);
-      return;
-    }
-
-    // ── hide CHAR MODIFIER EXPR [with TRANS] (three-word form) ──────────────
-    // If the third word is "sepia" it is a visual filter — emit hide CHAR::MODIFIER
-    // (the modifier is the face expression, sepia is stripped).
-    const hide3WordMatch = line.match(
-      /^hide\s+(\w+)\s+(\w+)\s+(\w+)(?:\s+with\s+\S+)?\s*$/,
-    );
-    if (hide3WordMatch) {
-      const char = hide3WordMatch[1];
-      const modifier = hide3WordMatch[2];
-      const expr = hide3WordMatch[3];
-      if (expr === "sepia") {
-        // sepia is a display filter — hide the face expression (modifier) sprite.
-        this.emit(`${this.pad()}hide ${char}::${modifier};`);
-      } else {
-        this.emit(`${this.pad()}hide ${char}_${modifier}::${expr};`);
-      }
-      return;
-    }
-
-    // ── hide CHAR EXPR [sepia] [with TRANS] / hide cg NAME [with TRANS] ──────
-    // Guard: if the second word IS "sepia" it is a filter — just hide CHAR (body only).
-    const hideFaceMatch = line.match(
-      /^hide\s+(\w+)\s+(\w+)(?:\s+sepia)?(?:\s+with\s+\S+)?\s*$/,
-    );
-    if (hideFaceMatch) {
-      const hns = hideFaceMatch[1];
-      const hex = hideFaceMatch[2];
-      if (hns === "cg" || hns === "bg") {
-        this.emit(`${this.pad()}hide ${hns}_${hex};`);
-      } else if (hex === "sepia") {
-        // sepia is a display filter — just hide the body sprite.
-        this.emit(`${this.pad()}hide ${hns};`);
-      } else {
-        this.emit(`${this.pad()}hide ${hns}::${hex};`);
-      }
-      return;
-    }
-
-    // ── hide NAME [with TRANS] ────────────────────────────────────────────────
-    const hideMatch = line.match(/^hide\s+(\S+)(?:\s+with\s+\S+)?\s*$/);
-    if (hideMatch) {
-      this.emit(`${this.pad()}hide ${hideMatch[1]};`);
       return;
     }
 
@@ -1397,103 +1086,81 @@ class Converter {
   // ── Image declaration emitter ────────────────────────────────────────────────
 
   /**
-   * Parse a Ren'Py `image X = "PATH"` or `image X = Movie(...)` line and emit
-   * a top-level .rrs declaration of the form:
-   *   image.bg.bathroom2_sunset = "BGs/bathroom2_sunset.jpg";
-   *   image.cg.yoshinori1_5     = "CGs/cg_yoshinori_1_5.jpg";
-   *   image.sx.hiro10_9         = "CGs/SX/hiro10_9.jpg";
-   *   image.misc.montage_bg     = "CGs/montage_bg.jpg";
+   * Parse a Ren'Py `image WORDS... = VALUE` line and emit a top-level .rrs
+   * declaration using the dot-joined key format:
    *
-   * Paths are stored verbatim as declared in the .rpy source (no stripping).
-   * The codegen resolves them at compile time via the imageMap built from
-   * these declarations.
+   *   image cg arrival2 = "CGs/..."      →  image.cg.arrival2 = "CGs/...";
+   *   image keitaro_casual = "Spr/..."   →  image.keitaro_casual = "Spr/...";
+   *   image keitaro grin1 = "Spr/..."    →  image.keitaro.grin1 = "Spr/...";
+   *   image hina sick normal1 = "..."    →  image.hina.sick.normal1 = "...";
+   *   image bg_entrance_day = "BGs/..."  →  image.bg_entrance_day = "BGs/...";
+   *   image sx keitaro1 1 = "CGs/..."    →  image.sx.keitaro1.1 = "CGs/...";
+   *   image taiga_3b_1 = Movie(...)      →  image.taiga_3b_1 = "path.webm";
+   *   image lee_sleep sepia = im.Sepia() →  (skipped — filter variant)
+   *   image X = Composite(...)           →  (skipped — composite)
+   *
+   * The key is built by:
+   *   1. Taking all words between `image` and `=`
+   *   2. Dropping any trailing known filter word (e.g. "sepia")
+   *   3. Joining with "." and prepending "image."
+   *
+   * This mirrors the Ren'Py tag system: spaces become dots.
    */
   private processImageDecl(line: string): void {
-    // image cg NAME = "PATH"  (space-separated two-word key, e.g. "cg yoshinori1_5")
-    const cgSpace = line.match(/^image\s+cg\s+(\S+)\s*=\s*"([^"]+)"/);
-    if (cgSpace) {
-      const key = cgSpace[1].replace(/\s+/g, "_");
-      this.emit(`image.cg.${key} = "${escStr(cgSpace[2])}";`);
-      return;
+    const eqIdx = line.indexOf("=");
+    if (eqIdx < 0) return;
+
+    const wordsPart = line.slice("image".length, eqIdx).trim();
+    const valuePart = line.slice(eqIdx + 1).trim();
+
+    // Skip Composite(...) — multi-layer images with no single path
+    if (valuePart.startsWith("Composite(")) return;
+
+    const rawWords = wordsPart.split(/\s+/).filter((w) => w.length > 0);
+    if (rawWords.length === 0) return;
+
+    // Drop trailing known filter words (e.g. "sepia") — these are display
+    // filters, not part of the image identity.  The base image is already
+    // declared without the filter word and that declaration wins.
+    const KNOWN_FILTERS = new Set(["sepia"]);
+    const words = [...rawWords];
+    if (
+      words.length > 1 &&
+      KNOWN_FILTERS.has(words[words.length - 1].toLowerCase())
+    ) {
+      // Strip the trailing filter word so the key becomes the base image name.
+      // We still emit the declaration because the base variant may not exist
+      // separately (e.g. `image bg_tent_day sepia = im.Sepia("BGs/tent_day.jpg")`
+      // is sometimes the only definition for that background).
+      words.pop();
     }
 
-    // image bg_NAME [STATE] = "PATH"
-    const bgUnder = line.match(
-      /^image\s+(bg_\S+)(?:\s+(\w+))?\s*=\s*"([^"]+)"/,
+    // Build the dot-joined key: "image." + words joined by "."
+    const key = "image." + words.join(".");
+
+    // ── Movie(play="PATH.webm") or Movie("PATH.webm", ...) ───────────────────
+    // Handles both positional and named-argument forms, with or without extra
+    // kwargs like size=(1920,1080) or loop=True.
+    const movieM = valuePart.match(
+      /^Movie\s*\(\s*(?:play\s*=\s*)?"([^"]+\.webm)"/,
     );
-    if (bgUnder) {
-      const base = bgUnder[1].slice("bg_".length); // strip bg_ prefix
-      const state = bgUnder[2];
-      const key = state ? base + "_" + state : base;
-      this.emit(`image.bg.${key} = "${escStr(bgUnder[3])}";`);
-      if (state) {
-        // Also emit base key for scenes that reference without modifier
-        this.emit(`image.bg.${base} = "${escStr(bgUnder[3])}";`);
-      }
+    if (movieM) {
+      this.emit(`${key} = "${escStr(movieM[1])}";`);
       return;
     }
 
-    // image cg_NAME = "PATH"  (underscore form)
-    const cgUnder = line.match(/^image\s+(cg_\S+)\s*=\s*"([^"]+)"/);
-    if (cgUnder) {
-      const key = cgUnder[1].slice("cg_".length); // strip cg_ prefix
-      this.emit(`image.cg.${key} = "${escStr(cgUnder[2])}";`);
+    // ── im.Filter("PATH") — image effect wrapper ──────────────────────────────
+    const imM = valuePart.match(/^im\.\w+\s*\(\s*"([^"]+)"/);
+    if (imM) {
+      this.emit(`${key} = "${escStr(imM[1])}";`);
       return;
     }
 
-    // image sx NAME... = "PATH"  (space-separated key, e.g. "sx hiro10_9")
-    const sxSpace = line.match(/^image\s+sx\s+(.*?)\s*=\s*"([^"]+)"/);
-    if (sxSpace) {
-      const key = sxSpace[1].trim().replace(/\s+/g, "_");
-      this.emit(`image.sx.${key} = "${escStr(sxSpace[2])}";`);
+    // ── "PATH" or "#HEXCOLOR" string literal ──────────────────────────────────
+    const strM = valuePart.match(/^"([^"]+)"/);
+    if (strM) {
+      this.emit(`${key} = "${escStr(strM[1])}";`);
       return;
-    }
-
-    // image sx_NAME = "PATH"  (underscore form)
-    const sxUnder = line.match(/^image\s+(sx_\S+)\s*=\s*"([^"]+)"/);
-    if (sxUnder) {
-      const key = sxUnder[1].slice("sx_".length); // strip sx_ prefix
-      this.emit(`image.sx.${key} = "${escStr(sxUnder[2])}";`);
-      return;
-    }
-
-    // image NAME = Movie(play="PATH.webm")  — animated CG / sprite movie
-    const movie = line.match(
-      /^image\s+([a-zA-Z0-9_]+)\s*=\s*Movie\s*\(\s*play\s*=\s*"([^"]+\.webm)"/,
-    );
-    if (movie) {
-      this.emit(`image.misc.${movie[1]} = "${escStr(movie[2])}";`);
-      return;
-    }
-
-    // image NAME... FILTER = im.SomeEffect("PATH")  — image filter variants (e.g. im.Sepia)
-    // The sepia/filter word is the last name token; strip it so the key matches the base
-    // image declaration (e.g. `image lee_sleep sepia = im.Sepia(...)` → `image.misc.lee_sleep`).
-    // This intentionally produces the same key as the plain `image lee_sleep = "..."` definition;
-    // duplicate definitions with identical paths are harmless — last writer wins in the map.
-    const KNOWN_IMG_FILTERS = new Set(["sepia"]);
-    const imEffect = line.match(
-      /^image\s+((?:\w+\s+)*\w+)\s*=\s*im\.\w+\s*\(\s*"([^"]+)"/,
-    );
-    if (imEffect) {
-      const words = imEffect[1].trim().split(/\s+/);
-      // Strip trailing filter word if recognised (e.g. "sepia")
-      if (
-        words.length > 1 &&
-        KNOWN_IMG_FILTERS.has(words[words.length - 1].toLowerCase())
-      ) {
-        words.pop();
-      }
-      const key = words.join("_");
-      this.emit(`image.misc.${key} = "${escStr(imEffect[2])}";`);
-      return;
-    }
-
-    // image NAME = "PATH"  (generic misc — single or multi-word key)
-    const misc = line.match(/^image\s+((?:\w+\s+)*\w+)\s*=\s*"([^"]+)"/);
-    if (misc) {
-      const key = misc[1].trim().replace(/\s+/g, "_");
-      this.emit(`image.misc.${key} = "${escStr(misc[2])}";`);
     }
   }
 
@@ -1502,26 +1169,6 @@ class Converter {
       this.blockStack.length > 0 &&
       this.blockStack[this.blockStack.length - 1].rpyCol >= indent
     );
-  }
-
-  /**
-   * Look ahead from `fromPos` for the next non-blank non-comment line that
-   * is a face-expression `show` for `charBase`.  Returns the line index or -1
-   * if interrupted by any other non-trivial line.
-   */
-  private peekNextFaceLine(charBase: string, fromPos: number): number {
-    for (let i = fromPos; i < this.lines.length; i++) {
-      const l = this.lines[i].trim();
-      if (!l || l.startsWith("#")) continue;
-      const m = l.match(
-        /^show\s+(\w+)\s+(\w+)(?:\s+sepia)?(?:\s+at\s+\S+)?(?:\s+with\s+\S+)?$/,
-      );
-      if (m && (m[1] === charBase || m[1].startsWith(charBase))) {
-        return i;
-      }
-      break;
-    }
-    return -1;
   }
 
   // ── Entry point ─────────────────────────────────────────────────────────────
@@ -1921,62 +1568,11 @@ async function convertFile(
   const filename = sourceBaseName + ".rrs";
   const lines = src.split("\n");
 
-  // Local image definitions (e.g. bg/cg/misc images defined in individual
-  // story .rpy files rather than in script.rpy) are now handled by
-  // processImageDecl() at conversion time — they are emitted as top-level
-  // image.* declarations in the output .rrs file.  The Converter's maps are
-  // still used to determine the correct var-ref namespace (bg/cg/sx/misc) for
-  // scene/show commands that reference those images.
-  //
-  // We perform a quick pre-scan of the file to populate file-local map entries
-  // so that the Converter can emit correct var-refs for locally-defined images.
-  const localMisc = new Map(maps.misc);
-  const localBg = new Map(maps.bg);
-  const localCg = new Map(maps.cg);
-  for (const rawLine of lines) {
-    const t = rawLine.trim();
-    // image bg_NAME = "PATH"  (with optional state modifier)
-    const bgM = t.match(/^image\s+(bg_\S+)(?:\s+(\w+))?\s*=\s*"([^"]+)"/);
-    if (bgM) {
-      const key = bgM[2] ? bgM[1] + "_" + bgM[2] : bgM[1];
-      localBg.set(key, bgM[3]);
-      if (bgM[2]) localBg.set(bgM[1], bgM[3]);
-      continue;
-    }
-    // image cg NAME = "PATH"
-    const cgM = t.match(/^image\s+cg\s+(\S+)\s*=\s*"([^"]+)"/);
-    if (cgM) {
-      localCg.set("cg_" + cgM[1], cgM[2]);
-      continue;
-    }
-    // image cg_NAME = "PATH"
-    const cgUM = t.match(/^image\s+(cg_\S+)\s*=\s*"([^"]+)"/);
-    if (cgUM) {
-      localCg.set(cgUM[1], cgUM[2]);
-      continue;
-    }
-    // image NAME = "PATH"  (single-word misc)
-    const miscM = t.match(/^image\s+([a-zA-Z0-9_]+)\s*=\s*"([^"]+)"/);
-    if (miscM) {
-      localMisc.set(miscM[1], miscM[2]);
-      continue;
-    }
-    // image NAME = Movie(play="PATH", ...)  — animated CG / sprite movie
-    const movieM = t.match(
-      /^image\s+([a-zA-Z0-9_]+)\s*=\s*Movie\s*\(\s*play\s*=\s*"([^"]+\.webm)"/,
-    );
-    if (movieM) {
-      localMisc.set(movieM[1], movieM[2]);
-    }
-  }
-
-  // Load per-file Chinese translations (avoids cross-file conflicts)
-  let effectiveMaps: AssetMaps = {
-    ...maps,
-    bg: localBg,
-    cg: localCg,
-    misc: localMisc,
-  };
+  // The Converter no longer uses prefix-based asset maps (bg/cg/sx/misc).
+  // All image declarations are emitted as dot-keyed image.* defines by
+  // processImageDecl(), and show/scene/hide commands use the unified
+  // Ren'Py tag system.  Only the charMap and tl map are still needed.
+  let effectiveMaps: AssetMaps = { ...maps };
   if (opts.tlDir) {
     const tl = await loadChineseTranslationsForFile(opts.tlDir, sourceBaseName);
     effectiveMaps = { ...effectiveMaps, tl };

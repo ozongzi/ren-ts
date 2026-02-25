@@ -1,22 +1,19 @@
 // ── Code generator: .rrs AST → engine JSON steps ─────────────────────────────
 //
-// Key responsibilities
+// Key responsibilities:
 //   • Emit engine-compatible JSON step objects for every AST node
-//   • Track sprite state (position + charVer) so that:
-//       - `expr char::face`  can emit the correct `at` without re-stating it
-//       - `hide char::*`     can expand the wildcard to the live face key
-//   • Derive sprite src paths from naming conventions:
-//       body  → Sprites/Body/{charVer}_b_{outfit}.png
-//       face  → Sprites/Faces/{charVer}_f_{faceExpr}.png
-//   • Resolve short voice filenames to their full Audio/ prefix
-//   • Expand `define` declarations into char / audio / const maps used at
-//     codegen time (character name resolution, audio path aliases, constants)
+//   • Resolve image keys via the flat defines dict:
+//       show cg.arrival2  →  lookup "image.cg.arrival2"  →  "CGs/cg1_arrival2.jpg"
+//       scene bg_entrance_day  →  lookup "image.bg_entrance_day"  →  "BGs/entrance_day.jpg"
+//   • Resolve character names via char.* entries
+//   • Resolve audio aliases via audio.* entries
+//   • NO hardcoded sprite path conventions (Sprites/Body/…, Sprites/Faces/…)
+//   • NO game-specific prefix heuristics (cg_, bg_, sx_)
 
 import type {
   AssignStmt,
   CallStmt,
   DefineDecl,
-  ExprStmt,
   HideStmt,
   IfStmt,
   JsonFile,
@@ -40,20 +37,24 @@ import type {
 
 import { registerPosition } from "../assets";
 
+// ── Define map builder ────────────────────────────────────────────────────────
+
 /**
- * Build the resolution maps from the top-level define declarations.
+ * Build resolution maps from the top-level define declarations.
  *
- * charMap   : abbr  → full name   (from `char.<abbr> = "Name"`)
- * audioMap  : alias → path        (from `audio.<alias> = "path"`)
- * imageMap  : full key → path     (from `image.<ns>.<key> = "path"`)
- *               e.g. "image.bg.bathroom2_sunset" → "BGs/bathroom2_sunset.jpg"
+ * All top-level `A = B;` declarations go into a single flat dict.
+ * Entries are split by key prefix:
  *
- * Declarations are written as plain bare assignments at the top level
- * (outside any label block), with no keyword:
- *   char.k = "Keitaro";
- *   image.bg.bathroom2_sunset = "BGs/bathroom2_sunset.jpg";
- * Legacy bare-key format (`k = "Keitaro"`) is also accepted for
- * backward compatibility with previously generated .rrs files.
+ *   char.*      → charMap   (abbr → full name)
+ *   audio.*     → audioMap  (alias → path)
+ *   image.*     → imageMap  (full "image.x.y" key → file path)
+ *   position.*  → registered directly with registerPosition()
+ *   everything else → ignored (constants, game-state vars, etc.)
+ *
+ * Image keys keep the full `image.` prefix so lookups from genShow/genScene
+ * can prepend "image." to the DSL key and query the map directly:
+ *   DSL key "cg.arrival2"  →  lookup "image.cg.arrival2"
+ *   DSL key "bg_entrance_day"  →  lookup "image.bg_entrance_day"
  */
 export function buildDefineMaps(
   defines: DefineDecl[],
@@ -64,37 +65,24 @@ export function buildDefineMaps(
   audioMap: Map<string, string>;
   imageMap: Map<string, string>;
 } {
-  // Start from the global char map (populated from script.rrs) so that
-  // story files which carry no char declarations can still resolve
-  // speaker abbreviations.
   const charMap = new Map<string, string>(globalCharMap);
   const audioMap = new Map<string, string>();
-  // Start from the global image map so that story files can reference images
-  // declared in script.rrs.
   const imageMap = new Map<string, string>(globalImageMap);
 
   for (const d of defines) {
-    if (d.key.startsWith("audio.")) {
-      // audio alias: `audio.bgm_main = "Audio/BGM/main.ogg";`
-      audioMap.set(d.key.slice("audio.".length), d.value);
-    } else if (d.key.startsWith("char.")) {
-      // canonical character declaration: `char.k = "Keitaro";`
-      // File-local definitions override the global map.
+    if (d.key.startsWith("char.")) {
       charMap.set(d.key.slice("char.".length), d.value);
+    } else if (d.key.startsWith("audio.")) {
+      audioMap.set(d.key.slice("audio.".length), d.value);
     } else if (d.key.startsWith("image.")) {
-      // image path declaration: `image.bg.bathroom2_sunset = "BGs/...";`
-      // Store with full key so lookups use the same form as the DSL.
+      // Store with full key including "image." prefix
       imageMap.set(d.key, d.value);
     } else if (d.key.startsWith("position.")) {
-      // position declaration: `position.p12_12 = 0.94;`
-      // Converted from Ren'Py `Position(xpos=0.94, ...)` by rpy2rrs.
       const xpos = parseFloat(d.value);
       if (!isNaN(xpos)) registerPosition(d.key.slice("position.".length), xpos);
-    } else {
-      // Legacy bare-key character declaration: `k = "Keitaro";`
-      // Kept for backward compatibility with older generated .rrs files.
-      charMap.set(d.key, d.value);
     }
+    // Other entries (constants, game-state vars, etc.) are not needed at
+    // codegen time and are intentionally ignored here.
   }
 
   return { charMap, audioMap, imageMap };
@@ -103,14 +91,7 @@ export function buildDefineMaps(
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /**
- * Compile a parsed .rrs program into a ScriptFile.
- *
- * @param program       Parsed AST
- * @param sourceName    Filename used for the `source` field and error messages
- * @param globalCharMap Optional character map pre-populated from script.rrs.
- *                      Story files carry no `define` declarations of their own,
- *                      so without this map all speaker abbreviations would pass
- *                      through unresolved.
+ * Compile a parsed .rrs program into a ScriptFile (engine-ready JSON).
  */
 export function compile(
   program: Program,
@@ -118,7 +99,6 @@ export function compile(
   globalCharMap?: Map<string, string>,
   globalImageMap?: Map<string, string>,
 ): JsonFile {
-  // Hoist nested label declarations to top-level before code generation.
   program = hoistNestedLabels(program);
 
   const labels: Record<string, JsonLabel> = {};
@@ -137,10 +117,9 @@ export function compile(
 }
 
 /**
- * Walk the program AST and lift any nested LabelStmt nodes out of label
- * bodies into the top-level labels list.  This makes every label a
- * first-class entry in the compiled output, matching how RenPy treats
- * nested label declarations.
+ * Lift nested LabelStmt nodes out of label bodies into the top-level labels
+ * list.  This makes every label a first-class entry in the compiled output,
+ * matching how RenPy treats nested label declarations.
  */
 function hoistNestedLabels(prog: Program): Program {
   const extraLabels: LabelDecl[] = [];
@@ -149,9 +128,7 @@ function hoistNestedLabels(prog: Program): Program {
     const out: Stmt[] = [];
     for (const stmt of stmts) {
       if (stmt.kind === "Label") {
-        // Recursively hoist any nested labels inside this one too
         extraLabels.push({ name: stmt.name, body: walkStmts(stmt.body) });
-        // Remove from current body (the caller jumps to it explicitly)
         continue;
       }
       if (stmt.kind === "If") {
@@ -187,46 +164,23 @@ function hoistNestedLabels(prog: Program): Program {
   return { ...prog, labels: [...newLabels, ...extraLabels] };
 }
 
-// ── Sprite-state tracking ─────────────────────────────────────────────────────
-
-interface SpriteEntry {
-  /** Raw DSL body key, e.g. "hiro_casual" */
-  bodyKey: string;
-  /** Currently visible face JSON key, e.g. "hiro laugh1" — null if no face */
-  faceKey: string | null;
-  /** Stage position, e.g. "right2", "p5_3" */
-  at: string;
-  /** Resolved character+version string, e.g. "hiro1", "hiro2" */
-  charVer: string;
-}
-
 // ── Code generation context (one instance per label) ─────────────────────────
 
 class CodegenContext {
   /**
-   * Map from character *base* name (no trailing digits, e.g. "hiro") to the
-   * sprite currently visible on stage for that character.  Branch-points
-   * (if / menu) snapshot and restore this map so sibling branches are
-   * independent and the post-branch state is the pre-branch snapshot.
-   */
-  private spriteState = new Map<string, SpriteEntry>();
-
-  /**
    * Character abbreviation → full name  (from top-level `char.*` declarations).
-   * Used by genSpeak() to resolve short speaker identifiers.
    */
   private charMap: Map<string, string>;
 
   /**
    * Audio alias → full path  (from `audio.*` declarations).
-   * Used by genMusic(), genSound(), and voice resolution to expand aliases.
    */
   private audioMap: Map<string, string>;
 
   /**
-   * Image var ref → file path  (from `image.*` declarations).
-   * Key is the full dotted name, e.g. "image.bg.bathroom2_sunset".
-   * Used by genScene() and genShow() to resolve ident src references.
+   * Full image key (with "image." prefix) → file path.
+   * e.g. "image.cg.arrival2" → "CGs/cg1_arrival2.jpg"
+   *      "image.keitaro_casual" → "Sprites/Body/keitaro1_b_casual.png"
    */
   private imageMap: Map<string, string>;
 
@@ -260,8 +214,6 @@ class CodegenContext {
         return this.genSound(stmt);
       case "Show":
         return this.genShow(stmt);
-      case "Expr":
-        return this.genExpr(stmt);
       case "Hide":
         return this.genHide(stmt);
       case "With":
@@ -281,318 +233,211 @@ class CodegenContext {
       case "Return":
         return this.genReturn(stmt);
       case "Label":
-        // Already hoisted to top-level by hoistNestedLabels(); nothing to emit inline.
+        // Already hoisted; nothing to emit inline.
         return this.genNestedLabel(stmt);
     }
   }
 
   private genNestedLabel(_stmt: LabelStmt): JsonStep[] {
-    // Nested labels are hoisted before codegen runs; this branch is a safety
-    // fallback that should never be reached in practice.
     return [];
   }
 
-  // ── Individual generators ─────────────────────────────────────────────────
+  // ── Assign ────────────────────────────────────────────────────────────────
 
   private genAssign(stmt: AssignStmt): JsonStep[] {
     return [{ type: "set", var: stmt.name, op: stmt.op, value: stmt.value }];
   }
 
+  // ── Image resolution ──────────────────────────────────────────────────────
+
   /**
-   * Resolve an image var reference to its file path.
+   * Resolve a DSL image variable reference to its file path.
    *
-   * If `src` is a dotted ident like "image.bg.bathroom2_sunset" it is looked
-   * up in the imageMap.  Plain string paths (containing "/" or starting with
-   * "#") are returned as-is.
+   * DSL key: "cg.arrival2"      →  lookup "image.cg.arrival2" in imageMap
+   * DSL key: "bg_entrance_day"  →  lookup "image.bg_entrance_day"
+   *
+   * Only call this for identifier variable references (not string literals or
+   * hex colours — those must be passed through unchanged without a lookup).
+   * Logs console.error and returns undefined when the key is absent from the
+   * imageMap so callers can decide how to handle the missing asset.
    */
-  private resolveImageRef(src: string): string {
-    if (src.startsWith("image.")) {
-      const resolved = this.imageMap.get(src);
-      if (resolved !== undefined) return resolved;
-      // Unknown var ref — preserve as marker so it's visible at runtime
-      console.warn(`[codegen] unresolved image ref: ${src}`);
-    }
-    return src;
+  private resolveImageKey(key: string): string | undefined {
+    const lookupKey = "image." + key;
+    const resolved = this.imageMap.get(lookupKey);
+    if (resolved !== undefined) return resolved;
+
+    console.error(`[codegen] image variable not found: ${lookupKey}`);
+    return undefined;
   }
 
+  // ── Scene ─────────────────────────────────────────────────────────────────
+
   private genScene(stmt: SceneStmt): JsonStep[] {
-    // A scene change clears all sprite state
-    this.spriteState.clear();
-    const step: JsonStep = {
-      type: "scene",
-      src: this.resolveImageRef(stmt.src),
-    };
+    let src: string;
+    if (stmt.srcIsLiteral) {
+      // Quoted string literal or hex colour — use the path/value as-is,
+      // no imageMap lookup needed.
+      src = stmt.src;
+    } else {
+      // Identifier variable reference — must resolve via imageMap.
+      // console.error is emitted by resolveImageKey when not found.
+      src = this.resolveImageKey(stmt.src) ?? stmt.src;
+    }
+
+    const step: JsonStep = { type: "scene", src };
     if (stmt.filter) step.filter = stmt.filter;
     if (stmt.transition) step.transition = stmt.transition;
     return [step];
   }
 
+  // ── Music ─────────────────────────────────────────────────────────────────
+
   private genMusic(stmt: MusicStmt): JsonStep[] {
     const step: JsonStep = { type: "music", action: stmt.action };
     if (stmt.src !== undefined) {
-      step.src = this.resolveAudioAlias(stmt.src);
+      const resolved = this.resolveAudioAlias(stmt.src);
+      if (resolved !== undefined) step.src = resolved;
     }
     if (stmt.fadeout !== undefined) step.fadeout = stmt.fadeout;
     if (stmt.fadein !== undefined) step.fadein = stmt.fadein;
     return [step];
   }
 
+  // ── Sound ─────────────────────────────────────────────────────────────────
+
   private genSound(stmt: SoundStmt): JsonStep[] {
     const step: JsonStep = { type: "sound", action: stmt.action };
     if (stmt.src !== undefined) {
-      step.src = this.resolveAudioAlias(stmt.src);
+      const resolved = this.resolveAudioAlias(stmt.src);
+      if (resolved !== undefined) step.src = resolved;
     }
     return [step];
   }
 
+  // ── Show ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Emit a single `show` step.
+   *
+   * The sprite key in the JSON step is the dot-joined DSL key
+   * (e.g. "cg.arrival2", "keitaro.normal1", "keitaro_casual").
+   *
+   * The engine uses the TAG (portion before the first ".") to determine
+   * which existing sprite to replace:
+   *   show keitaro.grin1  →  replaces any sprite with tag "keitaro"
+   *   show keitaro_casual →  replaces any sprite with tag "keitaro_casual"
+   *   show cg.arrival2    →  replaces any sprite with tag "cg"
+   *
+   * `show` always uses identifier variable references (never a quoted string
+   * literal), so the imageMap lookup is always performed and an error is
+   * logged when the variable is not declared.
+   */
   private genShow(stmt: ShowStmt): JsonStep[] {
-    const {
-      bodyKey,
-      faceExpr,
-      at,
-      transition,
-      src,
-      faceSrc,
-      spriteKeyOverride,
-    } = stmt;
+    // show always uses identifier variable references — must resolve via imageMap.
+    // resolveImageKey logs console.error when not found.
+    const resolvedSrc = this.resolveImageKey(stmt.key);
 
-    // ── Case 1: body::face  →  two JSON show steps ────────────────────────
-    if (faceExpr !== undefined && faceExpr !== "*") {
-      const { charBase, charVer } = parseBodyKey(bodyKey);
-      const bodySrc = deriveBodySrc(bodyKey, charVer);
-      const { faceKey, faceSrc: derivedFaceSrc } = deriveFace(
-        charVer,
-        faceExpr,
-      );
-
-      const bodyStep: JsonStep = {
-        type: "show",
-        sprite: bodyKey,
-        src: this.resolveImageRef(src ?? bodySrc),
-      };
-      if (at) bodyStep.at = at;
-
-      const faceStep: JsonStep = {
-        type: "show",
-        sprite: faceKey,
-        // Use explicit faceSrc if provided; fall back to derived path
-        src: this.resolveImageRef(faceSrc ?? derivedFaceSrc),
-      };
-      if (at) faceStep.at = at;
-
-      // Update sprite state so expr / hide::* work in subsequent statements
-      if (at) {
-        this.spriteState.set(charBase, { bodyKey, faceKey, at, charVer });
-      }
-
-      return [bodyStep, faceStep];
+    const step: JsonStep = { type: "show", sprite: stmt.key };
+    if (resolvedSrc !== undefined) {
+      step.src = resolvedSrc;
     }
 
-    // ── Case 2: single sprite (CG, overlay, or body-only) ─────────────────
-    //    When spriteKeyOverride is set (from  key: "cg_fade"  in the block),
-    //    use it verbatim so special overlay sprites are not mis-converted.
-    //    Otherwise: CG DSL key "cg_arrival1" → JSON sprite key "cg arrival1"
-    const spriteKey =
-      spriteKeyOverride ??
-      (bodyKey.toLowerCase().startsWith("cg_")
-        ? "cg " + bodyKey.slice(3)
-        : bodyKey);
-
-    const step: JsonStep = { type: "show", sprite: spriteKey };
-
-    if (src) {
-      step.src = this.resolveImageRef(src);
-    } else if (!bodyKey.toLowerCase().startsWith("cg_")) {
-      // Attempt to auto-derive src for a plain body sprite
-      try {
-        const { charVer } = parseBodyKey(bodyKey);
-        step.src = deriveBodySrc(bodyKey, charVer);
-      } catch {
-        console.warn(
-          `[rrs] Warning: could not derive src for sprite '${bodyKey}' — add an explicit src: block`,
-        );
-      }
-    } else {
-      console.warn(
-        `[rrs] Warning: CG sprite '${bodyKey}' has no explicit src: block`,
-      );
-    }
-
-    if (at) step.at = at;
-    if (transition) step.transition = transition;
-
-    return [step];
-  }
-
-  private genExpr(stmt: ExprStmt): JsonStep[] {
-    const stateKey = charBaseOf(stmt.char);
-    const state = this.spriteState.get(stateKey);
-
-    // Derive charVer directly from stmt.char — never inherit from body state.
-    //
-    // The decompiler extracts the face character part verbatim from the JSON
-    // sprite key (e.g. "keitaro21 sigh2" → charPart "keitaro21", so the DSL
-    // gets `expr keitaro21::sigh2`).  Body and face versions can differ
-    // (e.g. body is taiga3_camp but face is "taiga grin3" v1), so using the
-    // body's charVer from state would produce the wrong face key.
-    //
-    //   "keitaro21" ends with digits → charVer = "keitaro21"  (not "keitaro211")
-    //   "taiga"     has no digits    → charVer = "taiga1"     (not body's "taiga3")
-    //   "hiro"      has no digits    → charVer = "hiro1"
-    const charVer = /\d+$/.test(stmt.char) ? stmt.char : `${stmt.char}1`;
-
-    const { faceKey, faceSrc } = deriveFace(charVer, stmt.expr);
-
-    const step: JsonStep = { type: "show", sprite: faceKey, src: faceSrc };
-
-    // Use explicit @ position from stmt if provided; otherwise look up tracked state.
-    const at = stmt.at ?? state?.at;
-    if (at) {
-      step.at = at;
-      // Update the tracked face key (and position if an explicit one was given)
-      const updatedEntry: SpriteEntry = state
-        ? { ...state, faceKey, ...(stmt.at ? { at: stmt.at } : {}) }
-        : { bodyKey: "", faceKey, at, charVer };
-      this.spriteState.set(stateKey, updatedEntry);
-    } else {
-      // No position info — sprite will be shown without an at position.
-    }
-
-    // Optional transition (e.g. expr hiro::grin1 | dissolve)
+    if (stmt.at) step.at = stmt.at;
     if (stmt.transition) step.transition = stmt.transition;
-
     return [step];
   }
 
+  // ── Hide ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Emit a single `hide` step.
+   *
+   * The engine removes all sprites whose TAG matches stmt.tag.
+   * Tag = first dot-segment of sprite key, or whole key if no dots.
+   *   hide keitaro       →  removes "keitaro.normal1", "keitaro.grin1", …
+   *   hide keitaro_casual →  removes exactly "keitaro_casual"
+   *   hide cg            →  removes "cg.arrival2", etc.
+   */
   private genHide(stmt: HideStmt): JsonStep[] {
-    const steps: JsonStep[] = [];
-
-    for (const target of stmt.targets) {
-      if (target.type === "body") {
-        // When verbatim flag is set (from quoted hide target), use key as-is.
-        // Otherwise: CG DSL key "cg_arrival1" → JSON sprite key "cg arrival1"
-        const isVerbatim = (target as { verbatim?: boolean }).verbatim === true;
-        const spriteKey = isVerbatim
-          ? target.key
-          : target.key.toLowerCase().startsWith("cg_")
-            ? "cg " + target.key.slice(3)
-            : target.key;
-        steps.push({ type: "hide", sprite: spriteKey });
-      } else {
-        // face target: char::expr  or  char::*
-        const stateKey = charBaseOf(target.char);
-
-        if (target.expr === "*") {
-          // Wildcard — expand from sprite state
-          const state = this.spriteState.get(stateKey);
-          if (state?.faceKey) {
-            steps.push({ type: "hide", sprite: state.faceKey });
-            this.spriteState.set(stateKey, { ...state, faceKey: null });
-          } else {
-            console.warn(
-              `[rrs] Warning: hide ${target.char}::* — ` +
-                `no live face tracked for '${target.char}'.  Step omitted.`,
-            );
-          }
-        } else {
-          // Specific face expression
-          const state = this.spriteState.get(stateKey);
-          // Same charVer derivation as genExpr: always derive from target.char,
-          // never from body state (face version is independent of body version).
-          const charVer = /\d+$/.test(target.char)
-            ? target.char
-            : `${target.char}1`;
-          const { faceKey } = deriveFace(charVer, target.expr);
-          steps.push({ type: "hide", sprite: faceKey });
-          if (state) {
-            this.spriteState.set(stateKey, { ...state, faceKey: null });
-          }
-        }
-      }
-    }
-
-    return steps;
+    return [{ type: "hide", sprite: stmt.tag }];
   }
+
+  // ── With ──────────────────────────────────────────────────────────────────
 
   private genWith(stmt: WithStmt): JsonStep[] {
     return [{ type: "with", transition: stmt.transition }];
   }
 
-  private genSpeak(stmt: SpeakStmt): JsonStep[] {
-    // Resolve the speaker name through the char map.
-    // If the who value matches an abbreviation in charMap, use the full name.
-    // Otherwise pass through as-is (already a full name, "???", etc.).
-    const who = this.charMap.get(stmt.who) ?? stmt.who;
+  // ── Speak ─────────────────────────────────────────────────────────────────
 
+  private genSpeak(stmt: SpeakStmt): JsonStep[] {
+    const who = this.charMap.get(stmt.who) ?? stmt.who;
     return stmt.lines.map((line) => {
       const step: JsonStep = { type: "say", who, text: line.text };
       if (line.voice) {
-        step.voice = resolveVoice(this.resolveAudioAlias(line.voice));
+        const resolved = this.resolveAudioAlias(line.voice);
+        // Only set voice when the alias resolved to a real path.
+        // For dotted references (audio.xxx) that are not in the audioMap,
+        // resolveAudioAlias returns undefined — we omit the field entirely
+        // rather than emitting a broken / hardcoded path.
+        if (resolved !== undefined) step.voice = resolved;
       }
       return step;
     });
   }
 
+  // ── Audio alias resolution ────────────────────────────────────────────────
+
   /**
    * Expand an audio alias to its full path.
    *
-   * Handles three forms:
-   *   1. `audio.bgm_main`  — dotted form from define declarations
-   *   2. `outdoors`        — bare alias name emitted by the converter for
-   *                          `play music outdoors` / `play bgsound birds`
-   *   3. Plain path string — returned unchanged (legacy .rrs files that
-   *                          already contain the resolved file path)
+   * Handles:
+   *   1. `audio.bgm_main`  — dotted variable-reference form.
+   *      Only the audioMap is consulted; if the key is not present,
+   *      returns undefined (no hardcoded path prefix is applied).
+   *   2. `outdoors`        — bare alias name; looked up in audioMap,
+   *      then returned as-is if not found (assumed to be a plain path).
+   *   3. Plain path string — returned unchanged.
    */
-  private resolveAudioAlias(src: string): string {
+  private resolveAudioAlias(src: string): string | undefined {
     if (src.startsWith("audio.")) {
+      // Dotted form: pure variable-name lookup only.
+      // Return undefined when the key is absent — callers must not
+      // apply any hardcoded directory prefix as a fallback.
       const alias = src.slice("audio.".length);
-      return this.audioMap.get(alias) ?? src;
+      return this.audioMap.get(alias);
     }
-    // Bare alias name: look it up directly in the audioMap.
-    // Falls back to the original value so plain file paths pass through.
     return this.audioMap.get(src) ?? src;
   }
 
+  // ── Wait ──────────────────────────────────────────────────────────────────
+
   private genWait(stmt: WaitStmt): JsonStep[] {
-    // The engine uses the "pause" step type with a duration field
     return [{ type: "pause", duration: stmt.duration }];
   }
 
+  // ── If ────────────────────────────────────────────────────────────────────
+
   private genIf(stmt: IfStmt): JsonStep[] {
-    // Snapshot sprite state — each branch is compiled independently
-    const snapshot = new Map(this.spriteState);
-
-    const branches = stmt.branches.map((branch) => {
-      this.spriteState = new Map(snapshot);
-      return {
-        condition: branch.condition,
-        steps: branch.body.flatMap((s) => this.genStmt(s)),
-      };
-    });
-
-    // Restore snapshot after all branches (we can't know at compile time
-    // which branch will execute at runtime)
-    this.spriteState = snapshot;
-
+    const branches = stmt.branches.map((branch) => ({
+      condition: branch.condition,
+      steps: branch.body.flatMap((s) => this.genStmt(s)),
+    }));
     return [{ type: "if", branches }];
   }
 
+  // ── Menu ──────────────────────────────────────────────────────────────────
+
   private genMenu(stmt: MenuStmt): JsonStep[] {
-    const snapshot = new Map(this.spriteState);
-
-    const options = stmt.choices.map((choice) => {
-      this.spriteState = new Map(snapshot);
-      return {
-        text: choice.text,
-        condition: choice.condition ?? null,
-        steps: choice.body.flatMap((s) => this.genStmt(s)),
-      };
-    });
-
-    this.spriteState = snapshot;
-
+    const options = stmt.choices.map((choice) => ({
+      text: choice.text,
+      condition: choice.condition ?? null,
+      steps: choice.body.flatMap((s) => this.genStmt(s)),
+    }));
     return [{ type: "menu", options }];
   }
+
+  // ── Jump / Call / Return ──────────────────────────────────────────────────
 
   private genJump(stmt: JumpStmt): JsonStep[] {
     return [{ type: "jump", target: stmt.target }];
@@ -605,115 +450,4 @@ class CodegenContext {
   private genReturn(_stmt: ReturnStmt): JsonStep[] {
     return [{ type: "return" }];
   }
-}
-
-// ── Sprite naming helpers ─────────────────────────────────────────────────────
-
-interface CharInfo {
-  /** Base character name without version digits, e.g. "hiro" */
-  charBase: string;
-  /** Numeric version, e.g. 1 or 2 */
-  version: number;
-  /** Character+version string used in file paths, e.g. "hiro1", "hiro2" */
-  charVer: string;
-}
-
-/**
- * Parse a DSL body-sprite key into its character components.
- *
- * Examples:
- *   "hiro_casual"          → { charBase:"hiro",    version:1, charVer:"hiro1"    }
- *   "hiro2_camp"           → { charBase:"hiro",    version:2, charVer:"hiro2"    }
- *   "keitaro2_casual_blush1" → { charBase:"keitaro", version:2, charVer:"keitaro2" }
- *   "hunter_pe"            → { charBase:"hunter",  version:1, charVer:"hunter1"  }
- */
-function parseBodyKey(bodyKey: string): CharInfo {
-  const underscoreIdx = bodyKey.indexOf("_");
-
-  // No underscore → treat the whole string as the character part
-  const charPart =
-    underscoreIdx >= 0 ? bodyKey.slice(0, underscoreIdx) : bodyKey;
-
-  // Does the character part end with a version digit?
-  const versionMatch = charPart.match(/^(.*?)(\d+)$/);
-  if (versionMatch) {
-    const charBase = versionMatch[1];
-    const version = parseInt(versionMatch[2], 10);
-    return { charBase, version, charVer: charPart };
-  }
-
-  // No version digit → default to version 1
-  return { charBase: charPart, version: 1, charVer: charPart + "1" };
-}
-
-/**
- * Derive the asset path for a body sprite.
- *
- * Convention: Sprites/Body/{charVer}_b_{outfit}.png
- *   "hiro_casual"  + charVer="hiro1"    → Sprites/Body/hiro1_b_casual.png
- *   "hiro2_camp"   + charVer="hiro2"    → Sprites/Body/hiro2_b_camp.png
- */
-function deriveBodySrc(bodyKey: string, charVer: string): string {
-  const underscoreIdx = bodyKey.indexOf("_");
-  if (underscoreIdx < 0) {
-    // Shouldn't happen for well-formed body keys, but be safe
-    return `Sprites/Body/${charVer}_b_unknown.png`;
-  }
-  const outfit = bodyKey.slice(underscoreIdx + 1);
-  return `Sprites/Body/${charVer}_b_${outfit}.png`;
-}
-
-/**
- * Derive both the JSON sprite key and the asset path for a face/expression sprite.
- *
- * JSON key convention:
- *   version 1 → "{charBase} {faceExpr}"   e.g.  "hiro laugh1"
- *   version 2+ → "{charVer} {faceExpr}"   e.g.  "hiro2 shy2"
- *
- * Asset path convention: Sprites/Faces/{charVer}_f_{faceExpr}.png
- */
-function deriveFace(
-  charVer: string,
-  faceExpr: string,
-): { faceKey: string; faceSrc: string } {
-  const m = charVer.match(/^(.*?)(\d+)$/);
-  const version = m ? parseInt(m[2], 10) : 1;
-  const charBase = m ? m[1] : charVer;
-
-  // Version-1 sprites omit the digit from the sprite key ("hiro laugh1", not "hiro1 laugh1")
-  const faceKeyChar = version === 1 ? charBase : charVer;
-  // The JSON sprite key preserves spaces as-is (e.g. "hina sick normal1")
-  const faceKey = `${faceKeyChar} ${faceExpr}`;
-  // The file path uses underscores for multi-word expressions
-  // (e.g. "sick normal1" → "Sprites/Faces/hina1_f_sick_normal1.png")
-  const exprForPath = faceExpr.replace(/ /g, "_");
-  const faceSrc = `Sprites/Faces/${charVer}_f_${exprForPath}.png`;
-
-  return { faceKey, faceSrc };
-}
-
-/**
- * Normalise a character name to its base (strip trailing version digits).
- * Used as the lookup key into the sprite-state map.
- *   "hiro"   → "hiro"
- *   "hiro2"  → "hiro"
- *   "keitaro2" → "keitaro"
- */
-function charBaseOf(charName: string): string {
-  return charName.replace(/\d+$/, "");
-}
-
-// ── Voice path resolution ─────────────────────────────────────────────────────
-
-const VOICE_BASE = "Audio/Voice/voices/";
-
-/**
- * If the author wrote a bare filename (no "/" in the string), prepend the
- * default voice directory.  Full paths are passed through unchanged.
- *
- *   "hiro_v_laugh1.ogg"                 → "Audio/Voice/voices/hiro_v_laugh1.ogg"
- *   "Audio/Voice/Voiced Scenes/…ogg"    → unchanged
- */
-function resolveVoice(voice: string): string {
-  return voice.includes("/") ? voice : VOICE_BASE + voice;
 }

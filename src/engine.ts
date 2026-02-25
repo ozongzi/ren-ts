@@ -20,10 +20,29 @@ import type {
 } from "./types";
 import { getLabel, getManifestStart } from "./loader";
 import { evaluateCondition, applySetStep, defaultVars } from "./evaluate";
-import { resolveAsset, isCharacterSprite, isFaceSprite } from "./assets";
+import { resolveAsset } from "./assets";
 
 // ─── Maximum steps to execute per tick (safety limit) ────────────────────────
 const MAX_STEPS_PER_TICK = 2000;
+
+// ─── Sprite tag helpers ───────────────────────────────────────────────────────
+
+/**
+ * Extract the TAG from a sprite key.
+ *
+ * Mirrors Ren'Py's tag system: the TAG is the first dot-segment of the key,
+ * or the whole key when there are no dots.
+ *
+ *   "keitaro.normal1"  → "keitaro"      (face sprite)
+ *   "keitaro_casual"   → "keitaro_casual" (body sprite, no dot)
+ *   "cg.arrival2"      → "cg"           (CG image)
+ *   "hina.sick.normal1" → "hina"        (multi-attr face)
+ *   "bg_entrance_day"  → "bg_entrance_day" (background, no dot)
+ */
+function spriteTag(key: string): string {
+  const dotIdx = key.indexOf(".");
+  return dotIdx >= 0 ? key.slice(0, dotIdx) : key;
+}
 
 // ─── Action types ─────────────────────────────────────────────────────────────
 
@@ -303,103 +322,60 @@ function executeStep(state: GameState, step: Step): StepResult {
     }
 
     // ── Show (display sprite / CG / overlay) ────────────────────────────────
+    //
+    // Sprite keys use the Ren'Py tag system with dots as separators:
+    //   "keitaro_casual"   — body sprite, tag = "keitaro_casual"
+    //   "keitaro.normal1"  — face sprite, tag = "keitaro"
+    //   "cg.arrival2"      — CG image,    tag = "cg"
+    //   "bg_entrance_day"  — background overlay, tag = "bg_entrance_day"
+    //
+    // TAG = first dot-segment of the key, or the whole key if no dots.
+    // When showing a new sprite, any existing sprite with the same TAG is
+    // replaced in-place (preserving z-index and position).
     case "show": {
-      if (!step.src) {
-        // src-less show: just update position of an already-shown sprite
-        const sprites = state.sprites.map((sp) =>
-          sp.key === step.sprite ? { ...sp, at: step.at ?? sp.at } : sp,
-        );
-        return advance({ ...state, sprites });
-      }
+      const newTag = spriteTag(step.sprite);
+      // When no explicit src was compiled (image not in imageMap), fall back
+      // to resolving the sprite key itself — resolveAsset() will apply the
+      // dot→underscore heuristic:
+      //   "keitaro_casual"  → /assets/images/keitaro_casual.jpg
+      //   "keitaro.normal1" → /assets/images/keitaro_normal1.jpg
+      const src = resolveAsset(step.src ?? step.sprite);
 
-      const src = resolveAsset(step.src);
-      const existing = state.sprites.find((sp) => sp.key === step.sprite);
-
-      // If this is a face sprite, inherit the body's `at` position if not
-      // given explicitly.
+      // Inherit position from existing same-tag sprite when not specified
+      const existingIdx = state.sprites.findIndex(
+        (sp) => spriteTag(sp.key) === newTag,
+      );
       let at = step.at;
-      if (!at && isFaceSprite(step.sprite)) {
-        const charName = step.sprite.toLowerCase().split(" face")[0];
-        const bodySprite = state.sprites.find(
-          (sp) => sp.key.toLowerCase() === `${charName} body`,
-        );
-        if (bodySprite) at = bodySprite.at;
+      if (!at && existingIdx >= 0) {
+        at = state.sprites[existingIdx].at;
       }
 
-      if (existing) {
-        // Update existing sprite (same key — just swap src/position)
-        const sprites = state.sprites.map((sp) =>
-          sp.key === step.sprite ? { ...sp, src, at: at ?? sp.at } : sp,
+      if (existingIdx >= 0) {
+        // Replace existing sprite with same tag in-place (keeps z-index slot)
+        const sprites = state.sprites.map((sp, i) =>
+          i === existingIdx
+            ? { ...sp, key: step.sprite, src: src || sp.src, at: at ?? sp.at }
+            : sp,
         );
         return advance({ ...state, sprites });
       }
 
-      // ── Character expression replacement ──────────────────────────────────
-      // Sprite keys for body slots use underscores (e.g. "keitaro_casual"),
-      // while expression sprites use a space separator
-      // (e.g. "keitaro grin1", "hiro laugh2").
-      // When a new expression sprite is shown for the same character we
-      // replace the old expression in-place instead of stacking a new layer.
-      // CG sprites also contain a space ("cg arrival1") but always start with
-      // "cg " so we explicitly exclude them.
-      const spaceIdx = step.sprite.indexOf(" ");
-      const isExpressionSprite =
-        spaceIdx > 0 && !step.sprite.toLowerCase().startsWith("cg ");
-
-      if (isExpressionSprite) {
-        const charPrefix = step.sprite.substring(0, spaceIdx).toLowerCase();
-
-        // Pass 1 — exact prefix match (e.g. "hiro" → "hiro").
-        let oldFaceIdx = state.sprites.findIndex((sp) => {
-          const si = sp.key.indexOf(" ");
-          return (
-            si > 0 &&
-            !sp.key.toLowerCase().startsWith("cg ") &&
-            sp.key.substring(0, si).toLowerCase() === charPrefix
-          );
-        });
-
-        // Pass 2 — position-based fallback.
-        // Handles body-variant swaps where the prefix changes between steps
-        // (e.g. the script hides "hiro2 pout3" but the live sprite is
-        // "hiro2 pout2", leaving an orphaned face; then "hiro pout1" is shown
-        // at the same `at` position).  Without this fallback both faces would
-        // stack on top of each other.
-        if (oldFaceIdx < 0 && at) {
-          oldFaceIdx = state.sprites.findIndex((sp) => {
-            const si = sp.key.indexOf(" ");
-            return (
-              si > 0 && !sp.key.toLowerCase().startsWith("cg ") && sp.at === at
-            );
-          });
-        }
-
-        if (oldFaceIdx >= 0) {
-          // Replace the old expression in-place, keeping its z-index slot
-          const sprites = state.sprites.map((sp, i) =>
-            i === oldFaceIdx
-              ? { ...sp, key: step.sprite, src, at: at ?? sp.at }
-              : sp,
-          );
-          return advance({ ...state, sprites });
-        }
-      }
-
-      // Add new sprite (no existing sprite of this character/key found)
-      // If this is an expression (face) sprite being added fresh, ensure its
-      // zIndex is above any body sprite already at the same `at` position.
-      // This prevents a body shown before its face from covering the face.
+      // No existing sprite with this tag — add a new one.
+      // If this is a dot-key sprite (face/expression/CG), ensure its zIndex
+      // is above any no-dot sprite (body) at the same position so faces
+      // always render on top of their body sprites.
+      const hasDot = step.sprite.includes(".");
       let newZIndex = state.spriteCounter;
-      if (isExpressionSprite && at) {
+      if (hasDot && at) {
         const maxBodyZAtPos = state.sprites.reduce((max, sp) => {
-          const si = sp.key.indexOf(" ");
-          const isBody = si < 0 || sp.key.toLowerCase().startsWith("cg ");
+          const isBody = !sp.key.includes(".");
           return isBody && sp.at === at ? Math.max(max, sp.zIndex) : max;
         }, -1);
         if (maxBodyZAtPos >= newZIndex) {
           newZIndex = maxBodyZAtPos + 1;
         }
       }
+
       const newSprite: SpriteState = {
         key: step.sprite,
         src,
@@ -413,9 +389,18 @@ function executeStep(state: GameState, step: Step): StepResult {
       });
     }
 
-    // ── Hide (remove sprite) ────────────────────────────────────────────────
+    // ── Hide (remove sprite by tag) ─────────────────────────────────────────
+    //
+    // Removes all sprites whose TAG matches step.sprite.
+    // TAG = first dot-segment, so:
+    //   hide keitaro       → removes "keitaro.normal1", "keitaro.grin1", …
+    //   hide keitaro_casual → removes exactly "keitaro_casual" (no dot → tag = whole key)
+    //   hide cg            → removes "cg.arrival2", etc.
     case "hide": {
-      const sprites = state.sprites.filter((sp) => sp.key !== step.sprite);
+      const hideTag = step.sprite;
+      const sprites = state.sprites.filter(
+        (sp) => spriteTag(sp.key) !== hideTag,
+      );
       return advance({ ...state, sprites });
     }
 

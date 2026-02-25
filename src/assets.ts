@@ -63,9 +63,32 @@ export function isVideoPath(src: string): boolean {
  *   - Audio paths  → convertFileSrc(<assetsDir>/<src>)
  *   - Image paths  → convertFileSrc(<assetsDir>/images/<src>)
  */
+/**
+ * Convert a raw src string from the JSON data into a URL the browser can load.
+ *
+ * When `src` contains no "/" and is not a CSS colour, it is treated as an
+ * unresolved image key (e.g. "cg.arrival2" — not found in the defines dict).
+ * The fallback converts it to a path by replacing "." with "_":
+ *   "cg.arrival2"      → images/cg_arrival2.jpg   (tries .jpg first)
+ *   "bg_entrance_day"  → images/bg_entrance_day.jpg
+ * Extensions other than .jpg will not be found via this fallback — games
+ * should declare all images explicitly in their script.rpy so the codegen
+ * resolves them at compile time.
+ */
 export function resolveAsset(src: string): string {
   if (!src) return "";
   if (isCssColor(src)) return src;
+
+  // ── Unresolved image key fallback ──────────────────────────────────────────
+  // Keys reach here when the codegen couldn't find the image in the imageMap.
+  // They have no "/" and are not a colour.  Convert to a best-guess path.
+  if (!src.includes("/") && !src.startsWith("#")) {
+    // "cg.arrival2" → "cg_arrival2", "bg_entrance_day" → "bg_entrance_day"
+    const filename = src.replace(/\./g, "_");
+    // Recurse with the fallback path (defaults to .jpg; games should declare
+    // all images explicitly to avoid this path)
+    return resolveAsset(`images/${filename}.jpg`);
+  }
 
   if (isTauri) {
     const assetsDir = getActiveAssetsDir();
@@ -117,60 +140,53 @@ export function resolveAudio(src: string): string {
 // ─── Sprite classification ────────────────────────────────────────────────────
 
 /**
- * Character sprite names follow patterns like:
- *   "keitaro body"
- *   "keitaro face_normal"
- *   "hiro body"
- *   "hunter face_happy"
+ * Sprite keys use the Ren'Py tag system with dots as separators:
+ *   "keitaro_casual"   — body sprite  (no dot → tag = whole key)
+ *   "keitaro.normal1"  — face sprite  (has dot → tag = "keitaro")
+ *   "cg.arrival2"      — CG image     (has dot → tag = "cg")
+ *   "bg_entrance_day"  — BG overlay   (no dot → tag = whole key)
+ *   "hina.sick.normal1"— multi-attr face
  *
- * CG / scene sprite names follow patterns like:
- *   "cg arrival1"
- *   "cg_arrival1"
- *   "bg forest"
- *   "logo"
- *   "overlay dark"
- *
- * We consider a sprite to be a *positioned character sprite* (rendered at an
- * `at` position on screen) if it is explicitly given an `at` value in the
- * show step OR if the sprite key looks like a character name.
- *
- * A sprite WITHOUT an `at` value is treated as a full-screen layer (CG, BG
- * overlay, UI element).
+ * A sprite is considered *positioned* (rendered at an `at` slot on screen)
+ * when it has an explicit `at` value.  Body and face sprites both carry `at`.
+ * Full-screen layers (CGs shown after `scene`) have no `at`.
  */
-export function isCharacterSprite(spriteKey: string, at?: string): boolean {
-  if (at) return true;
-  // Even without `at`, a few patterns are clearly character sprites:
-  const lower = spriteKey.toLowerCase();
-  if (lower.includes(" body") || lower.includes(" face")) return true;
-  return false;
+export function isCharacterSprite(_spriteKey: string, at?: string): boolean {
+  // Any sprite with an explicit position is a character sprite
+  return at !== undefined && at !== "";
 }
 
 /**
- * Extract the "character name" portion from a sprite key like "keitaro body"
- * or "keitaro face_happy".  Returns null for non-character sprites.
+ * Extract the TAG from a sprite key (first dot-segment, or whole key).
+ *   "keitaro.normal1"  → "keitaro"
+ *   "keitaro_casual"   → "keitaro_casual"
+ *   "cg.arrival2"      → "cg"
  */
 export function spriteCharacterName(spriteKey: string): string | null {
-  const lower = spriteKey.toLowerCase();
-  const bodyIdx = lower.indexOf(" body");
-  if (bodyIdx !== -1) return spriteKey.slice(0, bodyIdx);
-  const faceIdx = lower.indexOf(" face");
-  if (faceIdx !== -1) return spriteKey.slice(0, faceIdx);
-  return null;
+  // For backward compat: return the tag portion as the "character name"
+  const dotIdx = spriteKey.indexOf(".");
+  if (dotIdx >= 0) return spriteKey.slice(0, dotIdx);
+  // Body sprites have underscores: "keitaro_casual" → "keitaro"
+  const uscIdx = spriteKey.indexOf("_");
+  if (uscIdx >= 0) return spriteKey.slice(0, uscIdx);
+  return spriteKey;
 }
 
 /**
- * Returns true if the sprite key represents a face layer (rendered on top of
- * the body layer for the same character).
+ * Returns true if the sprite key represents a face/expression layer.
+ * In the new dot notation, any key containing a dot is a face/attr sprite
+ * (e.g. "keitaro.normal1", "hina.sick.normal1").
  */
 export function isFaceSprite(spriteKey: string): boolean {
-  return spriteKey.toLowerCase().includes(" face");
+  return spriteKey.includes(".");
 }
 
 /**
  * Returns true if the sprite key represents a body layer.
+ * Body sprites have no dots (e.g. "keitaro_casual", "hiro2_camp").
  */
 export function isBodySprite(spriteKey: string): boolean {
-  return spriteKey.toLowerCase().includes(" body");
+  return !spriteKey.includes(".");
 }
 
 // ─── Position helpers ─────────────────────────────────────────────────────────

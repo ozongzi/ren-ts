@@ -4,7 +4,6 @@ import type { Token, TokenKind } from "./lexer.ts";
 import type {
   AssignStmt,
   DefineDecl,
-  HideTarget,
   IfBranch,
   LabelDecl,
   MenuChoice,
@@ -27,7 +26,6 @@ const STMT_KEYWORDS = new Set([
   "music",
   "sound",
   "show",
-  "expr",
   "hide",
   "with",
   "speak",
@@ -191,9 +189,6 @@ class Parser {
       case "show":
         this.advance();
         return this.parseShow();
-      case "expr":
-        this.advance();
-        return this.parseExpr();
       case "hide":
         this.advance();
         return this.parseHide();
@@ -284,14 +279,18 @@ class Parser {
 
   private parseScene(): Stmt {
     let src: string;
+    let srcIsLiteral: boolean;
     const tok = this.peek();
     if (tok.kind === "HexColor") {
       src = this.advance().value;
+      srcIsLiteral = true;
     } else if (tok.kind === "Str") {
       src = this.advance().value;
+      srcIsLiteral = true;
     } else if (tok.kind === "Ident") {
       // Dotted ident var reference, e.g. image.bg.bathroom2_sunset
       src = this.parseDottedIdent();
+      srcIsLiteral = false;
     } else {
       throw this.err(
         `Expected scene path, colour, or image var ref, got '${tok.value}'`,
@@ -316,7 +315,7 @@ class Parser {
 
     this.eatSemi();
     const kind = "Scene" as const;
-    return { kind, src, filter, transition };
+    return { kind, src, srcIsLiteral, filter, transition };
   }
 
   // ── music::play("path") | fadeout(2.0) | fadein(1.0) ;
@@ -380,32 +379,16 @@ class Parser {
   //    show body_sprite @ pos ;
   //    show cg_name | dissolve { src: "CGs/foo.jpg" }
 
-  private parseShow(): Stmt {
-    // Accept either a bare identifier or a quoted string path
-    // e.g.  show "BGs/obstacle_rain.jpg"  (legacy verbatim path)
-    let bodyKey: string;
-    let impliedSrc: string | undefined;
-    if (this.check("Str")) {
-      impliedSrc = this.advance().value;
-      // Derive a sprite key from the filename: "BGs/obstacle_rain.jpg" → "obstacle_rain"
-      const base = impliedSrc.split("/").pop() ?? impliedSrc;
-      bodyKey = base.replace(/\.[^.]+$/, "");
-    } else {
-      bodyKey = this.expectKind("Ident").value;
-    }
+  // ── show key @ pos | transition ;
+  //    key is the Ren'Py image name with spaces replaced by dots:
+  //      show cg.arrival2 | dissolve;
+  //      show keitaro_casual @ center;
+  //      show keitaro.normal1 @ center;
+  //      show hina.sick.normal1 @ right2 | dissolve;
 
-    // Optional ::face (or ::* though * makes no sense in show, we accept it)
-    let faceExpr: string | undefined;
-    if (this.check("::")) {
-      this.advance();
-      if (this.check("*")) {
-        this.advance();
-        faceExpr = "*";
-      } else {
-        // Multi-word face expression: collect all consecutive Idents
-        faceExpr = this.parseMultiWordIdent();
-      }
-    }
+  private parseShow(): Stmt {
+    // Parse the dotted key: e.g. "cg.arrival2", "keitaro_casual", "keitaro.normal1"
+    const key = this.parseDottedIdent();
 
     // Optional @ position
     let at: string | undefined;
@@ -421,109 +404,22 @@ class Parser {
       transition = this.expectKind("Ident").value;
     }
 
-    // Optional { src: "..." ; src_face: "..." ; src_body: "..." ; key: "..." } block
-    let src: string | undefined = impliedSrc;
-    let faceSrc: string | undefined;
-    let spriteKeyOverride: string | undefined;
-    if (this.check("{")) {
-      this.advance();
-      while (!this.check("}") && !this.check("EOF")) {
-        const key = this.expectKind("Ident").value;
-        this.expectKind(":");
-        // Value is either a quoted string literal or a dotted ident var ref
-        let val: string;
-        if (this.check("Str")) {
-          val = this.advance().value;
-        } else {
-          val = this.parseDottedIdent();
-        }
-        if (key === "src" || key === "src_body") src = val;
-        else if (key === "src_face") faceSrc = val;
-        else if (key === "key") spriteKeyOverride = val;
-        this.eatSemi(); // optional semicolons inside block
-      }
-      this.expectKind("}");
-    }
-
     this.eatSemi();
-    return {
-      kind: "Show",
-      bodyKey,
-      faceExpr,
-      at,
-      transition,
-      src,
-      faceSrc,
-      spriteKeyOverride,
-    };
+    return { kind: "Show", key, at, transition };
   }
 
-  // ── expr char::face_expr ;
-  //    expr char::face_expr | transition ;
-  //    face_expr may be multi-word, e.g.  expr hina::sick normal1;
-
-  private parseExpr(): Stmt {
-    const char = this.expectKind("Ident").value;
-    this.expectKind("::");
-    // Multi-word face expression: collect all consecutive Idents
-    const expr = this.parseMultiWordIdent();
-
-    // Optional @ position (needed when face step has an explicit position)
-    let at: string | undefined;
-    if (this.check("@")) {
-      this.advance();
-      at = this.expectKind("Ident").value;
-    }
-
-    // Optional | transition
-    let transition: string | undefined;
-    if (this.check("|")) {
-      this.advance();
-      transition = this.expectKind("Ident").value;
-    }
-
-    this.eatSemi();
-    return { kind: "Expr", char, expr, at, transition };
-  }
-
-  // ── hide body_key, char::face, char::* ;
+  // ── hide tag ;
+  //    Removes all sprites whose tag equals the given identifier.
+  //    The tag is a simple ident (no dots needed — the converter always
+  //    emits just the first word / tag, discarding Ren'Py attributes):
+  //      hide keitaro;          → removes "keitaro.normal1", "keitaro.grin1", …
+  //      hide keitaro_casual;   → removes exactly "keitaro_casual"
+  //      hide cg;               → removes "cg.arrival2", etc.
 
   private parseHide(): Stmt {
-    const targets: HideTarget[] = [];
-    targets.push(this.parseHideTarget());
-
-    while (this.check(",")) {
-      this.advance();
-      targets.push(this.parseHideTarget());
-    }
-
+    const tag = this.expectKind("Ident").value;
     this.eatSemi();
-    return { kind: "Hide", targets };
-  }
-
-  private parseHideTarget(): HideTarget {
-    // Support quoted sprite key for verbatim/unusual sprite names
-    if (this.check("Str")) {
-      const key = this.advance().value;
-      return { type: "body", key, verbatim: true } as HideTarget & {
-        verbatim: boolean;
-      };
-    }
-
-    const name = this.expectKind("Ident").value;
-
-    if (this.check("::")) {
-      this.advance();
-      if (this.check("*")) {
-        this.advance();
-        return { type: "face", char: name, expr: "*" };
-      }
-      // Multi-word face expression: collect all consecutive Idents
-      const expr = this.parseMultiWordIdent();
-      return { type: "face", char: name, expr };
-    }
-
-    return { type: "body", key: name };
+    return { kind: "Hide", tag };
   }
 
   // ── with transition_name ;

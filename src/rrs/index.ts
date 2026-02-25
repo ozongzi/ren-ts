@@ -29,7 +29,7 @@ export function extractImageMap(src: string): Map<string, string> {
   const map = new Map<string, string>();
   // Match:  image.<ns>.<key> = "<value>";
   const re =
-    /^(image\.[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"([^"]*)"\s*;/gm;
+    /^(image\.[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*=\s*"([^"]*)"\s*;/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src)) !== null) {
     map.set(m[1], m[2]);
