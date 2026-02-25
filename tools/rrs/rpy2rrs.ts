@@ -818,6 +818,18 @@ class Converter {
       return;
     }
 
+    // ── define VAR = Position(xpos=X, ...) → position.VAR = X; ──────────────
+    // Handles both:
+    //   define foo = Position(xpos=0.5, ...)   (top-level define)
+    //   $ foo = Position(xpos=0.5, ...)        (Python assignment in init block)
+    const positionMatch = line.match(
+      /^(?:define\s+|(?:\$\s*))(\w+)\s*=\s*Position\s*\(\s*xpos\s*=\s*([\d.]+)/,
+    );
+    if (positionMatch) {
+      this.emit(`position.${positionMatch[1]} = ${positionMatch[2]};`);
+      return;
+    }
+
     // ── Statements we always skip ─────────────────────────────────────────────
     if (
       line.startsWith("$renpy.free_memory") ||

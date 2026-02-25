@@ -178,62 +178,57 @@ export function isBodySprite(spriteKey: string): boolean {
 /** Known Ren'Py `at` position names mapped to CSS left-percentages. */
 export const AT_POSITION_LEFT: Record<string, number> = {
   offscreenleft: -20,
-  left: 15,
+  left: 25,
   cleft: 27,
   center: 50,
   cright: 73,
-  right: 85,
+  right: 75,
   offscreenright: 120,
   truecenter: 50,
-  // fx / misc special positions
   fx_pos: 50,
-  sniff: 50,
-};
+  sniff: 55,
 
-// Positions for left1-4 and right1-4 (used in 2-character and
-// multi-character scenes where characters need distinct slots).
-//   left1 ≈ cleft, left2 ≈ 25 %, left3 ≈ 35 %, left4 ≈ 42 %
-//   right1 ≈ cright, right2 ≈ 75 %, right3 ≈ 65 %, right4 ≈ 58 %
-const LEFT_NUMBERED: Record<number, number> = { 1: 18, 2: 25, 3: 35, 4: 42 };
-const RIGHT_NUMBERED: Record<number, number> = { 1: 82, 2: 75, 3: 65, 4: 58 };
+  // left1–left4 / right1–right4
+  left1: 30,
+  left2: 35,
+  left3: 43,
+  left4: 45,
+  right1: 70,
+  right2: 65,
+  right3: 57,
+  right4: 55,
+};
 
 /**
  * Convert a Ren'Py `at` string into a CSS `left` percentage string, or
  * return undefined if the position is unknown.
  *
  * Handles:
- *  • Named positions in AT_POSITION_LEFT (left, right, center, …)
- *  • left1–left4 / right1–right4
- *  • pN_K  and  pN_Ka  (group-scene slots: K-th of N characters)
- *    Uses the formula  left% = K / (N + 1) * 100
+/**
+ * Runtime position table populated from `position.xxx = 0.94;` defines
+ * in script.rrs (converted from Ren'Py `Position(xpos=...)` declarations).
+ * Values are xpos fractions (0–1); multiply by 100 for CSS left%.
+ */
+const _runtimePositions: Record<string, number> = {};
+
+/** Register a position from a parsed `position.NAME = VALUE` define. */
+export function registerPosition(name: string, xpos: number): void {
+  _runtimePositions[name.toLowerCase()] = xpos;
+}
+
+/**
+ * Convert a Ren'Py `at` string into a CSS `left` percentage string, or
+ * return undefined if the position is unknown.
+ *
+ * Priority:
+ *  1. Runtime positions registered via registerPosition() (from script.rrs)
+ *  2. Hardcoded fallback table AT_POSITION_LEFT
  */
 export function atToLeftPercent(at: string): string | undefined {
   const lower = at.toLowerCase();
-
-  // 1. Named lookup
-  const named = AT_POSITION_LEFT[lower];
-  if (named !== undefined) return `${named}%`;
-
-  // 2. leftN / rightN  (e.g. "left2", "right3")
-  const lrMatch = lower.match(/^(left|right)(\d)$/);
-  if (lrMatch) {
-    const side = lrMatch[1];
-    const n = parseInt(lrMatch[2], 10);
-    const val = side === "left" ? LEFT_NUMBERED[n] : RIGHT_NUMBERED[n];
-    if (val !== undefined) return `${val}%`;
-  }
-
-  // 3. pN_K  or  pN_Ka  (e.g. "p4_2", "p7_3a")
-  //    N = total characters in the group, K = this character's slot (1-based)
-  const groupMatch = lower.match(/^p(\d+)_(\d+)[a-z]?$/);
-  if (groupMatch) {
-    const n = parseInt(groupMatch[1], 10);
-    const k = parseInt(groupMatch[2], 10);
-    if (n > 0 && k >= 1 && k <= n) {
-      const pct = Math.round((k / (n + 1)) * 100);
-      return `${pct}%`;
-    }
-  }
-
+  const runtime = _runtimePositions[lower];
+  if (runtime !== undefined) return `${Math.round(runtime * 100)}%`;
+  const val = AT_POSITION_LEFT[lower];
+  if (val !== undefined) return `${val}%`;
   return undefined;
 }

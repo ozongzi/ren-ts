@@ -52,19 +52,21 @@ class Parser {
     const defines: DefineDecl[] = [];
     const labels: LabelDecl[] = [];
     while (!this.check("EOF")) {
-      if (this.checkIdent("label")) {
-        labels.push(this.parseLabel());
-      } else if (this.isTopLevelAssignment()) {
-        // Bare assignment at the top level (outside any label) is a global
-        // define declaration:
-        //   char.k      = "Keitaro";
-        //   audio.bgm   = "Audio/BGM/Main.ogg";
-        //   CAMP_NAME   = "Camp Buddy";
-        defines.push(this.parseDefineBody());
-      } else {
-        // Top-level statement outside any label (e.g. top-level `if`
-        // in init scripts like always_allow_skip.rrs).  Parse and discard.
-        this.parseStmt();
+      try {
+        if (this.checkIdent("label")) {
+          labels.push(this.parseLabel());
+        } else if (this.isTopLevelAssignment()) {
+          defines.push(this.parseDefineBody());
+        } else {
+          this.parseStmt();
+        }
+      } catch (e) {
+        // Recover: skip to next ';' so subsequent labels can still be parsed.
+        console.warn(
+          "[rrs] Top-level parse error (skipping):",
+          e instanceof Error ? e.message : e,
+        );
+        this.skipToRecoveryPoint(0);
       }
     }
     return { defines, labels };
@@ -126,9 +128,12 @@ class Parser {
       this.advance();
       value = valTok.value;
     } else {
-      throw this.err(
-        `Expected value after 'define ${key} =', got ${valTok.kind}`,
-      );
+      // Complex value (e.g. `flash = Fade(.25, 0, .75, color="#fff")`) —
+      // skip tokens until the next semicolon and discard this define.
+      // These are typically Ren'Py transition objects with no engine equivalent.
+      while (!this.check(";") && !this.check("EOF")) this.advance();
+      this.eatSemi();
+      return { kind: "Define", key, value: "" };
     }
 
     this.eatSemi();
@@ -149,7 +154,17 @@ class Parser {
   private parseBody(): Stmt[] {
     const stmts: Stmt[] = [];
     while (!this.check("}") && !this.check("EOF")) {
-      stmts.push(this.parseStmt());
+      try {
+        stmts.push(this.parseStmt());
+      } catch (e) {
+        // Recover: skip to next ';' or '}' so the rest of the label body
+        // can still be parsed.
+        console.warn(
+          "[rrs] Statement parse error (skipping):",
+          e instanceof Error ? e.message : e,
+        );
+        this.skipToRecoveryPoint(1);
+      }
     }
     return stmts;
   }
@@ -822,6 +837,29 @@ class Parser {
   /** Consume one or more semicolons if present (handles doubled ;; in generated DSL). */
   private eatSemi(): void {
     while (this.check(";")) this.advance();
+  }
+
+  /**
+   * Error recovery: skip tokens until we reach a semicolon (statement
+   * boundary) or a closing brace at or above `minDepth` (block boundary).
+   * Used by parse() and parseBody() to continue after a bad statement.
+   */
+  private skipToRecoveryPoint(minDepth: number): void {
+    let depth = 0;
+    while (!this.check("EOF")) {
+      if (this.check(";") && depth <= 0) {
+        this.advance(); // consume the semicolon
+        return;
+      }
+      if (this.check("}")) {
+        if (depth <= minDepth) return; // leave the closing brace for the caller
+        depth--;
+        this.advance();
+        continue;
+      }
+      if (this.check("{")) depth++;
+      this.advance();
+    }
   }
 
   private err(msg: string): Error {

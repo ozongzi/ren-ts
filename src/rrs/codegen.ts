@@ -38,7 +38,7 @@ import type {
   WithStmt,
 } from "./ast.ts";
 
-// ── Define maps ───────────────────────────────────────────────────────────────
+import { registerPosition } from "../assets";
 
 /**
  * Build the resolution maps from the top-level define declarations.
@@ -85,6 +85,11 @@ export function buildDefineMaps(
       // image path declaration: `image.bg.bathroom2_sunset = "BGs/...";`
       // Store with full key so lookups use the same form as the DSL.
       imageMap.set(d.key, d.value);
+    } else if (d.key.startsWith("position.")) {
+      // position declaration: `position.p12_12 = 0.94;`
+      // Converted from Ren'Py `Position(xpos=0.94, ...)` by rpy2rrs.
+      const xpos = parseFloat(d.value);
+      if (!isNaN(xpos)) registerPosition(d.key.slice("position.".length), xpos);
     } else {
       // Legacy bare-key character declaration: `k = "Keitaro";`
       // Kept for backward compatibility with older generated .rrs files.
@@ -450,11 +455,7 @@ class CodegenContext {
         : { bodyKey: "", faceKey, at, charVer };
       this.spriteState.set(stateKey, updatedEntry);
     } else {
-      console.warn(
-        `[rrs] Warning: expr ${stmt.char}::${stmt.expr} — ` +
-          `no known stage position for '${stmt.char}'.  ` +
-          `Make sure a preceding 'show ${stmt.char}_…::… @ pos' exists in the same label.`,
-      );
+      // No position info — sprite will be shown without an at position.
     }
 
     // Optional transition (e.g. expr hiro::grin1 | dissolve)
