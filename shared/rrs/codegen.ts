@@ -41,14 +41,15 @@ import type {
 // ── Define maps ───────────────────────────────────────────────────────────────
 
 /**
- * Build the two resolution maps from the top-level define/let declarations.
+ * Build the two resolution maps from the top-level define declarations.
  *
- * charMap   : abbr  → full name   (from `let char.<abbr> = "Name"`)
- * audioMap  : alias → path        (from `define audio.<alias> = "path"`)
+ * charMap   : abbr  → full name   (from `char.<abbr> = "Name"`)
+ * audioMap  : alias → path        (from `audio.<alias> = "path"`)
  *
- * The canonical format for character declarations is now:
- *   let char.k = "Keitaro";
- * Legacy bare-key format (`define k = "Keitaro"`) is also accepted for
+ * Declarations are written as plain bare assignments at the top level
+ * (outside any label block), with no keyword:
+ *   char.k = "Keitaro";
+ * Legacy bare-key format (`k = "Keitaro"`) is also accepted for
  * backward compatibility with previously generated .rrs files.
  */
 export function buildDefineMaps(
@@ -69,7 +70,7 @@ export function buildDefineMaps(
       // audio alias: `define audio.bgm_main = "Audio/BGM/main.ogg";`
       audioMap.set(d.key.slice("audio.".length), d.value);
     } else if (d.key.startsWith("char.")) {
-      // canonical character declaration: `let char.k = "Keitaro";`
+      // canonical character declaration: `char.k = "Keitaro";`
       // File-local definitions override the global map.
       charMap.set(d.key.slice("char.".length), d.value);
     } else {
@@ -189,7 +190,7 @@ class CodegenContext {
   private spriteState = new Map<string, SpriteEntry>();
 
   /**
-   * Character abbreviation → full name  (from `define char.*` declarations).
+   * Character abbreviation → full name  (from top-level `char.*` declarations).
    * Used by genSpeak() to resolve short speaker identifiers.
    */
   private charMap: Map<string, string>;

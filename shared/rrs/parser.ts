@@ -23,7 +23,6 @@ export function parse(tokens: Token[]): Program {
 
 const STMT_KEYWORDS = new Set([
   "label",
-  "define",
   "scene",
   "music",
   "sound",
@@ -39,7 +38,6 @@ const STMT_KEYWORDS = new Set([
   "menu",
   "jump",
   "call",
-  "let",
   "return",
 ]);
 
@@ -54,16 +52,15 @@ class Parser {
     const defines: DefineDecl[] = [];
     const labels: LabelDecl[] = [];
     while (!this.check("EOF")) {
-      if (this.checkIdent("define")) {
-        defines.push(this.parseDefine());
-      } else if (this.checkIdent("let")) {
-        // Top-level `let char.k = "Name";` declarations are the canonical
-        // format emitted by rpy2rrs for character names.  Treat them as
-        // define declarations so codegen can build the charMap from them.
-        this.advance(); // consume 'let'
-        defines.push(this.parseDefineBody());
-      } else if (this.checkIdent("label")) {
+      if (this.checkIdent("label")) {
         labels.push(this.parseLabel());
+      } else if (this.isTopLevelAssignment()) {
+        // Bare assignment at the top level (outside any label) is a global
+        // define declaration:
+        //   char.k      = "Keitaro";
+        //   audio.bgm   = "Audio/BGM/Main.ogg";
+        //   CAMP_NAME   = "Camp Buddy";
+        defines.push(this.parseDefineBody());
       } else {
         // Top-level statement outside any label (e.g. top-level `if`
         // in init scripts like always_allow_skip.rrs).  Parse and discard.
@@ -76,28 +73,31 @@ class Parser {
   // ── Define ─────────────────────────────────────────────────────────────────
 
   /**
-   * Parse a top-level define declaration:
-   *   define char.k     = "Keitaro";
-   *   define audio.bgm  = "Audio/BGM/Main.ogg";
-   *   define CAMP_NAME  = "Camp Buddy";
+   * Check whether the current token sequence looks like a top-level assignment:
+   *   Ident (. Ident)* =
    *
-   * The key may be a simple identifier or a dotted name (e.g. char.k).
-   * The value is a quoted string, a numeric literal, or a bare identifier.
+   * This distinguishes global define declarations from other top-level tokens
+   * (e.g. `label`, `if`, etc.).  The `=` token is unambiguous because the
+   * lexer produces separate tokens for `==`, `+=`, `-=`, etc.
    */
-  private parseDefine(): DefineDecl {
-    this.expectIdent("define");
-    return this.parseDefineBody();
+  private isTopLevelAssignment(): boolean {
+    if (this.peek().kind !== "Ident") return false;
+    let i = 1;
+    while (this.peek(i).kind === "." && this.peek(i + 1).kind === "Ident") {
+      i += 2;
+    }
+    return this.peek(i).kind === "=";
   }
 
   /**
-   * Parse the body of a define/let declaration after the leading keyword has
-   * already been consumed:
-   *   char.k     = "Keitaro";
-   *   audio.bgm  = "Audio/BGM/Main.ogg";
-   *   CAMP_NAME  = "Camp Buddy";
+   * Parse a top-level bare assignment as a define declaration (keyword already
+   * absent — the caller detected it via isTopLevelAssignment()):
+   *   char.k      = "Keitaro";
+   *   audio.bgm   = "Audio/BGM/Main.ogg";
+   *   CAMP_NAME   = "Camp Buddy";
    *
-   * Shared by parseDefine() (for `define` keyword) and the top-level `let`
-   * branch in parse() (for `let char.k = "Name";` character declarations).
+   * The key may be a simple identifier or a dotted name (e.g. char.k).
+   * The value is a quoted string, a numeric literal, or a bare identifier.
    */
   private parseDefineBody(): DefineDecl {
     // Parse dotted key: e.g. "char.k", "audio.bgm_main", "CAMP_NAME"
@@ -203,17 +203,7 @@ class Parser {
       case "call":
         this.advance();
         return this.parseCall();
-      // `let` is optional sugar – treat as plain assignment
-      case "let":
-        this.advance();
-        return this.parseLetAssign();
-      // `define` inside a label body (e.g. inside if/elif/else blocks in
-      // script.rrs) – treat the same as `let` (variable assignment).
-      // At the top level, `define` is handled by parse() → parseDefine();
-      // here we just need it not to throw so script.rrs can load.
-      case "define":
-        this.advance();
-        return this.parseLetAssign();
+
       case "return":
         this.advance();
         this.eatSemi();
@@ -655,22 +645,6 @@ class Parser {
 
   private parseAssign(name: string): AssignStmt {
     const op = this.advance().value; // consume operator token
-    const value = this.parseRawUntilSemi();
-    this.eatSemi();
-    return { kind: "Assign", name, op, value };
-  }
-
-  // ── let name op value ;  ('let' already consumed by caller)
-  //    name may be dotted: preferences.afm_enable
-
-  private parseLetAssign(): AssignStmt {
-    let name = this.expectKind("Ident").value;
-    // Handle dotted variable names: preferences.afm_enable
-    while (this.check(".") && this.peek(1).kind === "Ident") {
-      this.advance(); // .
-      name += "." + this.advance().value; // ident
-    }
-    const op = this.advance().value;
     const value = this.parseRawUntilSemi();
     this.eatSemi();
     return { kind: "Assign", name, op, value };

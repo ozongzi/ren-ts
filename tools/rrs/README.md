@@ -45,17 +45,19 @@ deno task rrs:roundtrip assets/data/
 ## .rrs 语法说明
 
 `.rrs`（Ren'Py Reader Script）是本项目专用的视觉小说脚本语言，语法简洁，面向故事流程。
-文件由顶层 `define` 声明和若干 **label（场景入口）** 组成，引擎按 label 名加载并逐条执行。
+文件由顶层声明和若干 **label（场景入口）** 组成，引擎按 label 名加载并逐条执行。
 
 ### 顶层结构
+
+顶层声明写作裸赋值（无关键字）。**在 label 外部**的赋值自动成为全局定义（define）；**在 label 内部**的赋值是存档变量。
 
 ```
 // 注释用双斜线
 
-// 顶层 define 声明（必须在所有 label 之前）
-define char.k  = "Keitaro";
-define char.hi = "Hiro";
-define audio.bgm_main = "Audio/BGM/Main.ogg";
+// 顶层全局声明（在所有 label 之外）
+char.k  = "Keitaro";
+char.hi = "Hiro";
+audio.bgm_main = "Audio/BGM/Main.ogg";
 
 // label 块
 label scene_name {
@@ -69,24 +71,24 @@ label another_scene {
 
 ---
 
-### `define` 声明
+### 顶层声明
 
-`define` 是顶层声明，**不能出现在 label 内部**。主要有三类：
+顶层声明**不能出现在 label 内部**，写作裸赋值。主要有三类：
 
 #### 角色名定义
 
 ```
-define char.<abbr> = "全名";
+char.<abbr> = "全名";
 ```
 
-转换器（`rpy2rrs.ts`）会自动从游戏的 `.rpy` 文件中提取 `Character("名字")` 定义，并在每个 `.rrs` 文件头部生成对应的 `define char.*` 语句。
+转换器（`rpy2rrs.ts`）会自动从游戏的 `.rpy` 文件中提取 `Character("名字")` 定义，并在每个 `.rrs` 文件头部生成对应的 `char.*` 声明。
 
 运行时 codegen 将 `speak` 语句中的 `<abbr>` 展开为全名，写入引擎 JSON。
 
 #### 音频别名定义
 
 ```
-define audio.<alias> = "Audio/BGM/SomeTrack.ogg";
+audio.<alias> = "Audio/BGM/SomeTrack.ogg";
 ```
 
 在 `music::play` / `sound::play` / `speak` 的语音字段中，可以用 `audio.<alias>` 引用已定义的路径。
@@ -94,7 +96,7 @@ define audio.<alias> = "Audio/BGM/SomeTrack.ogg";
 #### 通用常量
 
 ```
-define CAMP_NAME = "Camp Buddy";
+CAMP_NAME = "Camp Buddy";
 ```
 
 通用常量可在条件表达式和变量赋值右侧引用。
@@ -216,7 +218,7 @@ sound::stop();
 
 ### 对话（speak）
 
-`speak` 中的说话人名称在 `.rrs` 源文件中存储为缩写（如 `k`），codegen 根据文件顶部的 `define char.*` 将其展开为全名后写入引擎 JSON。
+`speak` 中的说话人名称在 `.rrs` 源文件中存储为缩写（如 `k`），codegen 根据文件顶部的 `char.*` 声明将其展开为全名后写入引擎 JSON。
 
 ```
 // 单行对话，无语音
@@ -313,11 +315,11 @@ persistent.animations = True;
 
 ```
 // 角色定义
-define char.k  = "Keitaro";
-define char.hi = "Hiro";
+char.k  = "Keitaro";
+char.hi = "Hiro";
 
 label day1 {
-  let day_num = "Day 1";
+  day_num = "Day 1";
   scene #000000;
   sound::play("Audio/SFX/sfx_busengine.ogg");
 
@@ -411,7 +413,7 @@ deno task rpy2rrs /path/to/game/ -o assets/data/ --manifest --game "My VN Game"
 
 ### 转换器工作原理
 
-1. **角色映射**：从 `script.rpy`（或游戏目录中的 `.rpy` 文件）解析 `define <abbr> = Character("名字")` 行，构建角色缩写 → 全名映射表。每个转换后的 `.rrs` 文件头部自动生成对应的 `define char.*` 语句。
+1. **角色映射**：从 `script.rpy`（或游戏目录中的 `.rpy` 文件）解析 `define <abbr> = Character("名字")` 行，构建角色缩写 → 全名映射表。每个转换后的 `.rrs` 文件头部自动生成对应的 `char.*` 声明。
 2. **资源映射**：解析音频、背景图、CG、SFX 等资源定义，为 `show` / `scene` / `music` 等语句提供路径解析依据。
 3. **`script.rpy` 处理**：`script.rpy` 既作为资源映射来源，同时也被转换为 `script.rrs`，其中的 `label start` 将被引擎加载为游戏入口。
 4. **翻译合并**：若存在翻译目录，将对话文本替换为目标语言（按文件逐一加载）。

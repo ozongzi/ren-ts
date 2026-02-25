@@ -20,14 +20,14 @@ import type { ScriptFile } from "../types";
  * abbreviations like `k` → "Keitaro" at codegen time.
  *
  * The format emitted by rpy2rrs for character definitions is:
- *   let char.k   = "Keitaro";
- *   let char.hi  = "Hiro";
- *   let char.emp = "";          ← empty string = narration (no nameplate)
+ *   char.k   = "Keitaro";
+ *   char.hi  = "Hiro";
+ *   char.emp = "";          ← empty string = narration (no nameplate)
  */
 export function extractCharMap(src: string): Map<string, string> {
   const map = new Map<string, string>();
-  // Match:  let char.<abbr> = "<value>";
-  const re = /^let\s+char\.([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"([^"]*)"\s*;/gm;
+  // Match:  char.<abbr> = "<value>";
+  const re = /^char\.([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"([^"]*)"\s*;/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src)) !== null) {
     map.set(m[1], m[2]);

@@ -8,13 +8,13 @@ export type Program = {
 // ── Top-level define declaration ──────────────────────────────────────────────
 
 /**
- * Top-level define/let declaration.  May appear before (or interleaved with)
+ * Top-level define declaration.  May appear before (or interleaved with)
  * label blocks, but never *inside* a label body.
  *
- * Three flavours:
- *   let char.<abbr>      = "Full Name";   → character/speaker alias (canonical, e.g. let char.k = "Keitaro")
- *   define audio.<alias> = "path/to.ogg"; → audio path alias
- *   define <abbr>        = "Full Name";   → legacy bare-key character alias (backward compat)
+ * Written as plain bare assignments (no keyword):
+ *   char.<abbr>  = "Full Name";   → character/speaker alias  (e.g. char.k = "Keitaro")
+ *   audio.<alias> = "path/to.ogg"; → audio path alias
+ *   CAMP_NAME    = "Camp Buddy";  → arbitrary constant
  *
  * The canonical format for character names uses the `char.` namespace prefix.
  * `buildDefineMaps` strips the prefix so the charMap key is just the abbreviation
