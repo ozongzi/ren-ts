@@ -30,8 +30,9 @@ export type DefineDecl = {
   kind: "Define";
   /** Full key exactly as written, e.g. "image.cg.arrival2", "char.k", "audio.bgm_main" */
   key: string;
-  /** Raw value string (the quoted string content, numeric literal, or bare identifier) */
-  value: string;
+  /** Raw value token. May be a quoted string, numeric literal, or bare identifier (True/False/None/etc.).
+   *  Use a flexible `unknown` type so downstream codegen/parser can preserve typed literals. */
+  value: unknown;
 };
 
 export type LabelDecl = {
@@ -273,7 +274,11 @@ export type JsonLabel = JsonStep[];
 
 export type JsonFile = {
   source: string;
-  /** Flat key→value map of all top-level defines (image.*, char.*, audio.*, position.*, etc.) */
-  defines: Record<string, string>;
+  /** Flat key→value map of all top-level defines (image.*, char.*, audio.*, position.*, etc.)
+   *  Values may be strings, numbers, booleans or null depending on the literal parsed by the parser.
+   *  The runtime treats these as typed values (Record<string, unknown>) so consumers should
+   *  handle non-string define values.
+   */
+  defines: Record<string, unknown>;
   labels: Record<string, JsonLabel>;
 };

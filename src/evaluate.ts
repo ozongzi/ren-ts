@@ -36,9 +36,11 @@ export function parseValue(raw: string | number | boolean): unknown {
   // e.g. `"value": 1` instead of `"value": "1"` — return as-is.
   if (typeof raw !== "string") return raw;
 
-  if (raw === "True") return true;
-  if (raw === "False") return false;
-  if (raw === "None") return null;
+  // Accept both capitalised and lowercase literal forms commonly found in
+  // converted scripts: True/False/None and true/false/none.
+  if (raw === "True" || raw === "true") return true;
+  if (raw === "False" || raw === "false") return false;
+  if (raw === "None" || raw === "none") return null;
 
   // Quoted string: "..." or '...'
   if (

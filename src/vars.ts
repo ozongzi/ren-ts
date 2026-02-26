@@ -10,7 +10,7 @@
 //   gameVars    — variables written during gameplay ($ x = 1, menu choices, …)
 //                 This is the only part that gets persisted to disk.
 //
-// Lookup order: gameVars first, then defineVars (game vars override defines).
+// Lookup order: gameVars first, then defineVars (game vars override).
 // All writes go to gameVars only.
 //
 // Engine code works with VarStore directly.
@@ -19,11 +19,11 @@
 
 export class VarStore {
   private readonly _game: Record<string, unknown>;
-  private readonly _defines: Record<string, string>;
+  private readonly _defines: Record<string, unknown>;
 
   constructor(
     game: Record<string, unknown> = {},
-    defines: Record<string, string> = {},
+    defines: Record<string, unknown> = {},
   ) {
     this._game = game;
     this._defines = defines;
@@ -59,7 +59,7 @@ export class VarStore {
    *
    * Use this when you need to know where a value is coming from.
    */
-  queryBoth(key: string): { stored: unknown; define: string | undefined } {
+  queryBoth(key: string): { stored: unknown; define: unknown | undefined } {
     const stored = Object.prototype.hasOwnProperty.call(this._game, key)
       ? this._game[key]
       : undefined;
@@ -144,11 +144,11 @@ export class VarStore {
   }
 
   /** Read-only view of the define vars layer. */
-  defineVars(): Record<string, string> {
+  defineVars(): Record<string, unknown> {
     return { ...this._defines };
   }
 
-  // ── Factories ──────────────────────────────────────────────────────────────
+  // ── Factories ─────────────────────────────────────────────────────────────
 
   /** Empty store — no defines, no game vars.  Used before scripts are loaded. */
   static empty(): VarStore {
@@ -159,7 +159,7 @@ export class VarStore {
    * Fresh game store: defineVars from the loader, empty game vars.
    * Call this when starting a new game.
    */
-  static fromDefines(defines: Record<string, string>): VarStore {
+  static fromDefines(defines: Record<string, unknown>): VarStore {
     return new VarStore({}, defines);
   }
 
@@ -170,7 +170,7 @@ export class VarStore {
    */
   static fromSave(
     savedGameVars: Record<string, unknown>,
-    defines: Record<string, string>,
+    defines: Record<string, unknown>,
   ): VarStore {
     return new VarStore(savedGameVars, defines);
   }

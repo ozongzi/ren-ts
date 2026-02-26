@@ -198,7 +198,7 @@ export function getGallery(): GalleryEntry[] {
  *   vars["audio.bgm_main"]        = "Audio/BGM/main.ogg"
  *   vars["persistent.animations"] = "true"
  */
-export function getDefineVars(): Record<string, string> {
+export function getDefineVars(): Record<string, unknown> {
   return { ...defineVars };
 }
 

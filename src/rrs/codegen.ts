@@ -47,24 +47,63 @@ import { registerPosition } from "../assets";
 /**
  * Collect all top-level define declarations into a flat key→value dict.
  *
- * Every define is stored verbatim — no special processing by prefix, except
- * for position.* which are also forwarded to registerPosition() so the CSS
- * layout helper (atToLeftPercent) can use them without touching vars.
+ * This version attempts to preserve primitive types for simple literal values:
+ *  - True / true  → boolean true
+ *  - False / false → boolean false
+ *  - None          → null
+ *  - numeric literal → number
+ *  - quoted strings (already provided as unquoted content by the parser) → string
  *
- * The resulting dict is merged into GameState.vars at game start so that
- * all image, char, audio and other defines are available for runtime lookup.
+ * Complex / unparsed values remain skipped (value === "").
+ *
+ * position.* entries still register with the CSS layout helper; when a value
+ * parses to a number we use that number, otherwise we fall back to parsing
+ * the original raw string.
  */
-export function collectDefines(defines: DefineDecl[]): Record<string, string> {
-  const result: Record<string, string> = {};
+export function collectDefines(defines: DefineDecl[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
   for (const d of defines) {
-    if (d.value === "") continue; // skip unparseable complex values
-    result[d.key] = d.value;
+    // Coerce the raw token to a string for safe comparison while preserving
+    // the original unknown type in `parsed`. The parser may produce strings,
+    // numbers or other identifiers; normalise to a string for textual checks.
+    const raw = typeof d.value === "string" ? d.value : String(d.value ?? "");
+    if (raw === "") continue; // skip unparseable complex values
 
-    // position.* also goes to the CSS layout helper so atToLeftPercent() works
-    // without needing access to vars at render time.
+    // Parse common literal forms so defines carry proper JS types instead of
+    // always being plain strings. The parser hands us the raw token value:
+    //   - Str tokens are the inner quoted content
+    //   - Num tokens are numeric strings
+    //   - Ident tokens may be True/False/None or other bare identifiers
+    let parsed: unknown = raw;
+
+    if (raw === "True" || raw === "true") {
+      parsed = true;
+    } else if (raw === "False" || raw === "false") {
+      parsed = false;
+    } else if (raw === "None") {
+      parsed = null;
+    } else {
+      // Try numeric parse (integers and floats). Ensure the original token
+      // isn't an empty string or something that coerces to NaN.
+      const maybeNum = Number(raw);
+      if (!Number.isNaN(maybeNum) && raw.trim() !== "") {
+        parsed = maybeNum;
+      } else {
+        // Leave other identifiers and string literals as-is (strings).
+        parsed = raw;
+      }
+    }
+
+    result[d.key] = parsed;
+
+    // position.* still needs a numeric value for the CSS helper. If parsing
+    // produced a number, use it; otherwise fall back to parseFloat of the raw
+    // value string.
     if (d.key.startsWith("position.")) {
-      const xpos = parseFloat(d.value);
-      if (!isNaN(xpos)) registerPosition(d.key.slice("position.".length), xpos);
+      const xpos = typeof parsed === "number" ? parsed : parseFloat(raw);
+      if (!Number.isNaN(Number(xpos))) {
+        registerPosition(d.key.slice("position.".length), Number(xpos));
+      }
     }
   }
   return result;

@@ -132,7 +132,7 @@ export interface ScriptFile {
   source: string;
   labels: Record<string, Step[]>;
   /** Flat key→value map of all top-level defines in this file (image.*, char.*, audio.*, etc.) */
-  defines: Record<string, string>;
+  defines: Record<string, unknown>;
 }
 
 // ─── Gallery types ────────────────────────────────────────────────────────────

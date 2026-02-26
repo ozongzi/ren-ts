@@ -217,6 +217,5 @@ assets/data/*.rrs
 | `dev` | `bun run dev` | Start Vite dev server |
 | `build` | `bun run build` | Production build |
 | `rpy2rrs` | `bun run rpy2rrs <dir>` | Convert .rpy → .rrs (batch) |
-| `rrs:compile` | `bun run rrs:compile <file.rrs>` | Compile .rrs → engine JSON (debug) |
-| `rrs:decompile` | `bun run rrs:decompile <file.json>` | Decompile engine JSON → .rrs |
-| `rrs:roundtrip` | `bun run rrs:roundtrip <dir>` | Decompile + re-compile round-trip test |
+
+暂时不支持列表字面量， 而是看成字符串

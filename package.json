@@ -12,7 +12,10 @@
     "tauri:build": "tauri build",
     "rpy2rrs": "bun run tools/rrs/rpy2rrs.ts",
     "parse-gallery": "bun run tools/rrs/parse_gallery.ts",
-    "validate-assets": "bun run tools/rrs/validate_assets.ts"
+    "validate-assets": "bun run tools/rrs/validate_assets.ts",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
@@ -24,11 +27,43 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0",
+    "@testing-library/jest-dom": "^6.0.0",
+    "@testing-library/react": "^14.0.0",
+    "@testing-library/user-event": "^14.4.3",
     "@types/node": "^25.3.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
+    "@vitest/coverage-istanbul": "^4.0.18",
+    "@vitest/coverage-v8": "^4.0.18",
+    "jsdom": "^28.1.0",
     "typescript": "^5.6.3",
-    "vite": "^5.4.10"
+    "vite": "^5.4.10",
+    "vitest": "^4.0.18"
+  },
+  "vitest": {
+    "include": [
+      "tests/**/*.spec.ts",
+      "tests/**/*.spec.tsx",
+      "tests/**/*.test.ts",
+      "tests/**/*.test.tsx"
+    ],
+    "environment": "jsdom",
+    "globals": true,
+    "setupFiles": [
+      "tests/setupTests.ts"
+    ],
+    "coverage": {
+      "provider": "c8",
+      "reporter": [
+        "text",
+        "lcov"
+      ],
+      "exclude": [
+        "tests/**",
+        "src-tauri/**",
+        "tools/**"
+      ]
+    }
   }
 }
