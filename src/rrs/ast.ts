@@ -26,11 +26,11 @@ export type Program = {
  *   `image keitaro grin1`     → key "image.keitaro.grin1"
  *   `image hina sick normal1` → key "image.hina.sick.normal1"
  */
-export type DefineTokenKind = "Str" | "Num" | "Ident" | "HexColor" | "Other";
+export type TokenKind = "Str" | "Num" | "Ident" | "HexColor" | "Other";
 
 export type DefineValueToken = {
   /** Token kind as produced by the lexer (Str/Num/Ident/HexColor). */
-  kind: DefineTokenKind;
+  kind: TokenKind;
   /**
    * Raw token text:
    *  - For `Str` tokens this is the inner quoted content (quotes stripped).
@@ -44,8 +44,11 @@ export type DefineDecl = {
   kind: "Define";
   /** Full key exactly as written, e.g. "image.cg.arrival2", "char.k", "audio.bgm_main" */
   key: string;
-  /** Token kind + raw text for the define's value. Use this to preserve lexer-level semantics. */
-  value: DefineValueToken;
+  /** Token kind + raw text for the define's value. Use this to preserve lexer-level semantics.
+   *  The parser may place an empty string ("") here to indicate a complex/unparsed value
+   *  (e.g. transition objects). Allow both the token form and the empty-string sentinel.
+   */
+  value: DefineValueToken | "";
 };
 
 export type LabelDecl = {

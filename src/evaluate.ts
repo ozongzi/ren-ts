@@ -13,6 +13,7 @@
 // resulting sanitised numeric/boolean/string expression.
 
 import type { Step } from "./types";
+import { rawStringToValue } from "./rrs/literal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -30,37 +31,20 @@ export type Vars = Record<string, unknown>;
  *   "False"      → false
  *   "0.5"        → 0.5
  *   "my_var"     → "my_var"      (variable reference — caller handles this)
+ *
+ * Implementation note:
+ *  - Non-string inputs are returned as-is.
+ *  - String inputs are delegated to the shared literal util so that runtime
+ *    parsing semantics match codegen/collectDefines.
  */
 export function parseValue(raw: string | number | boolean): unknown {
   // Guard: JSON may store numeric/boolean values directly (not as strings).
   // e.g. `"value": 1` instead of `"value": "1"` — return as-is.
   if (typeof raw !== "string") return raw;
 
-  // Accept both capitalised and lowercase literal forms commonly found in
-  // converted scripts: True/False/None and true/false/none.
-  if (raw === "True" || raw === "true") return true;
-  if (raw === "False" || raw === "false") return false;
-  if (raw === "None" || raw === "none") return null;
-
-  // Quoted string: "..." or '...'
-  if (
-    (raw.startsWith('"') && raw.endsWith('"')) ||
-    (raw.startsWith("'") && raw.endsWith("'"))
-  ) {
-    // Unescape inner escaped quotes and backslashes
-    return raw
-      .slice(1, -1)
-      .replace(/\\"/g, '"')
-      .replace(/\\'/g, "'")
-      .replace(/\\\\/g, "\\");
-  }
-
-  // Number
-  const n = Number(raw);
-  if (!isNaN(n) && raw.trim() !== "") return n;
-
-  // Fallback: return as string (could be a variable reference)
-  return raw;
+  // Delegate to shared literal util which handles quoted strings, booleans,
+  // None/null, numeric parsing, and preserves hex/color strings as needed.
+  return rawStringToValue(raw);
 }
 
 // ─── Variable operations ──────────────────────────────────────────────────────
