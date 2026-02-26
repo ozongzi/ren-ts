@@ -82,48 +82,13 @@ const FSA_FILE_TYPES = {
 
 /** Extract a SaveData snapshot from the current GameState. */
 export function stateToSave(state: GameState): SaveData {
-  // Extract the game-vars layer (these are the values that get serialized).
-  const rawVars = state.vars.stored();
-
-  // Normalize certain define-like keys (persistent.*) that may have been
-  // represented as string literals into typed JS values so the save file
-  // contains booleans/numbers/null instead of string words like "true".
-  const vars: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(rawVars)) {
-    if (k.startsWith("persistent.") && typeof v === "string") {
-      const s = v.trim();
-      const low = s.toLowerCase();
-      if (low === "true") {
-        vars[k] = true;
-        continue;
-      }
-      if (low === "false") {
-        vars[k] = false;
-        continue;
-      }
-      if (low === "none") {
-        vars[k] = null;
-        continue;
-      }
-      // Try numeric conversion (integers and floats). Preserve as string if
-      // conversion yields NaN or the original string is empty.
-      const n = Number(s);
-      if (!Number.isNaN(n) && s !== "") {
-        vars[k] = n;
-        continue;
-      }
-    }
-    // Default: keep original value
-    vars[k] = v;
-  }
-
   return {
     version: SAVE_VERSION,
     timestamp: new Date().toISOString(),
     currentLabel: state.currentLabel,
     stepIndex: state.stepIndex,
     callStack: state.callStack,
-    vars,
+    vars: state.vars.stored(),
     completedRoutes: [...state.completedRoutes],
     backgroundSrc: state.backgroundSrc,
     bgFilter: state.bgFilter,

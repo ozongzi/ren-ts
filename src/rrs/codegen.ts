@@ -63,34 +63,59 @@ import { registerPosition } from "../assets";
 export function collectDefines(defines: DefineDecl[]): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const d of defines) {
-    // Coerce the raw token to a string for safe comparison while preserving
-    // the original unknown type in `parsed`. The parser may produce strings,
-    // numbers or other identifiers; normalise to a string for textual checks.
-    const raw = typeof d.value === "string" ? d.value : String(d.value ?? "");
+    // The parser now preserves define value tokens as objects of the form:
+    //   { kind: "Str" | "Num" | "Ident" | "HexColor" | "Other", raw: string }
+    // Older code (or other inputs) may still provide plain strings; handle both.
+    let raw = "";
+    let tokenKind = "Other";
+
+    if (d.value === "" || d.value === undefined || d.value === null) {
+      // skip complex/unparseable defines (parser indicates with empty string)
+      continue;
+    } else if (typeof d.value === "string") {
+      raw = d.value;
+      tokenKind = "Other";
+    } else if (typeof d.value === "object" && "raw" in d.value) {
+      // Preserve the parser-provided token kind when available.
+      // Use String(...) to be defensive against non-string raw payloads.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dv = d.value as any;
+      raw = String(dv.raw ?? "");
+      tokenKind = typeof dv.kind === "string" ? dv.kind : "Other";
+    } else {
+      raw = String(d.value ?? "");
+      tokenKind = "Other";
+    }
+
     if (raw === "") continue; // skip unparseable complex values
 
-    // Parse common literal forms so defines carry proper JS types instead of
-    // always being plain strings. The parser hands us the raw token value:
-    //   - Str tokens are the inner quoted content
-    //   - Num tokens are numeric strings
-    //   - Ident tokens may be True/False/None or other bare identifiers
-    let parsed: unknown = raw;
-
-    if (raw === "True" || raw === "true") {
-      parsed = true;
-    } else if (raw === "False" || raw === "false") {
-      parsed = false;
-    } else if (raw === "None") {
-      parsed = null;
+    // Determine the JS value to store for this define.
+    // For quoted string tokens (kind === "Str") we must preserve the string
+    // verbatim (the parser has already stripped quotes). For other token kinds
+    // treat bare identifiers specially (True/False/None) and attempt numeric
+    // parsing; otherwise leave as string.
+    let parsed: unknown;
+    if (tokenKind === "Str") {
+      parsed = raw;
     } else {
-      // Try numeric parse (integers and floats). Ensure the original token
-      // isn't an empty string or something that coerces to NaN.
-      const maybeNum = Number(raw);
-      if (!Number.isNaN(maybeNum) && raw.trim() !== "") {
-        parsed = maybeNum;
+      // Recognise boolean/null identifiers first (case-insensitive for safety)
+      if (raw === "True" || raw === "true") {
+        parsed = true;
+      } else if (raw === "False" || raw === "false") {
+        parsed = false;
+      } else if (raw === "None" || raw === "none") {
+        parsed = null;
       } else {
-        // Leave other identifiers and string literals as-is (strings).
-        parsed = raw;
+        // Try numeric parse (integers and floats). Accept only when conversion
+        // yields a valid number and the original text is not empty.
+        const maybeNum = Number(raw);
+        if (!Number.isNaN(maybeNum) && raw.trim() !== "") {
+          parsed = maybeNum;
+        } else {
+          // Fallback: keep as string (this covers bare identifiers that are not
+          // boolean/null and other non-numeric tokens).
+          parsed = raw;
+        }
       }
     }
 

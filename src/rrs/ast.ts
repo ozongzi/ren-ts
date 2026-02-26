@@ -26,13 +26,26 @@ export type Program = {
  *   `image keitaro grin1`     → key "image.keitaro.grin1"
  *   `image hina sick normal1` → key "image.hina.sick.normal1"
  */
+export type DefineTokenKind = "Str" | "Num" | "Ident" | "HexColor" | "Other";
+
+export type DefineValueToken = {
+  /** Token kind as produced by the lexer (Str/Num/Ident/HexColor). */
+  kind: DefineTokenKind;
+  /**
+   * Raw token text:
+   *  - For `Str` tokens this is the inner quoted content (quotes stripped).
+   *  - For `Num`, `Ident`, `HexColor` this is the token text as-is.
+   *  - For unknown/complex tokens use the `Other` kind and place a best-effort string here.
+   */
+  raw: string;
+};
+
 export type DefineDecl = {
   kind: "Define";
   /** Full key exactly as written, e.g. "image.cg.arrival2", "char.k", "audio.bgm_main" */
   key: string;
-  /** Raw value token. May be a quoted string, numeric literal, or bare identifier (True/False/None/etc.).
-   *  Use a flexible `unknown` type so downstream codegen/parser can preserve typed literals. */
-  value: unknown;
+  /** Token kind + raw text for the define's value. Use this to preserve lexer-level semantics. */
+  value: DefineValueToken;
 };
 
 export type LabelDecl = {

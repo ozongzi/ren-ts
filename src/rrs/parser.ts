@@ -112,19 +112,22 @@ class Parser {
 
     // Value: string literal, number, or bare identifier (True/False/etc.)
     const valTok = this.peek();
-    let value: string;
+    let valueToken:
+      | { kind: "Str" | "Num" | "Ident" | "HexColor" | "Other"; raw: string }
+      | "";
     if (valTok.kind === "Str") {
       this.advance();
-      value = valTok.value;
+      // Str token: inner quoted content is stored in tok.value
+      valueToken = { kind: "Str", raw: valTok.value };
     } else if (valTok.kind === "Num") {
       this.advance();
-      value = valTok.value;
+      valueToken = { kind: "Num", raw: valTok.value };
     } else if (valTok.kind === "Ident") {
       this.advance();
-      value = valTok.value;
+      valueToken = { kind: "Ident", raw: valTok.value };
     } else if (valTok.kind === "HexColor") {
       this.advance();
-      value = valTok.value;
+      valueToken = { kind: "HexColor", raw: valTok.value };
     } else {
       // Complex value (e.g. `flash = Fade(.25, 0, .75, color="#fff")`) —
       // skip tokens until the next semicolon and discard this define.
@@ -135,7 +138,7 @@ class Parser {
     }
 
     this.eatSemi();
-    return { kind: "Define", key, value };
+    return { kind: "Define", key, value: valueToken };
   }
 
   // ── Label ──────────────────────────────────────────────────────────────────
