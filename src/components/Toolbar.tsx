@@ -18,7 +18,6 @@ import { useGameStore } from "../store";
 export const Toolbar: React.FC = () => {
   const phase = useGameStore((s) => s.phase);
   const openGallery = useGameStore((s) => s.openGallery);
-  const openSettings = useGameStore((s) => s.openSettings);
   const backToSaveMenu = useGameStore((s) => s.backToSaveMenu);
   const saveExport = useGameStore((s) => s.saveExport);
   const saveFileName = useGameStore((s) => s.saveFileName);

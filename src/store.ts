@@ -10,7 +10,7 @@
 //   store actions  →  tauri_bridge.ts (Tauri-specific I/O)
 
 import { create } from "zustand";
-import type { GameState, SaveData } from "./types";
+import type { GameState } from "./types";
 import {
   createInitialState,
   startNewGame,
@@ -26,7 +26,6 @@ import {
   openSaveFile,
   pickNewSaveFile,
   autoSaveToHandle,
-  fsaAvailable,
 } from "./save";
 import {
   isTauri,

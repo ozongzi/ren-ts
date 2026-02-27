@@ -19,7 +19,6 @@ import { isTauri } from "../tauri_bridge";
 export const SaveLoadedScreen: React.FC = () => {
   const enterGame = useGameStore((s) => s.enterGame);
   const openGallery = useGameStore((s) => s.openGallery);
-  const openSettings = useGameStore((s) => s.openSettings);
   const goToTitle = useGameStore((s) => s.goToTitle);
   const gameTitle = useGameStore((s) => s.gameTitle);
   const displayTitle = gameTitle ?? "Ren'Ts";

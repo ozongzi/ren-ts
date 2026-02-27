@@ -660,17 +660,6 @@ export const Tools: React.FC = () => {
     if (e.target === e.currentTarget && !running) closeTools();
   };
 
-  async function pickGameDirectory() {
-    if (!isTauri) return;
-    const dir = await pickDirectory();
-    if (dir) {
-      setGameDir(dir);
-      if (!outputDir) setOutputDir(dir);
-      if (!translationDir) setTranslationDir(`${dir}/tl/chinese`);
-      if (!galleryPath) setGalleryPath(`${dir}/gallery_images.rpy`);
-    }
-  }
-
   async function buildTranslationMap(
     dir: string,
   ): Promise<Map<string, string>> {
