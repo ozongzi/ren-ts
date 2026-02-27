@@ -15,7 +15,7 @@
 //   --help, -h          Show this help
 
 import { readFile, writeFile } from "node:fs/promises";
-import { parseGalleryRpy } from "./parse-gallery-core.ts";
+import { parseGalleryRpy } from "../../rpy-rrs-bridge/parse-gallery-core.ts";
 
 const HELP = `
 parse-gallery.ts — extract animated gallery data from gallery_images.rpy

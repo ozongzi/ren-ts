@@ -29,8 +29,8 @@ import {
   opendir,
 } from "node:fs/promises";
 
-import { convertRpy } from "./rpy2rrs-core.ts";
-import { parseTranslationBlocks } from "./translation-extractor.ts";
+import { convertRpy } from "../../rpy-rrs-bridge/rpy2rrs-core.ts";
+import { parseTranslationBlocks } from "../../rpy-rrs-bridge/translation-extractor.ts";
 
 // ── Non-story files to skip (UI / system) ────────────────────────────────────
 
