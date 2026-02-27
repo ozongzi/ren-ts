@@ -83,135 +83,11 @@ function fmtFloat(n: number): string {
   return n === Math.floor(n) ? String(Math.floor(n)) : String(n);
 }
 
-// ── Asset maps ────────────────────────────────────────────────────────────────
-
-export interface AssetMaps {
-  audio: Map<string, string>;
-  bg: Map<string, string>;
-  cg: Map<string, string>;
-  sx: Map<string, string>;
-  misc: Map<string, string>;
-  charMap: Map<string, string>;
-  /** Chinese translation: english dialogue text → chinese dialogue text */
-  tl?: Map<string, string>;
-}
-
-export function emptyAssetMaps(): AssetMaps {
-  return {
-    audio: new Map(),
-    bg: new Map(),
-    cg: new Map(),
-    sx: new Map(),
-    misc: new Map(),
-    charMap: new Map(),
-  };
-}
-
-// ── Chinese translation parser ────────────────────────────────────────────────
-
-/**
- * Parse translation blocks from the content of a tl/chinese/*.rpy file.
- * Returns a map of english dialogue text → chinese dialogue text.
- */
-export function parseTranslationBlocks(content: string): Map<string, string> {
-  const out = new Map<string, string>();
-  const lines = content.split("\n");
-  let i = 0;
-
-  while (i < lines.length) {
-    const raw = lines[i];
-    const trimmed = raw.trim();
-
-    if (/^translate\s+\w+\s+\w+\s*:/.test(trimmed)) {
-      i++;
-      let englishText: string | null = null;
-      let chineseText: string | null = null;
-
-      while (i < lines.length) {
-        const innerRaw = lines[i];
-        const inner = innerRaw.trim();
-
-        if (!inner) {
-          if (englishText !== null) break;
-          i++;
-          continue;
-        }
-
-        if (
-          innerRaw.length > 0 &&
-          innerRaw[0] !== " " &&
-          innerRaw[0] !== "\t"
-        ) {
-          break;
-        }
-
-        if (inner.startsWith("#")) {
-          if (!inner.match(/^#\s+voice\b/)) {
-            const cm = inner.match(
-              /^#\s+[\w_]+\s+"((?:[^"\\]|\\.)*)"\s*(?:with\s+\S+)?\s*$/,
-            );
-            if (cm) englishText = cm[1].replace(/\{[^{}]*\}/g, "").trim();
-          }
-          i++;
-          continue;
-        }
-
-        if (/^voice\s+audio\./.test(inner)) {
-          i++;
-          continue;
-        }
-
-        if (inner.startsWith("old ") || inner.startsWith("new ")) {
-          const om = inner.match(/^old\s+"((?:[^"\\]|\\.)*)"\s*$/);
-          if (om) {
-            englishText = om[1].replace(/\{[^{}]*\}/g, "").trim();
-            i++;
-            continue;
-          }
-          const nm = inner.match(/^new\s+"((?:[^"\\]|\\.)*)"\s*$/);
-          if (nm && englishText !== null) {
-            chineseText = nm[1];
-            i++;
-            if (!out.has(englishText)) out.set(englishText, chineseText);
-            englishText = null;
-            chineseText = null;
-            continue;
-          }
-          i++;
-          continue;
-        }
-
-        const dm = inner.match(
-          /^[\w_]+\s+"((?:[^"\\]|\\.)*)"\s*(?:with\s+\S+)?\s*$/,
-        );
-        if (dm) {
-          chineseText = dm[1];
-          i++;
-          break;
-        }
-
-        break;
-      }
-
-      if (englishText !== null && chineseText !== null) {
-        if (!out.has(englishText)) {
-          out.set(englishText, chineseText);
-        }
-      }
-    } else {
-      i++;
-    }
-  }
-
-  return out;
-}
-
 // ── Block / speak types ───────────────────────────────────────────────────────
 
 interface BlockInfo {
   rpyCol: number;
   type: "label" | "if" | "elif" | "else" | "menu" | "choice";
-  labelName?: string;
 }
 
 interface SpeakLine {
@@ -233,24 +109,20 @@ class Converter {
   private blockStack: BlockInfo[] = [];
   private pendingVoice: string | null = null;
   private speakBuf: SpeakBuffer | null = null;
-  private charMap: Map<string, string>;
-
   private menuPreamble = false;
   private menuOpen = false;
   private menuPreambleCol = -1;
 
   constructor(
     lines: string[],
-    private readonly maps: AssetMaps,
     private readonly filename: string,
-    private readonly stubExitMap: Record<string, string>,
+    private readonly translation_map?: Map<string, string>,
   ) {
     this.lines = lines;
-    this.charMap = maps.charMap;
   }
 
   private translate(text: string): string {
-    return this.maps.tl?.get(text) ?? text;
+    return this.translation_map?.get(text) ?? text;
   }
 
   // ── Output helpers ──────────────────────────────────────────────────────────
@@ -281,13 +153,6 @@ class Converter {
         if (top.type === "menu" && !this.menuOpen) {
           // nothing to close
         } else {
-          if (top.type === "label" && top.labelName) {
-            const exitVar = this.stubExitMap[top.labelName];
-            if (exitVar) {
-              this.flushSpeak();
-              this.emit(`${this.pad(1)}jump ${exitVar};`);
-            }
-          }
           this.emit(this.pad() + "}");
         }
         if (top.type === "menu") {
@@ -522,11 +387,7 @@ class Converter {
       this.flushSpeak();
       this.closeBlocksAt(indent);
       this.emit(`${this.pad()}label ${labelMatch[1]} {`);
-      this.blockStack.push({
-        rpyCol: indent,
-        type: "label",
-        labelName: labelMatch[1],
-      });
+      this.blockStack.push({ rpyCol: indent, type: "label" });
       return;
     }
 
@@ -1011,12 +872,6 @@ class Converter {
     while (this.blockStack.length > 0) {
       const top = this.blockStack.pop()!;
       if (!(top.type === "menu" && !this.menuOpen)) {
-        if (top.type === "label" && top.labelName) {
-          const exitVar = this.stubExitMap[top.labelName];
-          if (exitVar) {
-            this.emit(`${this.pad(1)}jump ${exitVar};`);
-          }
-        }
         this.emit(this.pad() + "}");
       }
       if (top.type === "menu") {
@@ -1032,43 +887,20 @@ class Converter {
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
-export interface ConvertRpyOptions {
-  /**
-   * Asset maps and character map to use during conversion.
-   * Defaults to empty maps if not provided.
-   */
-  maps?: AssetMaps;
-  /**
-   * Stub-exit injection map: label name → variable name.
-   * When a label in this map closes, `jump varName;` is injected.
-   */
-  stubExitMap?: Record<string, string>;
-}
-
 /**
  * Convert a Ren'Py `.rpy` source string to `.rrs` format.
  *
- * @param src      - Raw content of the `.rpy` file
- * @param filename - Logical filename used in the `// Source:` comment (e.g. "day1.rrs")
- * @param opts     - Optional asset maps and stub-exit config
- * @returns        - The converted `.rrs` source string
+ * @param src             - Raw content of the `.rpy` file
+ * @param filename        - Logical filename used in the `// Source:` comment (e.g. "day1.rrs")
+ * @param translation_map - Optional map of english text → translated text
+ * @returns               - The converted `.rrs` source string
  */
 export function convertRpy(
   src: string,
   filename: string,
-  opts: ConvertRpyOptions = {},
+  translation_map?: Map<string, string>,
 ): string {
-  const maps = opts.maps ?? emptyAssetMaps();
-  const stubExitMap = opts.stubExitMap ?? {};
   const lines = src.split("\n");
-  const converter = new Converter(lines, maps, filename, stubExitMap);
+  const converter = new Converter(lines, filename, translation_map);
   return converter.convert();
-}
-
-/**
- * Returns true if the given .rrs output string contains at least one label
- * declaration (i.e. is story content rather than a pure asset/config file).
- */
-export function hasLabels(rrs: string): boolean {
-  return /\blabel\s+\w/.test(rrs);
 }

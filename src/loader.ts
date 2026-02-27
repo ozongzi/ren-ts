@@ -1,6 +1,7 @@
 import type { Step, ScriptFile, Manifest, GalleryEntry } from "./types";
 import { parseScript } from "./rrs/index";
 import { isTauri, getActiveAssetsDir } from "./tauri_bridge";
+import { registerPosition } from "./assets";
 
 // ─── Label registry ───────────────────────────────────────────────────────────
 
@@ -76,6 +77,20 @@ export async function loadAll(): Promise<void> {
   // Load all files in parallel — no ordering dependency now that codegen no
   // longer needs a global charMap / imageMap from script.rrs.
   await Promise.all(manifest.files.map(loadFile));
+
+  // Register runtime positions from merged define vars:
+  // rrs codegen emits position.* entries into defineVars but no longer
+  // registers them. The loader is the appropriate place to perform this
+  // registration so layout helpers (atToLeftPercent) can use runtime values.
+  for (const [k, v] of Object.entries(defineVars)) {
+    if (!k.startsWith("position.")) continue;
+    const name = k.slice("position.".length);
+    // Accept numeric values or numeric-like strings.
+    const n = typeof v === "number" ? v : Number(v as any);
+    if (!Number.isNaN(n)) {
+      registerPosition(name, Number(n));
+    }
+  }
 
   const labelCount = labelIndex.size;
   const defineCount = Object.keys(defineVars).length;

@@ -40,7 +40,6 @@ import type {
   WithStmt,
 } from "./ast.ts";
 
-import { registerPosition } from "../assets";
 import { tokenRawToValue, TokenKind } from "./literal";
 
 // ── Define collector ──────────────────────────────────────────────────────────
@@ -99,12 +98,10 @@ export function collectDefines(defines: DefineDecl[]): Record<string, unknown> {
     // position.* still needs a numeric value for the CSS helper. If parsing
     // produced a number, use it; otherwise fall back to parseFloat of the raw
     // value string.
-    if (d.key.startsWith("position.")) {
-      const xpos = typeof parsed === "number" ? parsed : parseFloat(raw);
-      if (!Number.isNaN(Number(xpos))) {
-        registerPosition(d.key.slice("position.".length), Number(xpos));
-      }
-    }
+    // position.* registration removed from codegen.
+    // The engine should resolve position values from the merged vars
+    // (i.e. read vars["position.<name>"]) and handle any registration
+    // or layout setup at runtime.
   }
   return result;
 }

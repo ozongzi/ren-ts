@@ -20,7 +20,7 @@ import type {
 } from "./types";
 import { getLabel, getManifestStart, getDefineVars } from "./loader";
 import { evaluateCondition, applySetStep } from "./evaluate";
-import { resolveAsset } from "./assets";
+import { resolveAsset, registerPosition } from "./assets";
 import { VarStore } from "./vars";
 
 // ─── Maximum steps to execute per tick (safety limit) ────────────────────────
@@ -107,6 +107,7 @@ export function startNewGame(state: GameState): GameState {
     currentLabel: startLabel,
     stepIndex: 0,
   };
+
   return runUntilBlocked(fresh);
 }
 

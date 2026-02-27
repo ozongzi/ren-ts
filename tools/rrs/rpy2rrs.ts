@@ -17,9 +17,7 @@
 //   --silent              Suppress informational logging
 //   --tl <dir>            Path to tl/chinese directory for Chinese translations
 //                         (disabled by default; must be explicitly enabled)
-//   --no-tl               Kept for backward compatibility; now a no-op
 //   --skip <pattern>      Skip files matching this name (repeatable)
-//   --stub-exit <l=v>     Inject `jump v;` when closing label l (repeatable)
 //   --game <name>         Game display name written into manifest.json
 //   --help, -h            Show this help
 
@@ -31,14 +29,8 @@ import {
   opendir,
 } from "node:fs/promises";
 
-import {
-  convertRpy,
-  hasLabels,
-  parseTranslationBlocks,
-  emptyAssetMaps,
-  type AssetMaps,
-  type ConvertRpyOptions,
-} from "./rpy2rrs_core.ts";
+import { convertRpy } from "./rpy2rrs-core.ts";
+import { parseTranslationBlocks } from "./translation-extractor.ts";
 
 // ── Non-story files to skip (UI / system) ────────────────────────────────────
 
@@ -72,14 +64,10 @@ INPUT
 OPTIONS
   -o <path>             Output path or output directory
                         Use '-' as path to write single-file conversion to stdout
-  --manifest            Write manifest.json in the output directory listing all
-                        successfully converted story .rrs files
+  --manifest            Write manifest.json listing all converted .rrs files
   --tl <dir>            Path to tl/chinese directory for Chinese translations
                         (disabled by default; must be explicitly enabled)
-  --no-tl               Kept for backward compatibility; no-op
   --skip <name>         Additional filename to skip in directory mode (repeatable)
-  --stub-exit <l=v>     When label L closes, inject \`jump v;\`  (repeatable)
-                        Example: --stub-exit foreplay=label_afterforeplay
   --dry-run             Parse only, do not write files
   --silent              Suppress informational logging
   --game <name>         Game display name written into manifest.json
@@ -111,18 +99,15 @@ async function loadChineseTranslationsForFile(
 
 interface ConvertFileResult {
   ok: boolean;
-  hasLabels: boolean;
 }
 
 async function convertFile(
   inputPath: string,
   outputPath: string,
-  maps: AssetMaps,
   opts: {
     dryRun: boolean;
     tlDir?: string;
     silent?: boolean;
-    stubExitMap?: Record<string, string>;
   },
 ): Promise<ConvertFileResult> {
   const t0 = performance.now();
@@ -134,7 +119,7 @@ async function convertFile(
     console.error(
       `✗ ${inputPath}: Cannot read: ${e instanceof Error ? e.message : e}`,
     );
-    return { ok: false, hasLabels: false };
+    return { ok: false };
   }
 
   const sourceBaseName = inputPath
@@ -143,36 +128,30 @@ async function convertFile(
     .replace(/\.rpy$/, "");
   const filename = sourceBaseName + ".rrs";
 
-  let effectiveMaps: AssetMaps = { ...maps };
+  let translation_map: Map<string, string> | undefined;
   if (opts.tlDir) {
     const tl = await loadChineseTranslationsForFile(opts.tlDir, sourceBaseName);
-    effectiveMaps = { ...effectiveMaps, tl };
+    if (tl.size > 0) translation_map = tl;
   }
-
-  const convertOpts: ConvertRpyOptions = {
-    maps: effectiveMaps,
-    stubExitMap: opts.stubExitMap ?? {},
-  };
 
   let result: string;
   try {
-    result = convertRpy(src, filename, convertOpts);
+    result = convertRpy(src, filename, translation_map);
   } catch (e) {
     console.error(
       `✗ ${inputPath}: Conversion error: ${e instanceof Error ? e.message : e}`,
     );
     if (e instanceof Error && e.stack) console.error(e.stack);
-    return { ok: false, hasLabels: false };
+    return { ok: false };
   }
 
   const elapsed = (performance.now() - t0).toFixed(1);
-  const fileHasLabels = hasLabels(result);
 
   if (opts.dryRun) {
     if (!opts.silent) {
       console.log(`✓ [dry-run] ${inputPath}  →  ${outputPath}  (${elapsed}ms)`);
     }
-    return { ok: true, hasLabels: fileHasLabels };
+    return { ok: true };
   }
 
   // stdout mode: `-o -`
@@ -183,7 +162,7 @@ async function convertFile(
       console.error(
         `✗ ${inputPath}: Cannot write to stdout: ${e instanceof Error ? e.message : e}`,
       );
-      return { ok: false, hasLabels: false };
+      return { ok: false };
     }
     if (!opts.silent) {
       const lineCount = result.split("\n").length;
@@ -191,7 +170,7 @@ async function convertFile(
         `\x1b[32m✓\x1b[0m ${inputPath}  →  stdout  (${lineCount} lines, ${elapsed}ms)`,
       );
     }
-    return { ok: true, hasLabels: fileHasLabels };
+    return { ok: true };
   }
 
   // Ensure output directory exists
@@ -210,7 +189,7 @@ async function convertFile(
     console.error(
       `✗ ${inputPath}: Cannot write '${outputPath}': ${e instanceof Error ? e.message : e}`,
     );
-    return { ok: false, hasLabels: false };
+    return { ok: false };
   }
 
   const lineCount = result.split("\n").length;
@@ -219,7 +198,7 @@ async function convertFile(
       `\x1b[32m✓\x1b[0m ${inputPath}  →  ${outputPath}  (${lineCount} lines, ${elapsed}ms)`,
     );
   }
-  return { ok: true, hasLabels: fileHasLabels };
+  return { ok: true };
 }
 
 // ── CLI entry point ───────────────────────────────────────────────────────────
@@ -245,7 +224,6 @@ async function main(): Promise<void> {
   let writeManifest = false;
   let gameName: string | undefined;
   const extraSkip: string[] = [];
-  const stubExitMap: Record<string, string> = {};
   const positional: string[] = [];
 
   for (let i = 0; i < rawArgs.length; i++) {
@@ -254,8 +232,6 @@ async function main(): Promise<void> {
       outputArg = rawArgs[++i];
     } else if (arg === "--tl") {
       tlDir = rawArgs[++i];
-    } else if (arg === "--no-tl") {
-      // no-op; kept for backward-compat
     } else if (arg === "--dry-run") {
       dryRun = true;
     } else if (arg === "--silent") {
@@ -266,16 +242,6 @@ async function main(): Promise<void> {
       gameName = rawArgs[++i];
     } else if (arg === "--skip") {
       extraSkip.push(rawArgs[++i]);
-    } else if (arg === "--stub-exit") {
-      const pair = rawArgs[++i];
-      const eqIdx = pair.indexOf("=");
-      if (eqIdx === -1) {
-        console.error(
-          `--stub-exit requires format label=varName, got: ${pair}`,
-        );
-        process.exit(1);
-      }
-      stubExitMap[pair.slice(0, eqIdx)] = pair.slice(eqIdx + 1);
     } else if (arg.startsWith("-")) {
       console.error(`Unknown option '${arg}'`);
       process.exit(1);
@@ -350,7 +316,6 @@ async function main(): Promise<void> {
 
   // ── Convert files ──────────────────────────────────────────────────────────
 
-  const maps: AssetMaps = emptyAssetMaps();
   let succeeded = 0;
   let failed = 0;
   const manifestEntries: string[] = [];
@@ -370,16 +335,15 @@ async function main(): Promise<void> {
       outPath = inputPath.replace(/\.rpy$/, ".rrs");
     }
 
-    const result = await convertFile(inputPath, outPath, maps, {
+    const result = await convertFile(inputPath, outPath, {
       dryRun,
       tlDir,
       silent,
-      stubExitMap,
     });
 
     if (result.ok) {
       succeeded++;
-      if (result.hasLabels) manifestEntries.push(baseName);
+      manifestEntries.push(baseName);
     } else {
       failed++;
     }
