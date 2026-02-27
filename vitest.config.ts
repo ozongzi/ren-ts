@@ -45,7 +45,7 @@ export default defineConfig({
       provider: "istanbul",
 
       // Report formats: printed to console and lcov for CI
-      reporter: ["text", "lcov"],
+      reporter: ["text", "lcov", "html"],
 
       // Collect coverage across the src tree and the standalone rrs module
       all: true,

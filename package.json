@@ -12,7 +12,7 @@
     "tauri:build": "tauri build",
     "rpy2rrs": "bun run tools/rrs/rpy2rrs.ts",
     "parse-gallery": "bun run tools/rrs/parse-gallery.ts",
-    "validate-assets": "bun run tools/rrs/validate_assets.ts",
+    "validate-assets": "bun run tools/rrs/validate-assets.ts",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "test:ui": "vitest --ui"
