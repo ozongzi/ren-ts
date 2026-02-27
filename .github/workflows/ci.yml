@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PROJECT_DIR: renpy_reader
+  PROJECT_DIR: ren_ts
 
 jobs:
   lint:
