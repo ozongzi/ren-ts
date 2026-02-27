@@ -50,7 +50,6 @@ let _convertFileSrc: ((filePath: string, protocol?: string) => string) | null =
 export async function initTauriBridge(): Promise<void> {
   if (!isTauri) return;
   try {
-    // deno-ignore-next-line -- resolved by Vite at build time; not visible to Deno LSP
     // @ts-ignore
     const mod = await import("@tauri-apps/api/core");
     _convertFileSrc = mod.convertFileSrc;
@@ -170,7 +169,7 @@ export function buildNativeAudioPath(assetsDir: string, src: string): string {
 export async function pickDirectory(): Promise<string | null> {
   if (!isTauri) return null;
   try {
-    // @ts-ignore -- resolved by Vite; not visible to Deno LSP
+    // @ts-ignore -- resolved by Vite;
     const { open } = await import("@tauri-apps/plugin-dialog");
     const result = await open({
       directory: true,
@@ -196,7 +195,7 @@ export async function pickAndReadTextFile(opts?: {
 }): Promise<{ path: string; text: string } | null> {
   if (!isTauri) return null;
   try {
-    // @ts-ignore -- resolved by Vite; not visible to Deno LSP
+    // @ts-ignore -- resolved by Vite;
     const { open } = await import("@tauri-apps/plugin-dialog");
     const filePath = await open({
       multiple: false,
@@ -206,7 +205,7 @@ export async function pickAndReadTextFile(opts?: {
     });
     if (typeof filePath !== "string") return null;
 
-    // @ts-ignore -- resolved by Vite; not visible to Deno LSP
+    // @ts-ignore -- resolved by Vite;
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const text = await readTextFile(filePath);
     return { path: filePath, text };
@@ -230,7 +229,7 @@ export async function pickAndWriteTextFile(
 ): Promise<string | null> {
   if (!isTauri) return null;
   try {
-    // @ts-ignore -- resolved by Vite; not visible to Deno LSP
+    // @ts-ignore -- resolved by Vite;
     const { save } = await import("@tauri-apps/plugin-dialog");
     const filePath = await save({
       title: opts?.title,
@@ -239,7 +238,7 @@ export async function pickAndWriteTextFile(
     });
     if (typeof filePath !== "string") return null;
 
-    // @ts-ignore -- resolved by Vite; not visible to Deno LSP
+    // @ts-ignore -- resolved by Vite;
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     await writeTextFile(filePath, text);
     return filePath;
@@ -256,7 +255,7 @@ export async function writeTextFileTauri(
   filePath: string,
   text: string,
 ): Promise<void> {
-  // @ts-ignore -- resolved by Vite; not visible to Deno LSP
+  // @ts-ignore -- resolved by Vite;
   const { writeTextFile } = await import("@tauri-apps/plugin-fs");
   await writeTextFile(filePath, text);
 }

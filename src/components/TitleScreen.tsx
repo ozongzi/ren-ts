@@ -76,8 +76,7 @@ export const TitleScreen: React.FC = () => {
             className="error-message"
             style={{ marginTop: "0.5rem", fontSize: "0.8rem", opacity: 0.6 }}
           >
-            请确保已启动 Vite 开发服务器（<code>npm run dev</code> 或{" "}
-            <code>deno task dev</code>）， 且 data/ 目录中存在 manifest.json。
+            请确保服务启动， data/ 目录中存在 manifest.json。
           </p>
         </div>
       </div>
