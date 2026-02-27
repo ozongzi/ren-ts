@@ -40,30 +40,5 @@
     "typescript": "^5.6.3",
     "vite": "^5.4.10",
     "vitest": "^4.0.18"
-  },
-  "vitest": {
-    "include": [
-      "tests/**/*.spec.ts",
-      "tests/**/*.spec.tsx",
-      "tests/**/*.test.ts",
-      "tests/**/*.test.tsx"
-    ],
-    "environment": "jsdom",
-    "globals": true,
-    "setupFiles": [
-      "tests/setupTests.ts"
-    ],
-    "coverage": {
-      "provider": "c8",
-      "reporter": [
-        "text",
-        "lcov"
-      ],
-      "exclude": [
-        "tests/**",
-        "src-tauri/**",
-        "tools/**"
-      ]
-    }
   }
 }

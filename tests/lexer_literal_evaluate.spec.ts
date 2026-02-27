@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { tokenize, type Token } from "../src/rrs/lexer";
-import { tokenRawToValue, rawStringToValue } from "../src/rrs/literal";
+import { tokenize, type Token } from "../rrs/lexer";
+import { tokenRawToValue, rawStringToValue } from "../rrs/literal";
 import { parseValue, applySetStep, evaluateCondition } from "../src/evaluate";
 
 describe("Lexer: tokenization edge cases", () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { tokenize } from "../src/rrs/lexer";
-import { parse } from "../src/rrs/parser";
+import { tokenize } from "../rrs/lexer";
+import { parse } from "../rrs/parser";
 
 describe("rrs parser - focused branch tests", () => {
   it("parses top-level defines and skips complex/unparseable defines", () => {

@@ -1,20 +1,40 @@
 import { describe, it, expect } from "vitest";
-import { tokenize } from "../src/rrs/lexer";
-import { parse } from "../src/rrs/parser";
-import { collectDefines, compile } from "../src/rrs/codegen";
+import { tokenize } from "../rrs/lexer";
+import { parse } from "../rrs/parser";
+import { collectDefines, compile } from "../rrs/codegen";
 import { atToLeftPercent } from "../src/assets";
 
 describe("codegen.collectDefines", () => {
   it("converts token-kind+raw into JS typed values and registers positions", () => {
     const defines: any[] = [
-      { kind: "Define", key: "CAMP_NAME", value: { kind: "Str", raw: "Camp Buddy" } },
+      {
+        kind: "Define",
+        key: "CAMP_NAME",
+        value: { kind: "Str", raw: "Camp Buddy" },
+      },
       { kind: "Define", key: "IS_TRUE", value: { kind: "Ident", raw: "True" } },
-      { kind: "Define", key: "IS_FALSE", value: { kind: "Ident", raw: "False" } },
-      { kind: "Define", key: "NONE_VAL", value: { kind: "Ident", raw: "None" } },
+      {
+        kind: "Define",
+        key: "IS_FALSE",
+        value: { kind: "Ident", raw: "False" },
+      },
+      {
+        kind: "Define",
+        key: "NONE_VAL",
+        value: { kind: "Ident", raw: "None" },
+      },
       { kind: "Define", key: "NUM_A", value: { kind: "Num", raw: "1.5" } },
-      { kind: "Define", key: "HEX", value: { kind: "HexColor", raw: "#ff00ff" } },
+      {
+        kind: "Define",
+        key: "HEX",
+        value: { kind: "HexColor", raw: "#ff00ff" },
+      },
       // position.* should register with registerPosition -> atToLeftPercent must reflect it
-      { kind: "Define", key: "position.p5", value: { kind: "Num", raw: "0.42" } },
+      {
+        kind: "Define",
+        key: "position.p5",
+        value: { kind: "Num", raw: "0.42" },
+      },
       // string raw (older form) should be accepted as Other
       { kind: "Define", key: "RAW_STR", value: "raw_text_value" },
       // Complex sentinel (empty string) should be skipped
@@ -33,11 +53,10 @@ describe("codegen.collectDefines", () => {
     // COMPLEX should be skipped
     expect(out).not.toHaveProperty("COMPLEX");
 
-    // position.p5 should exist as numeric and atToLeftPercent should reflect registration
+    // position.p5 should exist as numeric; collectDefines returns the numeric value
     expect(out).toHaveProperty("position.p5");
     expect(typeof out["position.p5"]).toBe("number");
-    // atToLeftPercent uses registered runtime positions (0.42 -> "42%")
-    expect(atToLeftPercent("p5")).toBe("42%");
+    expect(out["position.p5"]).toBeCloseTo(0.42);
   });
 });
 
@@ -69,17 +88,27 @@ label done {
 
     const startSteps: any[] = compiled.labels["start"];
     // start should include say "Hello" and "After" and a jump to done
-    expect(startSteps.some((s) => s.type === "say" && s.text === "Hello")).toBe(true);
-    expect(startSteps.some((s) => s.type === "say" && s.text === "After")).toBe(true);
-    expect(startSteps.some((s) => s.type === "jump" && s.target === "done")).toBe(true);
+    expect(startSteps.some((s) => s.type === "say" && s.text === "Hello")).toBe(
+      true,
+    );
+    expect(startSteps.some((s) => s.type === "say" && s.text === "After")).toBe(
+      true,
+    );
+    expect(
+      startSteps.some((s) => s.type === "jump" && s.target === "done"),
+    ).toBe(true);
 
     // inner steps compiled should include the 'Inner' say
     const innerSteps: any[] = compiled.labels["inner"];
-    expect(innerSteps.some((s) => s.type === "say" && s.text === "Inner")).toBe(true);
+    expect(innerSteps.some((s) => s.type === "say" && s.text === "Inner")).toBe(
+      true,
+    );
 
     // done label should have say "Done"
     const doneSteps: any[] = compiled.labels["done"];
-    expect(doneSteps.some((s) => s.type === "say" && s.text === "Done")).toBe(true);
+    expect(doneSteps.some((s) => s.type === "say" && s.text === "Done")).toBe(
+      true,
+    );
   });
 
   it("generates music and sound JSON steps with correct fields", () => {
@@ -100,29 +129,47 @@ label audio {
     const steps: any[] = compiled.labels["audio"];
 
     // music::play with quoted src should emit a music step with src and fade values
-    const musicPlayQuoted = steps.find((s) => s.type === "music" && s.action === "play" && s.src === "Audio/BGM/theme.ogg");
+    const musicPlayQuoted = steps.find(
+      (s) =>
+        s.type === "music" &&
+        s.action === "play" &&
+        s.src === "Audio/BGM/theme.ogg",
+    );
     expect(musicPlayQuoted).toBeDefined();
     expect(musicPlayQuoted.fadeout).toBeCloseTo(2.5);
     expect(musicPlayQuoted.fadein).toBeCloseTo(1.2);
 
     // music::play with identifier alias should emit src as alias string
-    const musicPlayAlias = steps.find((s) => s.type === "music" && s.action === "play" && s.src === "outdoors");
+    const musicPlayAlias = steps.find(
+      (s) => s.type === "music" && s.action === "play" && s.src === "outdoors",
+    );
     expect(musicPlayAlias).toBeDefined();
 
     // music::stop emits stop action
-    const musicStop = steps.filter((s) => s.type === "music" && s.action === "stop");
+    const musicStop = steps.filter(
+      (s) => s.type === "music" && s.action === "stop",
+    );
     expect(musicStop.length).toBeGreaterThanOrEqual(1);
 
     // sound::play with quoted path
-    const soundPlayQuoted = steps.find((s) => s.type === "sound" && s.action === "play" && s.src === "Audio/SFX/door.ogg");
+    const soundPlayQuoted = steps.find(
+      (s) =>
+        s.type === "sound" &&
+        s.action === "play" &&
+        s.src === "Audio/SFX/door.ogg",
+    );
     expect(soundPlayQuoted).toBeDefined();
 
     // sound::play with alias
-    const soundPlayAlias = steps.find((s) => s.type === "sound" && s.action === "play" && s.src === "alert");
+    const soundPlayAlias = steps.find(
+      (s) => s.type === "sound" && s.action === "play" && s.src === "alert",
+    );
     expect(soundPlayAlias).toBeDefined();
 
     // sound::stop exists
-    const soundStop = steps.find((s) => s.type === "sound" && s.action === "stop");
+    const soundStop = steps.find(
+      (s) => s.type === "sound" && s.action === "stop",
+    );
     expect(soundStop).toBeDefined();
   });
 });

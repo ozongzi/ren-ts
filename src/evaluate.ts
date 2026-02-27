@@ -13,7 +13,7 @@
 // resulting sanitised numeric/boolean/string expression.
 
 import type { Step } from "./types";
-import { rawStringToValue } from "./rrs/literal";
+import { rawStringToValue } from "../rrs/literal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

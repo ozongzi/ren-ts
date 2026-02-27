@@ -1,5 +1,5 @@
 import type { Step, ScriptFile, Manifest, GalleryEntry } from "./types";
-import { parseScript } from "./rrs/index";
+import { parseScript } from "../rrs/index";
 import { isTauri, getActiveAssetsDir } from "./tauri_bridge";
 import { registerPosition } from "./assets";
 
@@ -140,9 +140,19 @@ export async function loadFile(filename: string): Promise<void> {
     return;
   }
 
+  // parseScript now lives in the extracted rrs module and returns a JsonFile.
+  // Convert that JsonFile into the engine's ScriptFile shape here so the
+  // rest of the loader / engine code can continue to work unchanged.
   let script: ScriptFile;
   try {
-    script = parseScript(src, filename);
+    const json = parseScript(src, filename);
+    // json has shape { source, defines, labels } and is structurally
+    // compatible with ScriptFile; make an explicit conversion to keep types clear.
+    script = {
+      source: json.source,
+      defines: json.defines as Record<string, unknown>,
+      labels: json.labels as Record<string, Step[]>,
+    };
   } catch (e) {
     console.warn(`[loader] Parse error in ${filename}:`, e);
     return;

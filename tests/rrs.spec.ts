@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseScript } from "../src/rrs";
-import type { JsonFile } from "../src/rrs/ast";
+import { parseScript } from "../rrs";
+import type { JsonFile } from "../rrs/ast";
 
 /**
  * Black-box tests for the .rrs frontend (parser + codegen).

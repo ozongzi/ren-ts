@@ -1,17 +1,33 @@
 import { describe, it, expect } from "vitest";
-import { collectDefines } from "../src/rrs/codegen";
+import { collectDefines } from "../rrs/codegen";
 import { parseValue, applySetStep } from "../src/evaluate";
 
 describe("Literal parsing semantics (shared behavior)", () => {
   it("collectDefines converts token-kind+raw into typed runtime values", () => {
     // Construct a set of defines mirroring parser output (token-kind + raw)
     const defines: any[] = [
-      { kind: "Define", key: "CAMP_NAME", value: { kind: "Str", raw: "Camp Buddy" } },
+      {
+        kind: "Define",
+        key: "CAMP_NAME",
+        value: { kind: "Str", raw: "Camp Buddy" },
+      },
       { kind: "Define", key: "IS_LIT", value: { kind: "Ident", raw: "True" } },
-      { kind: "Define", key: "IS_FALSE", value: { kind: "Ident", raw: "False" } },
-      { kind: "Define", key: "NONE_VAL", value: { kind: "Ident", raw: "None" } },
+      {
+        kind: "Define",
+        key: "IS_FALSE",
+        value: { kind: "Ident", raw: "False" },
+      },
+      {
+        kind: "Define",
+        key: "NONE_VAL",
+        value: { kind: "Ident", raw: "None" },
+      },
       { kind: "Define", key: "NUM_A", value: { kind: "Num", raw: "1.5" } },
-      { kind: "Define", key: "HEX", value: { kind: "HexColor", raw: "#ff00ff" } },
+      {
+        kind: "Define",
+        key: "HEX",
+        value: { kind: "HexColor", raw: "#ff00ff" },
+      },
       // Complex/unparseable define (parser sentinel) should be skipped
       { kind: "Define", key: "COMPLEX", value: "" },
     ];
