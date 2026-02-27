@@ -19,7 +19,7 @@
 
 import { readdir, readFile, access } from "fs/promises";
 import path from "path";
-import { parseScript } from "../../src/rrs/index";
+import { parseScript } from "../../rrs/index.ts";
 
 const args = process.argv.slice(2);
 
