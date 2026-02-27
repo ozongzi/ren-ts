@@ -11,10 +11,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    working-directory: ren_ts
-
 # ─────────────────────────────────────────────
 # Lint
 # ─────────────────────────────────────────────
@@ -56,7 +52,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: ren_ts/coverage/
+          path: coverage/
 
   # ─────────────────────────────────────────────
   # Coverage report
@@ -80,7 +76,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: ren_ts/coverage/
+          path: coverage/
 
   # ─────────────────────────────────────────────
   # Tauri builds
@@ -107,7 +103,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ren_ts/src-tauri
+          workspaces: src-tauri
 
       - name: Install dependencies
         run: bun install
@@ -119,8 +115,8 @@ jobs:
         with:
           name: linux-artifacts
           path: |
-            ren_ts/src-tauri/target/release/bundle/deb/*.deb
-            ren_ts/src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
 
   build-macos:
     name: Build — macOS
@@ -137,7 +133,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ren_ts/src-tauri
+          workspaces: src-tauri
 
       - name: Install dependencies
         run: bun install
@@ -149,8 +145,8 @@ jobs:
         with:
           name: macos-artifacts
           path: |
-            ren_ts/src-tauri/target/release/bundle/dmg/*.dmg
-            ren_ts/src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app
 
   build-windows:
     name: Build — Windows
@@ -165,7 +161,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ren_ts/src-tauri
+          workspaces: src-tauri
 
       - name: Install dependencies
         run: bun install
@@ -177,8 +173,8 @@ jobs:
         with:
           name: windows-artifacts
           path: |
-            ren_ts/src-tauri/target/release/bundle/msi/*.msi
-            ren_ts/src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
 
   build-android:
     name: Build — Android
@@ -200,7 +196,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ren_ts/src-tauri
+          workspaces: src-tauri
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -220,7 +216,7 @@ jobs:
         with:
           name: android-artifacts
           path: |
-            ren_ts/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
 
   # ─────────────────────────────────────────────
   # Release — 仅在 push tag 时运行
