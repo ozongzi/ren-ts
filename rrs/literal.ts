@@ -23,7 +23,7 @@
  *    both codegen and evaluate share the same logic.
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
+ 
 
 export type TokenKind = "Str" | "Num" | "Ident" | "HexColor" | "Other";
 

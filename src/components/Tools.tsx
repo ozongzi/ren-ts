@@ -614,17 +614,17 @@ export const Tools: React.FC = () => {
     }, 350);
   }
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   useEffect(
     () => makePathEffect(gameDir, setGameDirStatus, gameDirTimer),
     [gameDir],
   );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   useEffect(
     () => makePathEffect(outputDir, setOutputDirStatus, outputDirTimer),
     [outputDir],
   );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   useEffect(
     () =>
       makePathEffect(
@@ -635,7 +635,7 @@ export const Tools: React.FC = () => {
       ),
     [translationDir, enableTranslation],
   );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   useEffect(
     () =>
       makePathEffect(

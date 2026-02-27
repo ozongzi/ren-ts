@@ -25,6 +25,6 @@ export function parseScript(src: string, filename: string): JsonFile {
   const tokens = tokenize(src);
   const ast = parse(tokens);
   // compile() returns { source, defines, labels } — structurally identical to JsonFile
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   return compile(ast, filename) as JsonFile;
 }
