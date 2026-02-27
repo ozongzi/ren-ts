@@ -1,8 +1,17 @@
-import ts from "/root/.nvm/versions/node/v22.21.1/lib/node_modules/typescript/lib/typescript.js";
+import { execSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const tscBin = execSync("command -v tsc", { encoding: "utf8" }).trim();
+const tscReal = realpathSync(tscBin);
+const tsLibFromTsc = resolve(dirname(tscReal), "../lib/typescript.js");
+const ts = require(tsLibFromTsc);
 
 const tsProcessor = {
   preprocess(text, filename) {
-    const isTsx = filename.endsWith('.tsx');
+    const isTsx = filename.endsWith(".tsx");
     const out = ts.transpileModule(text, {
       compilerOptions: {
         target: ts.ScriptTarget.ES2020,
@@ -38,7 +47,10 @@ export default [
       sourceType: "module",
     },
     rules: {
-      "no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_|^React$" }],
+      "no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_|^React$" },
+      ],
       "no-unreachable": "error",
       "no-constant-condition": ["error", { checkLoops: false }],
     },
