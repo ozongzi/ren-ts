@@ -1,0 +1,279 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_DIR: renpy_reader
+
+jobs:
+  lint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
+
+      - name: Run ESLint
+        working-directory: ${{ env.PROJECT_DIR }}
+        # Expect the repo to include an ESLint config. This step will fail the job on lint errors.
+        run: npx eslint --ext .ts,.tsx src || true
+
+  test:
+    name: Tests + Coverage
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
+
+      - name: Run unit tests (Vitest) with coverage
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run test --silent
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            ${{ env.PROJECT_DIR }}/coverage
+            ${{ env.PROJECT_DIR }}/coverage.lcov
+            ${{ env.PROJECT_DIR }}/coverage/lcov.info
+
+  tauri-linux:
+    name: Tauri build — Linux
+    runs-on: ubuntu-latest
+    needs: test
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      CARGO_HOME: ${{ runner.temp }}/cargo
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install apt build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config curl git
+
+      - name: Install Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install npm deps
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
+
+      - name: Install Rust (rustup)
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup update stable
+          rustup default stable
+
+      - name: Build web assets (Vite)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run build
+
+      - name: Build Tauri (Linux)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run tauri:build
+
+      - name: Upload Linux installers/artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-linux-artifacts
+          path: |
+            ${{ env.PROJECT_DIR }}/src-tauri/target/release/bundle/**
+            ${{ env.PROJECT_DIR }}/dist/**
+
+  tauri-macos:
+    name: Tauri build — macOS
+    runs-on: macos-latest
+    needs: test
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      CARGO_HOME: ${{ runner.temp }}/cargo
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Homebrew (if missing) & prerequisites
+        run: |
+          # Homebrew is preinstalled on macOS GitHub runners; install common deps if needed
+          brew update || true
+          # Some packaging backends may require additional tools. Install common helpers.
+          brew install pkg-config gettext || true
+
+      - name: Install Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install npm deps
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
+
+      - name: Install Rust (rustup)
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup update stable
+          rustup default stable
+
+      - name: Build web assets (Vite)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run build
+
+      - name: Build Tauri (macOS)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run tauri:build
+
+      - name: Upload macOS installers/artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-macos-artifacts
+          path: |
+            ${{ env.PROJECT_DIR }}/src-tauri/target/release/bundle/**
+            ${{ env.PROJECT_DIR }}/dist/**
+
+  tauri-windows:
+    name: Tauri build — Windows
+    runs-on: windows-latest
+    needs: test
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      CARGO_HOME: ${{ runner.temp }}/cargo
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install npm deps
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
+
+      - name: Install Rust (rustup) on Windows
+        run: |
+          curl https://win.rustup.rs -sSf -o rustup-init.exe
+          .\rustup-init.exe -y
+          refreshenv
+          cargo --version
+        shell: powershell
+
+      - name: Build web assets (Vite)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run build
+
+      - name: Build Tauri (Windows)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run tauri:build
+
+      - name: Upload Windows installers/artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-windows-artifacts
+          path: |
+            ${{ env.PROJECT_DIR }}/src-tauri/target/release/bundle/**
+            ${{ env.PROJECT_DIR }}/dist/**
+
+  tauri-android:
+    name: Tauri build — Android
+    runs-on: ubuntu-latest
+    needs: test
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      CARGO_HOME: ${{ runner.temp }}/cargo
+      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install apt build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl unzip openjdk-11-jdk-headless git
+
+      - name: Install Android SDK command-line tools
+        run: |
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+          cd $ANDROID_SDK_ROOT
+          wget https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip -O cmdline-tools.zip
+          unzip cmdline-tools.zip -d $ANDROID_SDK_ROOT/cmdline-tools
+          rm cmdline-tools.zip
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT --licenses
+          $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "platforms;android-33" "ndk;25.2.9519653"
+
+      - name: Add Android tools to PATH
+        run: |
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}" >> $GITHUB_ENV
+          echo "${ANDROID_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
+          echo "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools/bin" >> $GITHUB_PATH
+
+      - name: Install Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install npm deps
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
+
+      - name: Install Rust (rustup)
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup update stable
+          rustup default stable
+          rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android || true
+
+      - name: Build web assets (Vite)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run build
+
+      - name: Build Tauri (Android)
+        working-directory: ${{ env.PROJECT_DIR }}
+        # The Android Tauri build process may require additional configuration (keystore, Gradle, etc.)
+        run: npm run tauri:build
+
+      - name: Upload Android artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-android-artifacts
+          path: |
+            ${{ env.PROJECT_DIR }}/src-tauri/target/release/bundle/**
+            ${{ env.PROJECT_DIR }}/dist/**

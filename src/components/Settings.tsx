@@ -91,9 +91,9 @@ export const Settings: React.FC = () => {
               lineHeight: 1.7,
             }}
           >
-            Ren'Ts — 基于 Deno + React 构建。
+            Ren'Ts — 基于 Tauri + React 构建。
             <br />
-            剧本数据由迁移工具从原版 Ren'Py 项目转换。
+            Github项目地址： https://github.com/ozongzi/ren-ts
             <br />
           </p>
         </div>
