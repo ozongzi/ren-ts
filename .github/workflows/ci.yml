@@ -2,267 +2,244 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  PROJECT_DIR: ren_ts
+defaults:
+  run:
+    working-directory: ren_ts
 
+# ─────────────────────────────────────────────
+# Lint
+# ─────────────────────────────────────────────
 jobs:
   lint:
     name: ESLint
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Use Node.js 18
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
+      - uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm install
+        run: bun install
 
       - name: Run ESLint
-        working-directory: ${{ env.PROJECT_DIR }}
-        # Expect the repo to include an ESLint config. This step will fail the job on lint errors.
-        run: npx eslint --ext .ts,.tsx src || true
+        run: bunx eslint --ext .ts,.tsx src
 
+  # ─────────────────────────────────────────────
+  # Unit tests
+  # ─────────────────────────────────────────────
   test:
-    name: Tests + Coverage
+    name: Unit Tests
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Use Node.js 18
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
+      - uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm install
+        run: bun install
 
-      - name: Run unit tests (Vitest) with coverage
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm run test --silent
+      - name: Run tests
+        run: bun run test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ren_ts/coverage/
+
+  # ─────────────────────────────────────────────
+  # Coverage report
+  # ─────────────────────────────────────────────
+  coverage:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Generate coverage report
+        run: bun run test --coverage
 
       - name: Upload coverage report
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: |
-            ${{ env.PROJECT_DIR }}/coverage
-            ${{ env.PROJECT_DIR }}/coverage.lcov
-            ${{ env.PROJECT_DIR }}/coverage/lcov.info
+          path: ren_ts/coverage/
 
-  tauri-linux:
-    name: Tauri build — Linux
+  # ─────────────────────────────────────────────
+  # Tauri builds
+  # ─────────────────────────────────────────────
+  build-linux:
+    name: Build — Linux
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install apt build dependencies
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config curl git
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
-      - name: Install Node.js 18
-        uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
         with:
-          node-version: 18
+          workspaces: ren_ts/src-tauri
 
-      - name: Install npm deps
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm install
+      - name: Install dependencies
+        run: bun install
 
-      - name: Install Rust (rustup)
-        run: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y
-          source $HOME/.cargo/env
-          rustup update stable
-          rustup default stable
+      - name: Build
+        run: bun run tauri:build
 
-      - name: Build web assets (Vite)
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm run build
-
-      - name: Build Tauri (Linux)
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm run tauri:build
-
-      - name: Upload Linux installers/artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: tauri-linux-artifacts
+          name: linux-artifacts
           path: |
-            ${{ env.PROJECT_DIR }}/src-tauri/target/release/bundle/**
-            ${{ env.PROJECT_DIR }}/dist/**
+            ren_ts/src-tauri/target/release/bundle/deb/*.deb
+            ren_ts/src-tauri/target/release/bundle/appimage/*.AppImage
 
-  tauri-macos:
-    name: Tauri build — macOS
+  build-macos:
+    name: Build — macOS
     runs-on: macos-latest
     needs: test
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Homebrew (if missing) & prerequisites
-        run: |
-          # Homebrew is preinstalled on macOS GitHub runners; install common deps if needed
-          brew update || true
-          # Some packaging backends may require additional tools. Install common helpers.
-          brew install pkg-config gettext || true
+      - uses: oven-sh/setup-bun@v2
 
-      - name: Install Node.js 18
-        uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 18
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Install npm deps
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm install
-
-      - name: Install Rust (rustup)
-        run: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y
-          source $HOME/.cargo/env
-          rustup update stable
-          rustup default stable
-
-      - name: Build web assets (Vite)
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm run build
-
-      - name: Build Tauri (macOS)
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm run tauri:build
-
-      - name: Upload macOS installers/artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          name: tauri-macos-artifacts
+          workspaces: ren_ts/src-tauri
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build
+        run: bun run tauri:build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
           path: |
-            ${{ env.PROJECT_DIR }}/src-tauri/target/release/bundle/**
-            ${{ env.PROJECT_DIR }}/dist/**
+            ren_ts/src-tauri/target/release/bundle/dmg/*.dmg
+            ren_ts/src-tauri/target/release/bundle/macos/*.app
 
-  tauri-windows:
-    name: Tauri build — Windows
+  build-windows:
+    name: Build — Windows
     runs-on: windows-latest
     needs: test
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Use Node.js 18
-        uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
         with:
-          node-version: 18
+          workspaces: ren_ts/src-tauri
 
-      - name: Install npm deps
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm install
+      - name: Install dependencies
+        run: bun install
 
-      - name: Install Rust (rustup) on Windows
-        run: |
-          curl https://win.rustup.rs -sSf -o rustup-init.exe
-          .\rustup-init.exe -y
-          refreshenv
-          cargo --version
-        shell: powershell
+      - name: Build
+        run: bun run tauri:build
 
-      - name: Build web assets (Vite)
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm run build
-
-      - name: Build Tauri (Windows)
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm run tauri:build
-
-      - name: Upload Windows installers/artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: tauri-windows-artifacts
+          name: windows-artifacts
           path: |
-            ${{ env.PROJECT_DIR }}/src-tauri/target/release/bundle/**
-            ${{ env.PROJECT_DIR }}/dist/**
+            ren_ts/src-tauri/target/release/bundle/msi/*.msi
+            ren_ts/src-tauri/target/release/bundle/nsis/*.exe
 
-  tauri-android:
-    name: Tauri build — Android
+  build-android:
+    name: Build — Android
     runs-on: ubuntu-latest
     needs: test
-    env:
-      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install apt build dependencies
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl unzip openjdk-11-jdk-headless git
+          sudo apt-get install -y openjdk-17-jdk-headless
 
-      - name: Install Android SDK command-line tools
-        run: |
-          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
-          cd $ANDROID_SDK_ROOT
-          wget https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip -O cmdline-tools.zip
-          unzip cmdline-tools.zip -d $ANDROID_SDK_ROOT/cmdline-tools
-          rm cmdline-tools.zip
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT --licenses
-          $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "platforms;android-33" "ndk;25.2.9519653"
-
-      - name: Add Android tools to PATH
-        run: |
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}" >> $GITHUB_ENV
-          echo "${ANDROID_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
-          echo "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools/bin" >> $GITHUB_PATH
-
-      - name: Install Node.js 18
-        uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 18
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
-      - name: Install npm deps
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm install
-
-      - name: Install Rust (rustup)
-        run: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y
-          source $HOME/.cargo/env
-          rustup update stable
-          rustup default stable
-          rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android || true
-
-      - name: Build web assets (Vite)
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: npm run build
-
-      - name: Build Tauri (Android)
-        working-directory: ${{ env.PROJECT_DIR }}
-        # The Android Tauri build process may require additional configuration (keystore, Gradle, etc.)
-        run: npm run tauri:build
-
-      - name: Upload Android artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          name: tauri-android-artifacts
+          workspaces: ren_ts/src-tauri
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager "ndk;25.2.9519653"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build
+        run: bun run tauri android build
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-artifacts
           path: |
-            ${{ env.PROJECT_DIR }}/src-tauri/target/release/bundle/**
-            ${{ env.PROJECT_DIR }}/dist/**
+            ren_ts/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+
+  # ─────────────────────────────────────────────
+  # Release — 仅在 push tag 时运行
+  # ─────────────────────────────────────────────
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-macos, build-windows, build-android]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
