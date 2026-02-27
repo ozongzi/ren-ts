@@ -50,7 +50,6 @@ let _convertFileSrc: ((filePath: string, protocol?: string) => string) | null =
 export async function initTauriBridge(): Promise<void> {
   if (!isTauri) return;
   try {
-    // @ts-expect-error -- dynamic import provided by the Tauri runtime at runtime
     const mod = await import("@tauri-apps/api/core");
     _convertFileSrc = mod.convertFileSrc;
   } catch (err) {
@@ -173,7 +172,6 @@ export function buildNativeAudioPath(assetsDir: string, src: string): string {
 export async function pickDirectory(): Promise<string | null> {
   if (!isTauri) return null;
   try {
-    // @ts-expect-error -- resolved by Vite;
     const { open } = await import("@tauri-apps/plugin-dialog");
     const result = await open({
       directory: true,
@@ -199,7 +197,6 @@ export async function pickAndReadTextFile(opts?: {
 }): Promise<{ path: string; text: string } | null> {
   if (!isTauri) return null;
   try {
-    // @ts-expect-error -- resolved by Vite;
     const { open } = await import("@tauri-apps/plugin-dialog");
     const filePath = await open({
       multiple: false,
@@ -209,7 +206,6 @@ export async function pickAndReadTextFile(opts?: {
     });
     if (typeof filePath !== "string") return null;
 
-    // @ts-expect-error -- resolved by Vite;
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const text = await readTextFile(filePath);
     return { path: filePath, text };
@@ -233,7 +229,6 @@ export async function pickAndWriteTextFile(
 ): Promise<string | null> {
   if (!isTauri) return null;
   try {
-    // @ts-expect-error -- resolved by Vite;
     const { save } = await import("@tauri-apps/plugin-dialog");
     const filePath = await save({
       title: opts?.title,
@@ -242,8 +237,6 @@ export async function pickAndWriteTextFile(
     });
     if (typeof filePath !== "string") return null;
 
-    // @ts-expect-error -- resolved by Vite;
-    // @ts-expect-error -- resolved by Vite; dynamic import of Tauri fs plugin
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     await writeTextFile(filePath, text);
     return filePath;
@@ -260,7 +253,6 @@ export async function writeTextFileTauri(
   filePath: string,
   text: string,
 ): Promise<void> {
-  // @ts-expect-error -- resolved by Vite;
   const { writeTextFile } = await import("@tauri-apps/plugin-fs");
   await writeTextFile(filePath, text);
 }
@@ -280,7 +272,6 @@ export interface DirEntry {
 export async function readDirectory(dirPath: string): Promise<DirEntry[]> {
   if (!isTauri) return [];
   try {
-    // @ts-expect-error -- dynamic import of Tauri fs plugin; resolved at runtime
     const { readDir } = await import("@tauri-apps/plugin-fs");
     const entries = await readDir(dirPath);
     return (
@@ -303,7 +294,6 @@ export async function readBinaryFileTauri(
 ): Promise<Uint8Array | null> {
   if (!isTauri) return null;
   try {
-    // @ts-expect-error -- dynamic import of Tauri fs plugin; resolved at runtime
     const { readFile } = await import("@tauri-apps/plugin-fs");
     return (await readFile(filePath)) as Uint8Array;
   } catch {
@@ -320,7 +310,6 @@ export async function writeBinaryFileTauri(
 ): Promise<boolean> {
   if (!isTauri) return false;
   try {
-    // @ts-expect-error -- dynamic import of Tauri fs plugin; resolved at runtime
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     await writeFile(filePath, data);
     return true;
@@ -335,7 +324,6 @@ export async function writeBinaryFileTauri(
 export async function makeDirTauri(dirPath: string): Promise<boolean> {
   if (!isTauri) return false;
   try {
-    // @ts-expect-error -- dynamic import of Tauri fs plugin; resolved at runtime
     const { mkdir } = await import("@tauri-apps/plugin-fs");
     await mkdir(dirPath, { recursive: true });
     return true;
@@ -350,7 +338,6 @@ export async function makeDirTauri(dirPath: string): Promise<boolean> {
 export async function pathExists(p: string): Promise<boolean> {
   if (!isTauri) return false;
   try {
-    // @ts-expect-error -- dynamic import of Tauri fs plugin; resolved at runtime
     const { exists } = await import("@tauri-apps/plugin-fs");
     return await exists(p);
   } catch {
@@ -366,7 +353,6 @@ export async function readTextFileTauri(
 ): Promise<string | null> {
   if (!isTauri) return null;
   try {
-    // @ts-expect-error -- dynamic import of Tauri fs plugin; resolved at runtime
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     return await readTextFile(filePath);
   } catch {

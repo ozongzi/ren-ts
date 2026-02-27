@@ -30,7 +30,7 @@ async function readDataFile(filename: string): Promise<string> {
         `[loader] Cannot read "${filename}": assets directory has not been selected yet.`,
       );
     }
-    // @ts-expect-error -- dynamic import provided by the Tauri runtime at runtime
+
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     return readTextFile(`${assetsDir}/data/${filename}`);
   }
