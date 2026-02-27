@@ -43,7 +43,7 @@ export const Background: React.FC<BackgroundProps> = ({ src, filter }) => {
       setPrevSrc(null);
       setEntering(false);
     }, 600);
-  }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [src]);
 
   return (
     <div

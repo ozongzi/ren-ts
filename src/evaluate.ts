@@ -344,7 +344,6 @@ function resolveOperand(token: string, vars: Vars): unknown {
   if (token.includes(".")) {
     const parts = token.split(".");
     if (parts[0] in vars) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let cur: any = (vars as any)[parts[0]];
       let found = true;
       for (let i = 1; i < parts.length; i++) {

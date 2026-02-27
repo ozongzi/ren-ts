@@ -142,7 +142,7 @@ export const DialogueBox: React.FC<DialogueBoxProps> = ({
         autoAdvanceRef.current = null;
       }
     };
-  }, [text]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [text]);
 
   // ── Auto-advance timer (for pause steps) ────────────────────────────────────
   useEffect(() => {
