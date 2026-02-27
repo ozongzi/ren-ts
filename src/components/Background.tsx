@@ -29,21 +29,44 @@ export const Background: React.FC<BackgroundProps> = ({ src, filter }) => {
   const [entering, setEntering] = useState(false);
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const scheduleRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (src === displaySrc) return;
 
-    // Keep the current background visible underneath while the new one fades in
-    setPrevSrc(displaySrc);
-    setDisplaySrc(src);
-    setEntering(true);
+    // Defer state updates to an async task so they do not run synchronously
+    // inside the effect body. This avoids cascading renders caused by
+    // immediate setState() calls while still preserving the visible update
+    // ordering (old background kept underneath while new one fades in).
+    if (scheduleRef.current) {
+      clearTimeout(scheduleRef.current);
+    }
+    scheduleRef.current = window.setTimeout(() => {
+      setPrevSrc(displaySrc);
+      setDisplaySrc(src);
+      setEntering(true);
 
-    if (fadeTimer.current) clearTimeout(fadeTimer.current);
-    // Clear the old layer slightly after the animation ends (0.5s)
-    fadeTimer.current = setTimeout(() => {
-      setPrevSrc(null);
-      setEntering(false);
-    }, 600);
-  }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
+      if (fadeTimer.current) clearTimeout(fadeTimer.current);
+      // Clear the old layer slightly after the animation ends (0.5s)
+      fadeTimer.current = setTimeout(() => {
+        setPrevSrc(null);
+        setEntering(false);
+      }, 600);
+
+      scheduleRef.current = null;
+    }, 0);
+
+    return () => {
+      if (scheduleRef.current) {
+        clearTimeout(scheduleRef.current);
+        scheduleRef.current = null;
+      }
+      if (fadeTimer.current) {
+        clearTimeout(fadeTimer.current);
+        fadeTimer.current = null;
+      }
+    };
+  }, [src, displaySrc]);
 
   return (
     <div

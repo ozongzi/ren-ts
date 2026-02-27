@@ -192,7 +192,9 @@ export async function openSaveFile(): Promise<LoadedSave> {
       handles = await _showOpen()({ ...FSA_FILE_TYPES, multiple: false });
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        throw new Error("已取消");
+        // Preserve the original caught error as the cause so diagnostic tools
+        // and stack traces are not dropped when wrapped.
+        throw new Error("已取消", { cause: err });
       }
       throw err;
     }

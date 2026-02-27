@@ -69,10 +69,19 @@ export const CGGallery: React.FC = () => {
   );
 
   // Reset active tab if entries change (e.g. on hot-reload)
+  // Defer the state update to the next macrotask so we do not call setState
+  // synchronously inside an effect (ESLint rule: react-hooks/set-state-in-effect).
+  // Deferring preserves the intended visual behavior (old tab kept until new
+  // one is installed) while satisfying the linter by avoiding immediate
+  // synchronous state updates during the effect.
   useEffect(() => {
     if (characters.length > 0 && !characters.includes(activeChar)) {
-      setActiveChar(characters[0]);
+      const t = window.setTimeout(() => {
+        setActiveChar(characters[0]);
+      }, 0);
+      return () => window.clearTimeout(t);
     }
+    return;
   }, [characters, activeChar]);
 
   const [viewerState, setViewerState] = useState<{

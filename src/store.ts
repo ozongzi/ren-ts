@@ -10,7 +10,7 @@
 //   store actions  →  tauri_bridge.ts (Tauri-specific I/O)
 
 import { create } from "zustand";
-import type { GameState, SaveData } from "./types";
+import type { GameState } from "./types";
 import {
   createInitialState,
   startNewGame,
@@ -18,7 +18,7 @@ import {
   resumeFromSave,
   type AdvanceAction,
 } from "./engine";
-import { loadAll } from "./loader";
+import { loadAll, getManifestGame } from "./loader";
 import { audioManager } from "./audio";
 import {
   applySave,
@@ -26,7 +26,6 @@ import {
   openSaveFile,
   pickNewSaveFile,
   autoSaveToHandle,
-  fsaAvailable,
 } from "./save";
 import {
   isTauri,
@@ -35,7 +34,6 @@ import {
   clearStoredAssetsDir,
   setActiveAssetsDir,
 } from "./tauri_bridge";
-import { getManifestGame } from "./loader";
 
 // ─── Store shape ──────────────────────────────────────────────────────────────
 

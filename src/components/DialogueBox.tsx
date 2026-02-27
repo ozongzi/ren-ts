@@ -6,7 +6,7 @@ import React, {
   useCallback,
 } from "react";
 import { RenpyText } from "../textParser";
-import { hasNoWait, stripRenpyTags } from "../textParser";
+import { hasNoWait, stripRenpyTags } from "../textParserUtils";
 import type { DialogueState } from "../types";
 
 // ─── Character colour map ─────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ export const DialogueBox: React.FC<DialogueBoxProps> = ({
   autoAdvanceDelay,
   onAdvance,
 }) => {
-  const { who, text, voice: _voice } = dialogue;
+  const { who, text } = dialogue;
 
   // ── Typewriter state ────────────────────────────────────────────────────────
   const [visibleLength, setVisibleLength] = useState(0);

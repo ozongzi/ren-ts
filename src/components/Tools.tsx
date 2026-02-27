@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useGameStore } from "../store";
+import type { GalleryEntry } from "../types";
 import {
   isTauri,
   pickDirectory,
@@ -614,17 +615,16 @@ export const Tools: React.FC = () => {
     }, 350);
   }
 
-   
   useEffect(
     () => makePathEffect(gameDir, setGameDirStatus, gameDirTimer),
     [gameDir],
   );
-   
+
   useEffect(
     () => makePathEffect(outputDir, setOutputDirStatus, outputDirTimer),
     [outputDir],
   );
-   
+
   useEffect(
     () =>
       makePathEffect(
@@ -635,7 +635,7 @@ export const Tools: React.FC = () => {
       ),
     [translationDir, enableTranslation],
   );
-   
+
   useEffect(
     () =>
       makePathEffect(
@@ -659,17 +659,6 @@ export const Tools: React.FC = () => {
   const handleBackdrop = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget && !running) closeTools();
   };
-
-  async function pickGameDirectory() {
-    if (!isTauri) return;
-    const dir = await pickDirectory();
-    if (dir) {
-      setGameDir(dir);
-      if (!outputDir) setOutputDir(dir);
-      if (!translationDir) setTranslationDir(`${dir}/tl/chinese`);
-      if (!galleryPath) setGalleryPath(`${dir}/gallery_images.rpy`);
-    }
-  }
 
   async function buildTranslationMap(
     dir: string,
@@ -745,7 +734,7 @@ export const Tools: React.FC = () => {
         log(`翻译映射大小：${translationMap.size}`);
       }
 
-      let galleryEntries: any[] | null = null;
+      let galleryEntries: GalleryEntry[] | null = null;
       if (enableGallery && galleryPath) {
         log(`解析图鉴文件：${galleryPath}`);
         galleryEntries = await buildGalleryEntries(galleryPath);
@@ -761,7 +750,7 @@ export const Tools: React.FC = () => {
 
       for (const fullPath of rpyFiles) {
         const relPreview = fullPath.startsWith(gameDir)
-          ? fullPath.slice(gameDir.length).replace(/^\/+/, "")
+          ? fullPath.slice(gameDir.length).replace(new RegExp("^/+", "g"), "")
           : fullPath.split("/").pop() || fullPath;
         setCurrentFile(relPreview);
         try {
@@ -772,11 +761,11 @@ export const Tools: React.FC = () => {
             continue;
           }
           const rel = fullPath.startsWith(gameDir)
-            ? fullPath.slice(gameDir.length).replace(/^\/+/, "")
+            ? fullPath.slice(gameDir.length).replace(new RegExp("^/+", "g"), "")
             : fullPath.split("/").pop() || fullPath;
           const rrsName = rel.replace(/\.rpy$/i, ".rrs");
           const outPath = `${outDir}/${rrsName}`;
-          const outParent = outPath.replace(/\/[^\/]+$/, "");
+          const outParent = outPath.replace(new RegExp("/[^/]+$"), "");
           if (!(await pathExists(outParent))) await makeDirTauri(outParent);
           const rrs = convertRpy(content, rrsName, translationMap);
           await writeTextFileTauri(outPath, rrs);
@@ -794,7 +783,7 @@ export const Tools: React.FC = () => {
       setCurrentFile(null);
       try {
         const manifestPath = `${outDir}/manifest.json`;
-        let manifest: any = {};
+        let manifest: Record<string, unknown> = {};
         const existingText = await readTextFileTauri(manifestPath);
         if (existingText) {
           try {
@@ -803,8 +792,9 @@ export const Tools: React.FC = () => {
             manifest = {};
           }
         }
-        manifest.files = writtenFiles;
-        if (enableGallery && galleryEntries) manifest.gallery = galleryEntries;
+        manifest["files"] = writtenFiles;
+        if (enableGallery && galleryEntries)
+          manifest["gallery"] = galleryEntries;
         await writeTextFileTauri(
           manifestPath,
           JSON.stringify(manifest, null, 2),

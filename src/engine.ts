@@ -20,7 +20,7 @@ import type {
 } from "./types";
 import { getLabel, getManifestStart, getDefineVars } from "./loader";
 import { evaluateCondition, applySetStep } from "./evaluate";
-import { resolveAsset, registerPosition } from "./assets";
+import { resolveAsset } from "./assets";
 import { VarStore } from "./vars";
 
 // ─── Maximum steps to execute per tick (safety limit) ────────────────────────
@@ -239,7 +239,7 @@ function runUntilBlocked(state: GameState): GameState {
     if (!steps || s.stepIndex >= steps.length) {
       // Try to return from a call
       if (s.callStack.length > 0) {
-        const [frame, ...rest] = [...s.callStack].reverse();
+        const [frame] = [...s.callStack].reverse();
         s = {
           ...s,
           currentLabel: frame.label,

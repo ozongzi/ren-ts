@@ -30,7 +30,7 @@ async function readDataFile(filename: string): Promise<string> {
         `[loader] Cannot read "${filename}": assets directory has not been selected yet.`,
       );
     }
-    // @ts-ignore
+    // @ts-expect-error -- dynamic import provided by the Tauri runtime at runtime
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     return readTextFile(`${assetsDir}/data/${filename}`);
   }
@@ -60,7 +60,9 @@ export async function loadAll(): Promise<void> {
   try {
     manifest = JSON.parse(manifestText);
   } catch (e) {
-    throw new Error(`[loader] Failed to parse manifest.json: ${e}`);
+    // Attach the original thrown value directly as the `cause`.
+    // Pass the caught value as-is so tooling can inspect the original symptom.
+    throw new Error("[loader] Failed to parse manifest.json", { cause: e });
   }
 
   manifestFiles = manifest.files;
@@ -86,7 +88,10 @@ export async function loadAll(): Promise<void> {
     if (!k.startsWith("position.")) continue;
     const name = k.slice("position.".length);
     // Accept numeric values or numeric-like strings.
-    const n = typeof v === "number" ? v : Number(v as any);
+    // Treat the incoming value as `unknown` and coerce to string for Number()
+    // conversion when it's not already a number. This avoids `any` casts.
+    const raw = v as unknown;
+    const n = typeof raw === "number" ? raw : Number(String(raw));
     if (!Number.isNaN(n)) {
       registerPosition(name, Number(n));
     }
