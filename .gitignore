@@ -6,6 +6,7 @@ dist/
 dist-ssr/
 coverage/
 src-tauri/target/
+src-tauri/gen/
 
 # ─── Dependencies ─────────────────────────────────────────────────────────────
 node_modules/

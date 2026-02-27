@@ -1,4 +1,4 @@
-// ─── Ren'Py Reader – Tauri v2 application library ────────────────────────────
+// ─── Ren'Ts – Tauri v2 application library ────────────────────────────
 //
 // All Tauri setup lives here so that both main.rs (binary entry point) and
 // any integration test harnesses can reuse it.
@@ -13,5 +13,5 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .run(tauri::generate_context!())
-        .expect("error while running Ren'Py Reader");
+        .expect("error while running Ren'Ts");
 }

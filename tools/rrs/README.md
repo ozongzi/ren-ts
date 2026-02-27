@@ -35,7 +35,7 @@ bun run tools/rrs/validate_assets.ts --data assets/data --assets assets
 
 ## .rrs 语法说明
 
-`.rrs`（Ren'Py Reader Script）是本项目专用的视觉小说脚本语言，语法简洁，面向故事流程。
+`.rrs`（Ren'Ts Script）是本项目专用的视觉小说脚本语言，语法简洁，面向故事流程。
 文件由顶层声明和若干 **label（场景入口）** 组成，引擎按 label 名加载并逐条执行。
 
 ### 顶层结构

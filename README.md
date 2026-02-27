@@ -1,14 +1,14 @@
-# Ren'Py Reader
+# Ren'Ts
 
 A generic Ren'Py visual-novel story reader built with **Bun + React**.  
-Script files are stored in the project's own `.rrs` (Ren'Py Reader Script) format, converted from original `.rpy` sources by the included toolchain.
+Script files are stored in the project's own `.rrs` (Ren'Ts Script in Rust style) format, converted from original `.rpy` sources by the included toolchain.
 
 ---
 
 ## Directory Structure
 
 ```
-renpy_reader/
+ren_ts/
 ├── README.md               ← This file
 ├── index.html              ← HTML entry point
 ├── package.json            ← Bun script configuration
@@ -65,7 +65,7 @@ renpy_reader/
 ## Quick Start
 
 ```bash
-# Run from the renpy_reader/ directory
+# Run from the ren_ts/ directory
 bun run dev             # Start dev server (http://localhost:3000)
 bun run build           # Production build → dist/
 bun run preview         # Preview build output

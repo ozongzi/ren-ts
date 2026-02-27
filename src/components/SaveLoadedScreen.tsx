@@ -22,7 +22,7 @@ export const SaveLoadedScreen: React.FC = () => {
   const openSettings = useGameStore((s) => s.openSettings);
   const goToTitle = useGameStore((s) => s.goToTitle);
   const gameTitle = useGameStore((s) => s.gameTitle);
-  const displayTitle = gameTitle ?? "Ren'Py Reader";
+  const displayTitle = gameTitle ?? "Ren'Ts";
 
   // Read the snapshot info for the "save info" badge
   const currentLabel = useGameStore((s) => s.currentLabel);

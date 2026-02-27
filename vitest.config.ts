@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 /**
- * Vitest configuration for the renpy_reader project.
+ * Vitest configuration for the ren_ts project.
  *
  * - Runs tests in a `jsdom` environment (suitable for React components / DOM APIs).
  * - Loads a global setup file at `tests/setupTests.ts`.

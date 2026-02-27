@@ -18,7 +18,7 @@ export const TitleScreen: React.FC = () => {
   const manifestLoaded = useGameStore((s) => s.manifestLoaded);
 
   const gameTitle = useGameStore((s) => s.gameTitle);
-  const displayTitle = gameTitle ?? "Ren'Py Reader";
+  const displayTitle = gameTitle ?? "Ren'Ts";
   const [importing, setImporting] = useState(false);
   const [newGamePending, setNewGamePending] = useState(false);
 

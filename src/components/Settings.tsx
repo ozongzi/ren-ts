@@ -91,7 +91,7 @@ export const Settings: React.FC = () => {
               lineHeight: 1.7,
             }}
           >
-            Ren'Py Reader — 基于 Deno + React 构建。
+            Ren'Ts — 基于 Deno + React 构建。
             <br />
             剧本数据由迁移工具从原版 Ren'Py 项目转换。
             <br />
