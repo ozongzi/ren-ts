@@ -177,14 +177,6 @@ export const SaveLoadedScreen: React.FC = () => {
             🖼️ CG 图鉴
           </button>
 
-          <button
-            className="title-btn"
-            onClick={openSettings}
-            aria-label="设置"
-          >
-            ⚙️ 设置
-          </button>
-
           {/* Divider */}
           <div
             style={{

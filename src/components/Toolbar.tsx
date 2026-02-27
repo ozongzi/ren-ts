@@ -75,18 +75,6 @@ export const Toolbar: React.FC = () => {
       </button>
 
       <button
-        className="toolbar-btn"
-        onClick={(e) => {
-          e.stopPropagation();
-          openSettings();
-        }}
-        title="设置"
-        aria-label="设置"
-      >
-        ⚙️ 设置
-      </button>
-
-      <button
         className="toolbar-btn danger"
         onClick={(e) => {
           e.stopPropagation();

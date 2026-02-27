@@ -47,6 +47,7 @@ interface StoreState extends GameState {
   showGallery: boolean;
   showSettings: boolean;
   saveError: string | null;
+  showTools: boolean;
 
   // Volume settings (mirrored from audioManager for reactivity)
   volumeMaster: number;
@@ -98,6 +99,8 @@ interface StoreActions {
   goToTitle: () => void;
   backToSaveMenu: () => void;
   clearSaveError: () => void;
+  openTools: () => void;
+  closeTools: () => void;
 
   // ── Volume ──
   setVolumeMaster: (v: number) => void;
@@ -174,6 +177,7 @@ export const useGameStore = create<Store>((set, get) => {
     saveFileName: null,
     assetsDir: null,
     gameTitle: undefined,
+    showTools: false,
 
     // ── Bootstrap ──────────────────────────────────────────────────────────
 
@@ -354,8 +358,12 @@ export const useGameStore = create<Store>((set, get) => {
         saveFileName: null,
         assetsDir,
         gameTitle,
+        showTools: false,
       } as Partial<Store>);
     },
+
+    openTools: () => set({ showTools: true }),
+    closeTools: () => set({ showTools: false }),
 
     backToSaveMenu: () => {
       // Pause audio but keep all game state intact so the player can resume.
@@ -471,6 +479,7 @@ export const selectSprites = (s: Store) => s.sprites;
 export const selectUI = (s: Store) => ({
   showGallery: s.showGallery,
   showSettings: s.showSettings,
+  showTools: s.showTools,
   saveError: s.saveError,
 });
 export const selectVolumes = (s: Store) => ({

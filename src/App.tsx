@@ -4,6 +4,7 @@ import { TitleScreen } from "./components/TitleScreen";
 import { GameScreen } from "./components/GameScreen";
 import { CGGallery } from "./components/CGGallery";
 import { Settings } from "./components/Settings";
+import { Tools } from "./components/Tools";
 import { SaveLoadedScreen } from "./components/SaveLoadedScreen";
 import { EndScreen } from "./components/EndScreen";
 import { AssetsDirScreen } from "./components/AssetsDirScreen";
@@ -24,6 +25,7 @@ export const App: React.FC = () => {
   const phase = useGameStore((s) => s.phase);
   const showGallery = useGameStore((s) => s.showGallery);
   const showSettings = useGameStore((s) => s.showSettings);
+  const showTools = useGameStore((s) => s.showTools);
   const saveError = useGameStore((s) => s.saveError);
   const clearSaveError = useGameStore((s) => s.clearSaveError);
   // Tauri: assetsDir is null until the user picks a folder on first launch.
@@ -68,9 +70,93 @@ export const App: React.FC = () => {
       {/* ── End screen overlay (shown on top of the frozen game background) ── */}
       {phase === "game_end" && <EndScreen />}
 
+      {/* ── 常驻左上角设置与工具按钮 ── */}
+      <div
+        style={{
+          position: "fixed",
+          top: "1.5rem",
+          left: "2rem",
+          zIndex: 1000,
+          display: "flex",
+          gap: "1rem",
+        }}
+      >
+        <button
+          style={{
+            background:
+              showSettings || showTools
+                ? "rgba(255,255,255,0.04)"
+                : "rgba(255,255,255,0.08)",
+            border: "1px solid rgba(255,255,255,0.15)",
+            borderRadius: "8px",
+            width: "48px",
+            height: "48px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "1.6rem",
+            color:
+              showSettings || showTools
+                ? "rgba(255,255,255,0.4)"
+                : "var(--color-text)",
+            cursor: showSettings || showTools ? "not-allowed" : "pointer",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
+            transition: "background 0.15s",
+            opacity: showSettings || showTools ? 0.6 : 1,
+          }}
+          aria-label="打开设置"
+          disabled={showSettings || showTools}
+          onClick={() => {
+            if (!(showSettings || showTools)) {
+              useGameStore.getState().openSettings();
+            }
+          }}
+        >
+          <span role="img" aria-label="设置">
+            ⚙️
+          </span>
+        </button>
+        <button
+          style={{
+            background:
+              showSettings || showTools
+                ? "rgba(255,255,255,0.04)"
+                : "rgba(255,255,255,0.08)",
+            border: "1px solid rgba(255,255,255,0.15)",
+            borderRadius: "8px",
+            width: "48px",
+            height: "48px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "1.6rem",
+            color:
+              showSettings || showTools
+                ? "rgba(255,255,255,0.4)"
+                : "var(--color-text)",
+            cursor: showSettings || showTools ? "not-allowed" : "pointer",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
+            transition: "background 0.15s",
+            opacity: showSettings || showTools ? 0.6 : 1,
+          }}
+          aria-label="打开工具"
+          disabled={showSettings || showTools}
+          onClick={() => {
+            if (!(showSettings || showTools)) {
+              useGameStore.getState().openTools();
+            }
+          }}
+        >
+          <span role="img" aria-label="工具">
+            🛠️
+          </span>
+        </button>
+      </div>
+
       {/* ── Global modals (can appear over title/lobby screens too) ── */}
       {showGallery && <CGGallery />}
       {showSettings && <Settings />}
+      {showTools && <Tools />}
 
       {/* ── Global error toast ── */}
       {saveError && (
