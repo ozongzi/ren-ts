@@ -206,7 +206,7 @@ export const SaveLoadedScreen: React.FC = () => {
             letterSpacing: "0.05em",
           }}
         >
-          Web Engine — Deno + React
+          Web Engine — Tauri + React
         </p>
       </div>
     </div>

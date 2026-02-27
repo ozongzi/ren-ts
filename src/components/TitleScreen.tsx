@@ -155,7 +155,7 @@ export const TitleScreen: React.FC = () => {
               marginTop: "0.5rem",
             }}
           >
-            Web Engine — Deno + React
+            Web Engine — Tauri + React
           </p>
         )}
       </div>
