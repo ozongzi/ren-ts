@@ -1,9 +1,24 @@
-export default [
-  {
-    ignores: ["dist", "src-tauri"],
+const noopProcessor = {
+  preprocess() {
+    return [""];
   },
+  postprocess() {
+    return [];
+  },
+  supportsAutofix: true,
+};
+
+export default [
+  { ignores: ["dist", "src-tauri"] },
   {
     files: ["src/**/*.{ts,tsx}"],
-    ignores: ["src/**/*"],
+    plugins: {
+      local: {
+        processors: {
+          noop: noopProcessor,
+        },
+      },
+    },
+    processor: "local/noop",
   },
 ];

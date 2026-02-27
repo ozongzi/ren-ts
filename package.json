@@ -16,7 +16,7 @@
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
-    "lint": "eslint --no-error-on-unmatched-pattern \"src/**/*.{js,jsx}\""
+    "lint": "eslint --ext .ts,.tsx src"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
