@@ -780,7 +780,7 @@ export const Tools: React.FC = () => {
       log("请先选择 Ren'Py game 目录。");
       return;
     }
-    const outDir = outputDir || gameDir;
+    const outDir = outputDir || `${gameDir}/data`;
     setRunning(true);
     setLogs([]);
     setTotalFiles(0);
@@ -956,10 +956,11 @@ export const Tools: React.FC = () => {
                   const dir = await pickDirectory();
                   if (dir) {
                     setGameDir(dir);
-                    if (!outputDir) setOutputDir(dir);
+                    if (!outputDir) setOutputDir(`${dir}/data`);
                     if (!translationDir) setTranslationDir(`${dir}/tl/chinese`);
                     if (!galleryPath)
                       setGalleryPath(`${dir}/gallery_images.rpy`);
+                    if (!assetScanDir) setAssetScanDir(`${dir}/images`);
                   }
                 }}
                 onClear={() => {
@@ -993,7 +994,7 @@ export const Tools: React.FC = () => {
               <PathRow
                 value={outputDir ?? ""}
                 onChange={(v) => setOutputDir(v || null)}
-                placeholder="默认同 game 目录"
+                placeholder="默认为 game 目录/data"
                 status={outputDirStatus}
                 onBrowse={async () => {
                   if (!isTauri) return;
@@ -1141,7 +1142,7 @@ export const Tools: React.FC = () => {
               <PathRow
                 value={assetScanDir ?? ""}
                 onChange={(v) => setAssetScanDir(v || null)}
-                placeholder="选择包含图片资源的目录（如 assets/images）"
+                placeholder="默认为 game 目录/images"
                 status={assetScanDirStatus}
                 onBrowse={async () => {
                   if (!isTauri) return;
@@ -1161,7 +1162,7 @@ export const Tools: React.FC = () => {
                   扫描所选目录中的所有图片文件（.jpg/.png/.webp/.webm 等），
                   为每个文件生成{" "}
                   <code style={{ opacity: 0.7 }}>image.文件名 = "路径";</code>{" "}
-                  定义，注入所有转换后的 .rrs 文件，并额外写出{" "}
+                  定义，并写出至{" "}
                   <code style={{ opacity: 0.7 }}>image_defines.rrs</code>。
                   {assetScanCount !== null && (
                     <span

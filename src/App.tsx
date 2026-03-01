@@ -43,11 +43,6 @@ export const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, [saveError, clearSaveError]);
 
-  // In Tauri mode, block all game UI until the user has chosen an assets folder.
-  if (isTauri && !assetsDir) {
-    return <AssetsDirScreen />;
-  }
-
   return (
     <div
       style={{
@@ -58,17 +53,24 @@ export const App: React.FC = () => {
         background: "#000",
       }}
     >
-      {/* ── Title screen ── */}
-      {phase === "title" && <TitleScreen />}
+      {/* In Tauri mode, block all game UI until the user has chosen an assets folder. */}
+      {isTauri && !assetsDir ? (
+        <AssetsDirScreen />
+      ) : (
+        <>
+          {/* ── Title screen ── */}
+          {phase === "title" && <TitleScreen />}
 
-      {/* ── Save-loaded lobby (after new game or file load, before play) ── */}
-      {phase === "save_loaded" && <SaveLoadedScreen />}
+          {/* ── Save-loaded lobby (after new game or file load, before play) ── */}
+          {phase === "save_loaded" && <SaveLoadedScreen />}
 
-      {/* ── Game screen ── */}
-      {(phase === "playing" || phase === "game_end") && <GameScreen />}
+          {/* ── Game screen ── */}
+          {(phase === "playing" || phase === "game_end") && <GameScreen />}
 
-      {/* ── End screen overlay (shown on top of the frozen game background) ── */}
-      {phase === "game_end" && <EndScreen />}
+          {/* ── End screen overlay (shown on top of the frozen game background) ── */}
+          {phase === "game_end" && <EndScreen />}
+        </>
+      )}
 
       {/* ── 常驻左上角设置与工具按钮 ── */}
       <div
