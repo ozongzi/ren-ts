@@ -160,16 +160,70 @@ export const useGameStore = create<Store>((set, get) => {
 
   // ─── Initial store state ───────────────────────────────────────────────────
 
+  // ── Load persisted volume settings ──────────────────────────────────────
+  function loadVolumes(): {
+    volumeMaster: number;
+    volumeBGM: number;
+    volumeSFX: number;
+    volumeVoice: number;
+  } {
+    try {
+      const raw = localStorage.getItem("cb_volumes");
+      if (raw) {
+        const p = JSON.parse(raw);
+        const clamp = (v: unknown, def: number) =>
+          typeof v === "number" && isFinite(v)
+            ? Math.max(0, Math.min(1, v))
+            : def;
+        return {
+          volumeMaster: clamp(p.master, 1),
+          volumeBGM: clamp(p.bgm, 0.7),
+          volumeSFX: clamp(p.sfx, 0.8),
+          volumeVoice: clamp(p.voice, 1.0),
+        };
+      }
+    } catch {
+      // localStorage unavailable or corrupt — fall back to defaults
+    }
+    return {
+      volumeMaster: 1,
+      volumeBGM: 0.7,
+      volumeSFX: 0.8,
+      volumeVoice: 1.0,
+    };
+  }
+
+  function saveVolumes(v: {
+    master: number;
+    bgm: number;
+    sfx: number;
+    voice: number;
+  }): void {
+    try {
+      localStorage.setItem("cb_volumes", JSON.stringify(v));
+    } catch {
+      // ignore write errors (private browsing, storage full, etc.)
+    }
+  }
+
+  const persistedVolumes = loadVolumes();
+
+  // Apply persisted volumes to audioManager immediately so the first track
+  // that plays uses the correct levels even before any setter is called.
+  audioManager.setVolumes({
+    master: persistedVolumes.volumeMaster,
+    bgm: persistedVolumes.volumeBGM,
+    sfx: persistedVolumes.volumeSFX,
+    voice: persistedVolumes.volumeVoice,
+  });
+
   const initial: Store = {
     ...createInitialState(),
     manifestLoaded: false,
     showGallery: false,
     showSettings: false,
     saveError: null,
-    volumeMaster: 1,
-    volumeBGM: 0.7,
-    volumeSFX: 0.8,
-    volumeVoice: 1.0,
+    ...persistedVolumes,
     saveFileHandle: null,
     saveFilePath: null,
     saveFileName: null,
@@ -424,21 +478,49 @@ export const useGameStore = create<Store>((set, get) => {
       const vol = Math.max(0, Math.min(1, v));
       audioManager.setVolumes({ master: vol });
       set({ volumeMaster: vol });
+      const s = get();
+      saveVolumes({
+        master: vol,
+        bgm: s.volumeBGM,
+        sfx: s.volumeSFX,
+        voice: s.volumeVoice,
+      });
     },
     setVolumeBGM: (v: number) => {
       const vol = Math.max(0, Math.min(1, v));
       audioManager.setVolumes({ bgm: vol });
       set({ volumeBGM: vol });
+      const s = get();
+      saveVolumes({
+        master: s.volumeMaster,
+        bgm: vol,
+        sfx: s.volumeSFX,
+        voice: s.volumeVoice,
+      });
     },
     setVolumeSFX: (v: number) => {
       const vol = Math.max(0, Math.min(1, v));
       audioManager.setVolumes({ sfx: vol });
       set({ volumeSFX: vol });
+      const s = get();
+      saveVolumes({
+        master: s.volumeMaster,
+        bgm: s.volumeBGM,
+        sfx: vol,
+        voice: s.volumeVoice,
+      });
     },
     setVolumeVoice: (v: number) => {
       const vol = Math.max(0, Math.min(1, v));
       audioManager.setVolumes({ voice: vol });
       set({ volumeVoice: vol });
+      const s = get();
+      saveVolumes({
+        master: s.volumeMaster,
+        bgm: s.volumeBGM,
+        sfx: s.volumeSFX,
+        voice: vol,
+      });
     },
   };
 
