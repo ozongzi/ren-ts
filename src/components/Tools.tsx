@@ -10,6 +10,8 @@ import {
   makeDirTauri,
   pathExists,
   walkDir,
+  streamingBuildZip,
+  type ZipFileEntry,
 } from "../tauri_bridge";
 import { convertRpy } from "../../rpy-rrs-bridge/rpy2rrs-core";
 import { parseTranslationBlocks } from "../../rpy-rrs-bridge/translation-extractor";
@@ -548,6 +550,10 @@ function PathRow({
 
 /* ─── Main Component ─────────────────────────────────────────────────────── */
 
+// ── ZIP builder (browser-side, mirrors rpy2rrs.ts logic) ─────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const Tools: React.FC = () => {
   const closeTools = useGameStore((s) => s.closeTools);
 
@@ -575,7 +581,20 @@ export const Tools: React.FC = () => {
     "ok" | "no" | "checking" | null
   >(null);
   const [assetScanCount, setAssetScanCount] = useState<number | null>(null);
+  const [enableZip, setEnableZip] = useState(false);
+  const [zipOutputPath, setZipOutputPath] = useState<string | null>(null);
+  const [zipOutputPathStatus, setZipOutputPathStatus] = useState<
+    "ok" | "no" | "checking" | null
+  >(null);
+  // Extra asset dirs to include in the zip (images/, Audio/, videos/, …)
+  const [zipAssetDirs, setZipAssetDirs] = useState<string[]>([]);
+  const [zipAssetDirStatuses, setZipAssetDirStatuses] = useState<
+    ("ok" | "no" | "checking" | null)[]
+  >([]);
+
   const [running, setRunning] = useState(false);
+  const [zipPhase, setZipPhase] = useState<"idle" | "packing" | "done">("idle");
+  const [zipProgress, setZipProgress] = useState(0); // 0–100
   const [logs, setLogs] = useState<string[]>([]);
   const [totalFiles, setTotalFiles] = useState<number>(0);
   const [processedFiles, setProcessedFiles] = useState<number>(0);
@@ -590,6 +609,7 @@ export const Tools: React.FC = () => {
   const translationDirTimer = useRef<number | null>(null);
   const galleryPathTimer = useRef<number | null>(null);
   const assetScanDirTimer = useRef<number | null>(null);
+  const zipOutputPathTimer = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
@@ -599,6 +619,7 @@ export const Tools: React.FC = () => {
         translationDirTimer,
         galleryPathTimer,
         assetScanDirTimer,
+        zipOutputPathTimer,
       ].forEach((r) => {
         if (r.current) window.clearTimeout(r.current);
       });
@@ -668,6 +689,17 @@ export const Tools: React.FC = () => {
         enableAssetScan,
       ),
     [assetScanDir, enableAssetScan],
+  );
+
+  useEffect(
+    () =>
+      makePathEffect(
+        zipOutputPath,
+        setZipOutputPathStatus,
+        zipOutputPathTimer,
+        enableZip,
+      ),
+    [zipOutputPath, enableZip],
   );
 
   // Auto-scroll log
@@ -902,6 +934,82 @@ export const Tools: React.FC = () => {
 
       setProcessedFiles((prev) => (totalFiles > prev ? totalFiles : prev));
       log("✓ 转换完成。");
+
+      // ── Optional ZIP packing ──────────────────────────────────────────────
+      if (enableZip) {
+        log("──────────────────────────────");
+        log("开始打包 ZIP…");
+        setZipPhase("packing");
+        setZipProgress(0);
+
+        const resolvedZipPath =
+          zipOutputPath ||
+          (() => {
+            const base = outDir.replace(/\/data\/?$/, "");
+            return `${base}/assets.zip`;
+          })();
+
+        try {
+          // 1. Collect data/ files
+          const dataFiles = await walkDir(outDir, () => true);
+          // 2. Collect extra asset dirs
+          type FileToPack = { absPath: string; zipPath: string };
+          const filesToPack: FileToPack[] = [];
+
+          for (const abs of dataFiles) {
+            const rel = abs.startsWith(outDir)
+              ? abs.slice(outDir.length).replace(/^\/+/, "")
+              : abs.split("/").pop()!;
+            filesToPack.push({ absPath: abs, zipPath: `data/${rel}` });
+          }
+
+          for (const assetDir of zipAssetDirs) {
+            const dirBase = assetDir.replace(/\/$/, "").split("/").pop()!;
+            const assetFiles = await walkDir(assetDir, () => true);
+            for (const abs of assetFiles) {
+              const rel = abs.startsWith(assetDir)
+                ? abs.slice(assetDir.length).replace(/^\/+/, "")
+                : abs.split("/").pop()!;
+              filesToPack.push({
+                absPath: abs,
+                zipPath: `${dirBase}/${rel}`,
+              });
+            }
+          }
+
+          log(`共 ${filesToPack.length} 个文件待打包…`);
+
+          // 3. Ensure output directory exists
+          const zipDir = resolvedZipPath.replace(/\/[^/]+$/, "");
+          if (!(await pathExists(zipDir))) await makeDirTauri(zipDir);
+
+          // 4. Stream-write the ZIP — one file at a time, no giant in-memory buffer
+          log("正在流式写入 ZIP…");
+          const zipFilesToPack: ZipFileEntry[] = filesToPack;
+          let skippedCount = 0;
+          const writtenCount = await streamingBuildZip(
+            resolvedZipPath,
+            zipFilesToPack,
+            ({ index, total: tot, zipPath: zp }) => {
+              setZipProgress(Math.round(((index + 1) / tot) * 95));
+              setCurrentFile(zp);
+            },
+            (absPath, zipPath) => {
+              log(`  跳过（读取失败）：${zipPath} (${absPath})`);
+              skippedCount++;
+            },
+          );
+          setZipProgress(100);
+
+          log(
+            `✓ 打包完成：${resolvedZipPath}  (${writtenCount} 文件写入${skippedCount > 0 ? `，${skippedCount} 个跳过` : ""})`,
+          );
+          setZipPhase("done");
+        } catch (err) {
+          log(`打包失败：${err instanceof Error ? err.message : String(err)}`);
+          setZipPhase("idle");
+        }
+      }
     } catch (err) {
       log(`运行出错：${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -1180,6 +1288,185 @@ export const Tools: React.FC = () => {
               )}
             </div>
 
+            {/* Section 6 — Pack ZIP */}
+            <div className="tools-section">
+              <div className="section-label">
+                <span className="section-num">06</span>
+                <span className="section-title">打包 ZIP</span>
+                <span
+                  style={{
+                    fontSize: "0.67rem",
+                    color: "rgba(255,255,255,0.2)",
+                    marginLeft: "0.25rem",
+                  }}
+                >
+                  可选
+                </span>
+              </div>
+
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  className="toggle-checkbox"
+                  checked={enableZip}
+                  onChange={(e) => {
+                    setEnableZip(e.target.checked);
+                    if (!e.target.checked) setZipPhase("idle");
+                  }}
+                  disabled={running}
+                />
+                <span className="toggle-label">
+                  转换完成后自动打包为 assets.zip
+                </span>
+              </label>
+
+              {enableZip && (
+                <>
+                  {/* ZIP output path */}
+                  <PathRow
+                    value={zipOutputPath ?? ""}
+                    onChange={(v) => setZipOutputPath(v || null)}
+                    placeholder="默认：输出目录/../assets.zip"
+                    status={zipOutputPathStatus}
+                    onBrowse={async () => {
+                      if (!isTauri) return;
+                      const dir = await pickDirectory();
+                      if (dir) setZipOutputPath(`${dir}/assets.zip`);
+                    }}
+                    onClear={() => {
+                      setZipOutputPath(null);
+                      setZipOutputPathStatus(null);
+                    }}
+                    disabled={running}
+                    browseLabel="目录"
+                  />
+
+                  {/* Extra asset dirs */}
+                  <div
+                    style={{
+                      marginTop: "0.75rem",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "0.4rem",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "0.72rem",
+                        color: "rgba(255,255,255,0.35)",
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        marginBottom: "0.1rem",
+                      }}
+                    >
+                      额外资源目录（images/、Audio/ 等）
+                    </div>
+
+                    {zipAssetDirs.map((dir, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.4rem",
+                        }}
+                      >
+                        <PathRow
+                          value={dir}
+                          onChange={(v) => {
+                            const next = [...zipAssetDirs];
+                            next[idx] = v;
+                            setZipAssetDirs(next);
+                          }}
+                          placeholder="资源目录路径"
+                          status={zipAssetDirStatuses[idx] ?? null}
+                          onBrowse={async () => {
+                            if (!isTauri) return;
+                            const picked = await pickDirectory();
+                            if (picked) {
+                              const next = [...zipAssetDirs];
+                              next[idx] = picked;
+                              setZipAssetDirs(next);
+                            }
+                          }}
+                          onClear={() => {
+                            setZipAssetDirs((prev) =>
+                              prev.filter((_, i) => i !== idx),
+                            );
+                            setZipAssetDirStatuses((prev) =>
+                              prev.filter((_, i) => i !== idx),
+                            );
+                          }}
+                          disabled={running}
+                          browseLabel="浏览"
+                        />
+                      </div>
+                    ))}
+
+                    <button
+                      className="btn btn-ghost"
+                      style={{ alignSelf: "flex-start", marginTop: "0.2rem" }}
+                      onClick={() => {
+                        setZipAssetDirs((prev) => [...prev, ""]);
+                        setZipAssetDirStatuses((prev) => [...prev, null]);
+                        // Auto-populate first two dirs from gameDir
+                        if (zipAssetDirs.length === 0 && gameDir) {
+                          setZipAssetDirs([
+                            `${gameDir}/images`,
+                            `${gameDir}/Audio`,
+                          ]);
+                          setZipAssetDirStatuses([null, null]);
+                        }
+                      }}
+                      disabled={running}
+                    >
+                      + 添加目录
+                    </button>
+                  </div>
+
+                  {/* ZIP pack progress bar */}
+                  {zipPhase !== "idle" && (
+                    <div style={{ marginTop: "0.75rem" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          fontSize: "0.72rem",
+                          color:
+                            zipPhase === "done"
+                              ? "#6ee7b7"
+                              : "rgba(255,255,255,0.45)",
+                          marginBottom: "0.3rem",
+                        }}
+                      >
+                        <span>
+                          {zipPhase === "done" ? "✓ 打包完成" : "▶ 打包中…"}
+                        </span>
+                        <span>{zipProgress}%</span>
+                      </div>
+                      <div className="progress-bar-bg">
+                        <div
+                          className="progress-bar-fill"
+                          style={{
+                            width: `${zipProgress}%`,
+                            background:
+                              zipPhase === "done" ? "#6ee7b7" : undefined,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="section-hint">
+                    打包内容：<code style={{ opacity: 0.7 }}>data/</code>
+                    （脚本）+ 所有额外资源目录。文本文件用 DEFLATE
+                    压缩，图片/音频用 STORE
+                    直存（不二次压缩）。打包完成后可直接用作 assets.zip。
+                  </div>
+                </>
+              )}
+            </div>
+
             {/* Progress + Actions */}
             <div className="progress-section">
               <div className="progress-header">
@@ -1203,11 +1490,21 @@ export const Tools: React.FC = () => {
               <div className="action-row">
                 <button
                   className={`btn btn-primary ${running ? "running" : ""}`}
-                  onClick={runConversion}
+                  onClick={() => {
+                    setZipPhase("idle");
+                    setZipProgress(0);
+                    runConversion();
+                  }}
                   disabled={running || !isTauri}
                   aria-label="开始转换"
                 >
-                  {running ? "◌  正在转换…" : "▶  开始转换"}
+                  {running
+                    ? zipPhase === "packing"
+                      ? "◌  打包中…"
+                      : "◌  转换中…"
+                    : enableZip
+                      ? "▶  转换并打包"
+                      : "▶  开始转换"}
                 </button>
                 <button
                   className="btn btn-ghost"

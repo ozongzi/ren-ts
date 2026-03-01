@@ -470,3 +470,104 @@ export async function walkDir(
   }
   return results;
 }
+
+// ─── ZIP builder (Rust-backed) ────────────────────────────────────────────────
+//
+// The actual ZIP work runs in a native Tauri command (`build_zip` in lib.rs).
+// No file bytes ever cross the IPC boundary — Rust reads source files and
+// writes the output ZIP entirely on the native side.
+//
+// JS only sends the file list (paths) once, receives a final entry count, and
+// listens to lightweight progress events emitted by Rust after each file.
+//
+// Memory profile: ~128 KiB read buffer inside Rust + ZipWriter state.
+// The JS heap stays near zero regardless of archive size.
+
+export interface ZipFileEntry {
+  /** Absolute path to read the source file from. */
+  absPath: string;
+  /** Path stored inside the ZIP archive. */
+  zipPath: string;
+}
+
+export interface StreamingZipProgress {
+  /** 0-based index of the file just processed. */
+  index: number;
+  total: number;
+  zipPath: string;
+  /** Cumulative uncompressed bytes read so far. */
+  bytesWritten: number;
+}
+
+/**
+ * Build a ZIP archive by invoking the native Rust `build_zip` command.
+ *
+ * The Rust side reads each source file in 128 KiB chunks and writes directly
+ * to the output file — no full-file or full-archive buffers anywhere.
+ *
+ * @param outputPath  Absolute path where the ZIP will be written.
+ * @param files       Ordered list of {absPath, zipPath} entries.
+ * @param onProgress  Optional callback invoked after each file is written.
+ * @param onSkip      Optional callback when a file could not be read.
+ * @returns           Total number of entries successfully written.
+ */
+export async function streamingBuildZip(
+  outputPath: string,
+  files: ZipFileEntry[],
+  onProgress?: (p: StreamingZipProgress) => void,
+  onSkip?: (absPath: string, zipPath: string) => void,
+): Promise<number> {
+  if (!isTauri) throw new Error("streamingBuildZip requires a Tauri context");
+
+  if (outputPath.startsWith("file://")) {
+    outputPath = decodeURIComponent(outputPath.slice(7));
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { listen } = await import("@tauri-apps/api/event");
+
+  // Normalise entry paths (strip file:// prefix if present).
+  const normalisedFiles = files.map((f) => ({
+    abs_path: f.absPath.startsWith("file://")
+      ? decodeURIComponent(f.absPath.slice(7))
+      : f.absPath,
+    zip_path: f.zipPath,
+  }));
+
+  // Subscribe to per-file progress events emitted by Rust.
+  type RustProgress = {
+    index: number;
+    total: number;
+    zip_path: string;
+    bytes_written: number;
+  };
+  type RustSkip = { abs_path: string; zip_path: string; reason: string };
+
+  const unlistenProgress = onProgress
+    ? await listen<RustProgress>("zip://progress", (ev) => {
+        onProgress({
+          index: ev.payload.index,
+          total: ev.payload.total,
+          zipPath: ev.payload.zip_path,
+          bytesWritten: ev.payload.bytes_written,
+        });
+      })
+    : null;
+
+  const unlistenSkip = onSkip
+    ? await listen<RustSkip>("zip://skip", (ev) => {
+        onSkip(ev.payload.abs_path, ev.payload.zip_path);
+      })
+    : null;
+
+  try {
+    const written = await invoke<number>("build_zip", {
+      outputPath,
+      entries: normalisedFiles,
+    });
+    return written;
+  } finally {
+    unlistenProgress?.();
+    unlistenSkip?.();
+  }
+}
