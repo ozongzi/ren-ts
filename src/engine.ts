@@ -131,11 +131,11 @@ export function advance(state: GameState, action: AdvanceAction): GameState {
         for (let i = 0; i < state.choices.length; i++) {
           const ch = state.choices[i];
           console.log(
-            `[engine-debug]   option[${i}] text=${JSON.stringify(ch.text)} steps=${(ch as any).steps?.length ?? 0}`,
+            `[engine-debug]   option[${i}] text=${JSON.stringify(ch.text)} steps=${(ch as { steps?: unknown[] }).steps?.length ?? 0}`,
           );
         }
       }
-    } catch (e) {
+    } catch {
       // ignore logging errors
     }
 
@@ -167,7 +167,7 @@ export function advance(state: GameState, action: AdvanceAction): GameState {
       console.log(
         `[engine-debug] inlining choice index=${action.index} inlineLabel=${currentInline} returningTo=${afterMenuStack.label}@${afterMenuStack.stepIndex}`,
       );
-    } catch (e) {}
+    } catch { /* ignore */ }
 
     return runUntilBlocked(next);
   }
@@ -296,7 +296,7 @@ function runUntilBlocked(state: GameState): GameState {
       console.info(
         `[engine-debug] running step index=${s.stepIndex} type=${step.type} currentLabel=${s.currentLabel}`,
       );
-    } catch (e) {}
+    } catch { /* ignore */ }
     const result = executeStep(s, step);
 
     if (result.blocked) {
@@ -312,7 +312,7 @@ function runUntilBlocked(state: GameState): GameState {
             `[engine-debug]   dialogue who=${JSON.stringify(s.dialogue.who)} text=${JSON.stringify(s.dialogue.text).slice(0, 120)} voice=${s.dialogue.voice ?? "null"}`,
           );
         }
-      } catch (e) {}
+      } catch { /* ignore */ }
       break;
     }
 
@@ -507,7 +507,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         console.info(
           `[engine-debug] say: who=${JSON.stringify(dialogue.who)} text=${JSON.stringify(dialogue.text).slice(0, 120)} voice=${dialogue.voice ?? "null"} currentLabel=${state.currentLabel} stepIndex=${state.stepIndex}`,
         );
-      } catch (e) {}
+      } catch { /* ignore */ }
       return block({
         ...state,
         stepIndex: state.stepIndex + 1,
@@ -605,13 +605,13 @@ function executeStep(state: GameState, step: Step): StepResult {
             `[engine-debug]   menu option[${i}] text=${JSON.stringify(choices[i].text)} steps=${choices[i].steps.length}`,
           );
         }
-      } catch (e) {}
+      } catch { /* ignore */ }
 
       if (choices.length === 0) {
         // No valid choices — skip the menu entirely
         try {
           console.log(`[engine-debug] menu: no valid choices, skipping`);
-        } catch (e) {}
+        } catch { /* ignore */ }
         return advance(state);
       }
 
@@ -626,7 +626,7 @@ function executeStep(state: GameState, step: Step): StepResult {
           console.log(
             `[engine-debug] menu: auto-select single choice -> inlining ${afterMenuStack.label}@${afterMenuStack.stepIndex}`,
           );
-        } catch (e) {}
+        } catch { /* ignore */ }
         return {
           state: {
             ...state,
@@ -643,7 +643,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         console.log(
           `[engine-debug] menu: presenting ${choices.length} choices to player`,
         );
-      } catch (e) {}
+      } catch { /* ignore */ }
 
       return block({
         ...state,
@@ -688,7 +688,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         console.log(
           `[engine-debug] jump requested to "${step.target}" from ${state.currentLabel}@${state.stepIndex}`,
         );
-      } catch (e) {}
+      } catch { /* ignore */ }
 
       let target = step.target;
       if (!_getSteps(target)) {
@@ -707,7 +707,7 @@ function executeStep(state: GameState, step: Step): StepResult {
             console.log(
               `[engine-debug] jump -> unknown label "${target}", advancing instead`,
             );
-          } catch (e) {}
+          } catch { /* ignore */ }
           return advance(state);
         }
       }
@@ -728,7 +728,7 @@ function executeStep(state: GameState, step: Step): StepResult {
           console.log(
             `[engine-debug] jump -> dead-end label "${target}", skipping jump`,
           );
-        } catch (e) {}
+        } catch { /* ignore */ }
         return advance(state);
       }
 
@@ -736,7 +736,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         console.log(
           `[engine-debug] performing jump -> "${target}" (clearing call stack)`,
         );
-      } catch (e) {}
+      } catch { /* ignore */ }
 
       return {
         state: {

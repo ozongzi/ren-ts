@@ -17,7 +17,7 @@ export type Program = {
  *   char.k              = "Keitaro";
  *   audio.bgm_main      = "Audio/BGM/main.ogg";
  *   position.p5_3       = 0.5;
- *   CAMP_NAME           = "Camp Buddy";
+ *   GAME_NAME           = "My VN Game";
  *
  * Image keys use the `image.` prefix followed by the Ren'Py image name with
  * spaces replaced by dots:

@@ -106,7 +106,7 @@ position.p4_1  = 0.20;
 #### 通用常量
 
 ```
-CAMP_NAME = "Camp Buddy";
+GAME_NAME = "My VN Game";
 ```
 
 ---

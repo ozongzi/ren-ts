@@ -9,8 +9,8 @@ describe("codegen.collectDefines", () => {
     const defines: any[] = [
       {
         kind: "Define",
-        key: "CAMP_NAME",
-        value: { kind: "Str", raw: "Camp Buddy" },
+        key: "GAME_NAME",
+        value: { kind: "Str", raw: "My VN Game" },
       },
       { kind: "Define", key: "IS_TRUE", value: { kind: "Ident", raw: "True" } },
       {
@@ -43,7 +43,7 @@ describe("codegen.collectDefines", () => {
 
     const out = collectDefines(defines as any);
 
-    expect(out).toHaveProperty("CAMP_NAME", "Camp Buddy");
+    expect(out).toHaveProperty("GAME_NAME", "My VN Game");
     expect(out).toHaveProperty("IS_TRUE", true);
     expect(out).toHaveProperty("IS_FALSE", false);
     expect(out).toHaveProperty("NONE_VAL", null);

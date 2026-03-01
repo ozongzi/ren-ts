@@ -19,7 +19,7 @@ import type { JsonFile } from "../rrs/ast";
 describe("rrs parser + codegen black-box", () => {
   it("parses top-level defines with correct typed values", () => {
     const src = `
-CAMP_NAME = "Camp Buddy";
+GAME_NAME = "My VN Game";
 IS_TRUE = True;
 IS_FALSE = False;
 NONE_VAL = None;
@@ -34,7 +34,7 @@ position.left = 0.25;
     expect(out).toHaveProperty("defines");
     const d = out.defines;
 
-    expect(d).toHaveProperty("CAMP_NAME", "Camp Buddy");
+    expect(d).toHaveProperty("GAME_NAME", "My VN Game");
     expect(d).toHaveProperty("IS_TRUE", true);
     expect(d).toHaveProperty("IS_FALSE", false);
     expect(d).toHaveProperty("NONE_VAL", null);

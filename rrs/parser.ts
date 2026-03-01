@@ -94,7 +94,7 @@ class Parser {
    * absent — the caller detected it via isTopLevelAssignment()):
    *   char.k      = "Keitaro";
    *   audio.bgm   = "Audio/BGM/Main.ogg";
-   *   CAMP_NAME   = "Camp Buddy";
+   *   GAME_NAME   = "My VN Game";
    *
    * The key may be a simple identifier or a dotted name (e.g. char.k).
    * The value is a quoted string, a numeric literal, or a bare identifier.

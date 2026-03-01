@@ -8,8 +8,8 @@ describe("Literal parsing semantics (shared behavior)", () => {
     const defines: any[] = [
       {
         kind: "Define",
-        key: "CAMP_NAME",
-        value: { kind: "Str", raw: "Camp Buddy" },
+        key: "GAME_NAME",
+        value: { kind: "Str", raw: "My VN Game" },
       },
       { kind: "Define", key: "IS_LIT", value: { kind: "Ident", raw: "True" } },
       {
@@ -34,7 +34,7 @@ describe("Literal parsing semantics (shared behavior)", () => {
 
     const out = collectDefines(defines);
 
-    expect(out).toHaveProperty("CAMP_NAME", "Camp Buddy");
+    expect(out).toHaveProperty("GAME_NAME", "My VN Game");
     expect(out).toHaveProperty("IS_LIT", true);
     expect(out).toHaveProperty("IS_FALSE", false);
     expect(out).toHaveProperty("NONE_VAL", null);
