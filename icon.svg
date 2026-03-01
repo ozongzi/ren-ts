@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <pattern id="grain" x="0" y="0" width="4" height="4" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.4" fill="white" opacity="0.04"/>
+      <circle cx="3" cy="3" r="0.4" fill="white" opacity="0.04"/>
+    </pattern>
+  </defs>
+
+  <rect width="400" height="400" rx="72" fill="#0f0f13"/>
+  <rect width="400" height="400" rx="72" fill="url(#grain)"/>
+
+  <!-- "Ren" top line -->
+  <text
+    x="28" y="168"
+    font-family="Monaco, 'Courier New', monospace"
+    font-size="100"
+    font-weight="bold"
+    fill="#f0ede8"
+  >Ren</text>
+
+  <!-- "'Ts" bottom line -->
+  <text
+    x="18" y="368"
+    font-family="Monaco, 'Courier New', monospace"
+    font-size="196"
+    font-weight="bold"
+    fill="#3178c6"
+  >'Ts</text>
+</svg>

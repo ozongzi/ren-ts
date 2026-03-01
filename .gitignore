@@ -1,0 +1,44 @@
+# ─── Game assets (large binary files — managed outside git) ──────────────────
+assets/
+
+# ─── Build output ─────────────────────────────────────────────────────────────
+dist/
+dist-ssr/
+coverage/
+src-tauri/target/
+src-tauri/gen/
+
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+
+# ─── Bun ──────────────────────────────────────────────────────────────────────
+# bun.lockb is a binary lockfile — track it in git for reproducible installs
+# (uncomment the line below only if you intentionally want to ignore it)
+# bun.lockb
+
+
+# ─── Environment & secrets ────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── Editor & OS ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Type-check cache ─────────────────────────────────────────────────────────
+*.tsbuildinfo
