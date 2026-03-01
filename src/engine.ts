@@ -9,6 +9,10 @@
 //   - Stops when it reaches a step that needs user input (say / narrate /
 //     menu) or a timed pause
 //   - Returns the new GameState
+//
+// Debug logging is gated on `DBG` which resolves to `import.meta.env.DEV`.
+// In production builds Vite replaces DEV with `false` and esbuild/terser
+// tree-shakes all `if (DBG) { ... }` blocks — zero runtime overhead.
 
 import type {
   GameState,
@@ -22,6 +26,9 @@ import { getLabel, getManifestStart, getDefineVars } from "./loader";
 import { evaluateCondition, applySetStep } from "./evaluate";
 import { resolveAsset } from "./assets";
 import { VarStore } from "./vars";
+
+// ─── Debug logging ────────────────────────────────────────────────────────────
+const DBG = import.meta.env.DEV;
 
 // ─── Maximum steps to execute per tick (safety limit) ────────────────────────
 const MAX_STEPS_PER_TICK = 2000;
@@ -122,21 +129,16 @@ export function advance(state: GameState, action: AdvanceAction): GameState {
     const option = state.choices[action.index];
     if (!option) return state;
 
-    // Debug: log choice selection and available options
-    try {
+    if (DBG) {
       console.log(
-        `[engine-debug] choose action: index=${action.index} available=${state.choices?.length} currentLabel=${state.currentLabel} stepIndex=${state.stepIndex}`,
+        `[engine-debug] choose action: index=${action.index} available=${state.choices.length} currentLabel=${state.currentLabel} stepIndex=${state.stepIndex}`,
       );
-      if (state.choices) {
-        for (let i = 0; i < state.choices.length; i++) {
-          const ch = state.choices[i];
-          console.log(
-            `[engine-debug]   option[${i}] text=${JSON.stringify(ch.text)} steps=${(ch as { steps?: unknown[] }).steps?.length ?? 0}`,
-          );
-        }
+      for (let i = 0; i < state.choices.length; i++) {
+        const ch = state.choices[i];
+        console.log(
+          `[engine-debug]   option[${i}] text=${JSON.stringify(ch.text)} steps=${(ch as { steps?: unknown[] }).steps?.length ?? 0}`,
+        );
       }
-    } catch {
-      // ignore logging errors
     }
 
     // Inline the option's steps into a mini-label and start executing them.
@@ -163,11 +165,10 @@ export function advance(state: GameState, action: AdvanceAction): GameState {
       stepIndex: 0,
     };
 
-    try {
+    if (DBG)
       console.log(
         `[engine-debug] inlining choice index=${action.index} inlineLabel=${currentInline} returningTo=${afterMenuStack.label}@${afterMenuStack.stepIndex}`,
       );
-    } catch { /* ignore */ }
 
     return runUntilBlocked(next);
   }
@@ -251,6 +252,32 @@ function _getSteps(label: string): Step[] | null {
   return getLabel(label);
 }
 
+/**
+ * Remove all inline labels that are no longer reachable from the given call
+ * stack.  Call this whenever the call stack is cleared (jump) or replaced
+ * wholesale (applySave / startNewGame) so that accumulated __inline_N entries
+ * from previous menus / if-branches do not leak indefinitely.
+ *
+ * The current execution label is also considered reachable so we never delete
+ * a label that is actively being executed.
+ */
+export function pruneInlineRegistry(
+  callStack: StackFrame[],
+  currentLabel: string,
+): void {
+  if (_inlineRegistry.size === 0) return;
+  const reachable = new Set<string>();
+  reachable.add(currentLabel);
+  for (const frame of callStack) {
+    reachable.add(frame.label);
+  }
+  for (const key of _inlineRegistry.keys()) {
+    if (!reachable.has(key)) {
+      _inlineRegistry.delete(key);
+    }
+  }
+}
+
 // ─── Main execution loop ──────────────────────────────────────────────────────
 
 function runUntilBlocked(state: GameState): GameState {
@@ -291,19 +318,16 @@ function runUntilBlocked(state: GameState): GameState {
     }
 
     const step = steps[s.stepIndex];
-    // Debug: log the step being executed
-    try {
+    if (DBG)
       console.info(
         `[engine-debug] running step index=${s.stepIndex} type=${step.type} currentLabel=${s.currentLabel}`,
       );
-    } catch { /* ignore */ }
     const result = executeStep(s, step);
 
     if (result.blocked) {
       // The step produced a blocking state; stop and wait for user action.
       s = result.state;
-      // Debug: log that execution blocked on this step and dialogue/choices state
-      try {
+      if (DBG) {
         console.info(
           `[engine-debug] blocked on step index=${s.stepIndex} type=${step.type} currentLabel=${s.currentLabel} waitingForInput=${s.waitingForInput} choices=${s.choices ? s.choices.length : 0}`,
         );
@@ -312,7 +336,7 @@ function runUntilBlocked(state: GameState): GameState {
             `[engine-debug]   dialogue who=${JSON.stringify(s.dialogue.who)} text=${JSON.stringify(s.dialogue.text).slice(0, 120)} voice=${s.dialogue.voice ?? "null"}`,
           );
         }
-      } catch { /* ignore */ }
+      }
       break;
     }
 
@@ -502,12 +526,10 @@ function executeStep(state: GameState, step: Step): StepResult {
         text: step.text,
         voice: resolvedVoice,
       };
-      // Debug: show brief info about the say being emitted
-      try {
+      if (DBG)
         console.info(
           `[engine-debug] say: who=${JSON.stringify(dialogue.who)} text=${JSON.stringify(dialogue.text).slice(0, 120)} voice=${dialogue.voice ?? "null"} currentLabel=${state.currentLabel} stepIndex=${state.stepIndex}`,
         );
-      } catch { /* ignore */ }
       return block({
         ...state,
         stepIndex: state.stepIndex + 1,
@@ -596,7 +618,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         return evaluateCondition(opt.condition, state.vars.toRecord());
       });
 
-      try {
+      if (DBG) {
         console.log(
           `[engine-debug] menu at ${state.currentLabel}@${state.stepIndex} rawOptions=${step.options.length} filtered=${choices.length}`,
         );
@@ -605,13 +627,11 @@ function executeStep(state: GameState, step: Step): StepResult {
             `[engine-debug]   menu option[${i}] text=${JSON.stringify(choices[i].text)} steps=${choices[i].steps.length}`,
           );
         }
-      } catch { /* ignore */ }
+      }
 
       if (choices.length === 0) {
         // No valid choices — skip the menu entirely
-        try {
-          console.log(`[engine-debug] menu: no valid choices, skipping`);
-        } catch { /* ignore */ }
+        if (DBG) console.log(`[engine-debug] menu: no valid choices, skipping`);
         return advance(state);
       }
 
@@ -622,11 +642,10 @@ function executeStep(state: GameState, step: Step): StepResult {
           label: state.currentLabel,
           stepIndex: state.stepIndex + 1,
         };
-        try {
+        if (DBG)
           console.log(
             `[engine-debug] menu: auto-select single choice -> inlining ${afterMenuStack.label}@${afterMenuStack.stepIndex}`,
           );
-        } catch { /* ignore */ }
         return {
           state: {
             ...state,
@@ -639,11 +658,10 @@ function executeStep(state: GameState, step: Step): StepResult {
         };
       }
 
-      try {
+      if (DBG)
         console.log(
           `[engine-debug] menu: presenting ${choices.length} choices to player`,
         );
-      } catch { /* ignore */ }
 
       return block({
         ...state,
@@ -684,11 +702,10 @@ function executeStep(state: GameState, step: Step): StepResult {
 
     // ── Jump ─────────────────────────────────────────────────────────────────
     case "jump": {
-      try {
+      if (DBG)
         console.log(
           `[engine-debug] jump requested to "${step.target}" from ${state.currentLabel}@${state.stepIndex}`,
         );
-      } catch { /* ignore */ }
 
       let target = step.target;
       if (!_getSteps(target)) {
@@ -703,11 +720,10 @@ function executeStep(state: GameState, step: Step): StepResult {
             varVal,
             ")",
           );
-          try {
+          if (DBG)
             console.log(
               `[engine-debug] jump -> unknown label "${target}", advancing instead`,
             );
-          } catch { /* ignore */ }
           return advance(state);
         }
       }
@@ -724,19 +740,21 @@ function executeStep(state: GameState, step: Step): StepResult {
           "[engine] jump to dead-end label (no blocking/CF steps), skipping:",
           target,
         );
-        try {
+        if (DBG)
           console.log(
             `[engine-debug] jump -> dead-end label "${target}", skipping jump`,
           );
-        } catch { /* ignore */ }
         return advance(state);
       }
 
-      try {
+      if (DBG)
         console.log(
           `[engine-debug] performing jump -> "${target}" (clearing call stack)`,
         );
-      } catch { /* ignore */ }
+
+      // Prune inline labels that were on the old call stack — they are no
+      // longer reachable after the stack is cleared by this jump.
+      pruneInlineRegistry(state.callStack, target);
 
       return {
         state: {

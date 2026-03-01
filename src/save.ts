@@ -26,6 +26,7 @@
 import type { GameState, SaveData, SpriteState } from "./types";
 import { VarStore } from "./vars";
 import { getDefineVars } from "./loader";
+import { pruneInlineRegistry } from "./engine";
 import {
   isTauri,
   isIOS,
@@ -577,6 +578,11 @@ export function applySave(base: GameState, save: SaveData): GameState {
   const { sprites, spriteCounter } = _normaliseSpriteZIndices(
     save.sprites ?? [],
   );
+
+  // Discard any inline labels that were registered during the previous play
+  // session — they are unreachable once the call stack is replaced by the
+  // one stored in the save file.
+  pruneInlineRegistry(save.callStack ?? [], save.currentLabel);
 
   return {
     ...base,
