@@ -209,8 +209,69 @@ jobs:
 
       - name: Init Android project
         run: bun run tauri android init
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
 
-      - name: Build
+      # ── Android signing ───────────────────────────────────────────────────
+      # Decode the base64-encoded keystore from secrets and write
+      # keystore.properties so Gradle can locate it at build time.
+      - name: Setup Android signing
+        run: |
+          cd src-tauri/gen/android
+          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}"       > keystore.properties
+          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}"   >> keystore.properties
+          echo "storeFile=$RUNNER_TEMP/keystore.jks"            >> keystore.properties
+          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
+
+      # Patch the generated build.gradle.kts to wire up the release signingConfig.
+      # tauri android init creates the file but does not add signing by default.
+      - name: Patch build.gradle.kts for release signing
+        run: |
+          GRADLE=src-tauri/gen/android/app/build.gradle.kts
+
+          # 1. Add the Properties import after the first existing import line.
+          sed -i 's/^import java\.io\.FileInputStream$/import java.io.FileInputStream\nimport java.util.Properties/' "$GRADLE"
+
+          # 2. Inject the signingConfigs block immediately before the buildTypes block.
+          python3 - "$GRADLE" <<'PYEOF'
+          import sys, re
+
+          path = sys.argv[1]
+          src  = open(path).read()
+
+          signing_block = '''
+          signingConfigs {
+              create("release") {
+                  val keystorePropertiesFile = rootProject.file("keystore.properties")
+                  val keystoreProperties = Properties()
+                  if (keystorePropertiesFile.exists()) {
+                      keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+                  }
+                  keyAlias     = keystoreProperties["keyAlias"]  as String
+                  keyPassword  = keystoreProperties["password"]  as String
+                  storeFile    = file(keystoreProperties["storeFile"] as String)
+                  storePassword = keystoreProperties["password"] as String
+              }
+          }
+          '''
+
+          # Insert signingConfigs block only if not already present.
+          if 'signingConfigs' not in src:
+              src = re.sub(r'(buildTypes\s*\{)', signing_block + r'\1', src, count=1)
+
+          # Wire the release signingConfig inside the existing release buildType.
+          if 'signingConfig = signingConfigs' not in src:
+              src = re.sub(
+                  r'(getByName\("release"\)\s*\{)',
+                  r'\1\n            signingConfig = signingConfigs.getByName("release")',
+                  src, count=1
+              )
+
+          open(path, 'w').write(src)
+          print("build.gradle.kts patched successfully.")
+          PYEOF
+
+      - name: Build signed APK
         run: bun run tauri android build
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
