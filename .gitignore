@@ -1,6 +1,10 @@
 # ─── Game assets (large binary files — managed outside git) ──────────────────
 assets/
 
+# ─── Temporary / debug files ──────────────────────────────────────────────────
+Terrorlog
+tmp_parse.ts
+
 # ─── Build output ─────────────────────────────────────────────────────────────
 dist/
 dist-ssr/
