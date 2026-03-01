@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { isCssColor, isVideoPath } from "../assets";
+import { isCssColor, isVideoPath, resolveAssetAsync } from "../assets";
 
 interface BackgroundProps {
   src: string | null;
@@ -24,15 +24,35 @@ interface BackgroundProps {
  * instead — it fires immediately on mount regardless of prior state.
  */
 export const Background: React.FC<BackgroundProps> = ({ src, filter }) => {
-  const [displaySrc, setDisplaySrc] = useState<string | null>(src);
+  // resolvedSrc is the Blob URL (or CSS colour) ready to pass to BgLayer.
+  // It starts as null and is populated asynchronously by resolveAssetAsync.
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
+  const [displaySrc, setDisplaySrc] = useState<string | null>(null);
   const [prevSrc, setPrevSrc] = useState<string | null>(null);
   const [entering, setEntering] = useState(false);
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const scheduleRef = useRef<number | null>(null);
 
+  // ── Step 1: resolve raw path → Blob URL / CSS colour ─────────────────────
   useEffect(() => {
-    if (src === displaySrc) return;
+    let cancelled = false;
+    if (!src) {
+      Promise.resolve().then(() => {
+        if (!cancelled) setResolvedSrc(null);
+      });
+    } else {
+      resolveAssetAsync(src).then((url) => {
+        if (!cancelled) setResolvedSrc(url || null);
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  // ── Step 2: cross-fade when resolvedSrc changes ───────────────────────────
+  useEffect(() => {
+    if (resolvedSrc === displaySrc) return;
 
     // Defer state updates to an async task so they do not run synchronously
     // inside the effect body. This avoids cascading renders caused by
@@ -43,7 +63,7 @@ export const Background: React.FC<BackgroundProps> = ({ src, filter }) => {
     }
     scheduleRef.current = window.setTimeout(() => {
       setPrevSrc(displaySrc);
-      setDisplaySrc(src);
+      setDisplaySrc(resolvedSrc);
       setEntering(true);
 
       if (fadeTimer.current) clearTimeout(fadeTimer.current);
@@ -66,7 +86,7 @@ export const Background: React.FC<BackgroundProps> = ({ src, filter }) => {
         fadeTimer.current = null;
       }
     };
-  }, [src, displaySrc]);
+  }, [resolvedSrc, displaySrc]);
 
   return (
     <div

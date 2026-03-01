@@ -1,6 +1,12 @@
-import React, { useState, useLayoutEffect, useCallback, useMemo } from "react";
+import React, {
+  useState,
+  useLayoutEffect,
+  useEffect,
+  useCallback,
+  useMemo,
+} from "react";
 import type { SpriteState } from "../types";
-import { isVideoPath, atToLeftPercent } from "../assets";
+import { isVideoPath, atToLeftPercent, resolveAssetAsync } from "../assets";
 
 /**
  * Returns true when a sprite key represents a face / expression layer.
@@ -131,6 +137,10 @@ const SpriteElement: React.FC<SpriteElementProps> = ({
 }) => {
   const { zIndex, src, at } = sprite;
 
+  // resolvedSrc is the Blob URL (or video path) returned by the filesystem.
+  // It is populated asynchronously; until then it is null.
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
+
   // The src that is actually rendered. Starts null (nothing shown) and only
   // advances to a new src value after that image has finished loading.
   // This means:
@@ -138,19 +148,33 @@ const SpriteElement: React.FC<SpriteElementProps> = ({
   //   • src change (expression swap): keeps old src visible while preloading new
   const [displaySrc, setDisplaySrc] = useState<string | null>(null);
 
+  // ── Step 1: resolve raw path → Blob URL via ZipFS / WebFetchFS ─────────────
+  useEffect(() => {
+    if (!src) return;
+    let cancelled = false;
+    resolveAssetAsync(src).then((url) => {
+      if (!cancelled) setResolvedSrc(url || null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  // ── Step 2: preload image once Blob URL is available ────────────────────────
   // Ensure we do not call setState synchronously inside the effect body.
   // For video paths we still want to avoid image preloading, but defer the
   // state update to a microtask so the linter rule is satisfied while the
   // visible behavior (old src stays until new is set) is preserved.
   useLayoutEffect(() => {
+    if (!resolvedSrc) return;
     let cancelled = false;
 
-    if (isVideoPath(src)) {
+    if (isVideoPath(resolvedSrc)) {
       // Videos do not require Image preloading. Schedule the state update on a
       // microtask so it's not synchronous within the effect body.
       Promise.resolve().then(() => {
         if (cancelled) return;
-        setDisplaySrc(src);
+        setDisplaySrc(resolvedSrc);
         onLoaded(zIndex);
       });
       return () => {
@@ -162,19 +186,19 @@ const SpriteElement: React.FC<SpriteElementProps> = ({
 
     img.onload = () => {
       if (cancelled) return;
-      setDisplaySrc(src);
+      setDisplaySrc(resolvedSrc);
       onLoaded(zIndex);
     };
 
     img.onerror = () => {
       if (cancelled) return;
       // Still mark as loaded so the rest of the group isn't blocked forever.
-      setDisplaySrc(src);
+      setDisplaySrc(resolvedSrc);
       onLoaded(zIndex);
     };
 
     // Assign src after handlers are installed
-    img.src = src;
+    img.src = resolvedSrc;
 
     return () => {
       // Prevent handlers from running after cleanup
@@ -190,7 +214,7 @@ const SpriteElement: React.FC<SpriteElementProps> = ({
         // ignore
       }
     };
-  }, [src, zIndex, onLoaded]);
+  }, [resolvedSrc, zIndex, onLoaded]);
 
   // Nothing to render until we have at least one loaded src
   if (displaySrc === null) return null;

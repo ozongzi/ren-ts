@@ -1,11 +1,6 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { useGameStore } from "../store";
-import {
-  isTauri,
-  pickDirectory,
-  isIOS,
-  getAppDocumentsDir,
-} from "../tauri_bridge";
+import { isTauri } from "../tauri_bridge";
 
 /**
  * Settings modal panel.
@@ -81,8 +76,8 @@ export const Settings: React.FC = () => {
 
         <div className="divider" />
 
-        {/* ── Tauri: Assets directory ── */}
-        {isTauri && <AssetsDirRow />}
+        {/* ── Zip file ── */}
+        {isTauri && <ZipRow />}
 
         {isTauri && <div className="divider" />}
 
@@ -153,48 +148,52 @@ export const Settings: React.FC = () => {
   );
 };
 
-// ─── Assets directory row (Tauri only) ───────────────────────────────────────
+// ─── Zip row (Tauri only) ─────────────────────────────────────────────────────
 
-const AssetsDirRow: React.FC = () => {
-  const assetsDir = useGameStore((s) => s.assetsDir);
-  const setAssetsDir = useGameStore((s) => s.setAssetsDir);
-  const [picking, setPicking] = useState(false);
+const ZipRow: React.FC = () => {
+  const zipFileName = useGameStore((s) => s.zipFileName);
+  const mountZip = useGameStore((s) => s.mountZip);
+  const unmountZip = useGameStore((s) => s.unmountZip);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleIOSDocuments = async () => {
-    if (picking) return;
+  const handleFile = async (file: File | undefined | null) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".zip")) {
+      setError("请选择 .zip 格式的文件");
+      return;
+    }
     setError(null);
-    setPicking(true);
+    setLoading(true);
     try {
-      const dir = await getAppDocumentsDir();
-      if (!dir) throw new Error("无法获取应用文稿目录");
-      setAssetsDir(dir);
+      await mountZip(file);
     } catch (err) {
       setError(err instanceof Error ? err.message : "未知错误");
     } finally {
-      setPicking(false);
+      setLoading(false);
     }
   };
 
-  const handleReselect = async () => {
-    if (picking) return;
-    setError(null);
-    setPicking(true);
-    try {
-      const dir = await pickDirectory();
-      if (dir) setAssetsDir(dir);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "未知错误");
-    } finally {
-      setPicking(false);
-    }
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleFile(e.target.files?.[0]);
+    e.target.value = "";
   };
 
   return (
     <div className="settings-group">
-      <div className="settings-label">Assets 文件夹</div>
+      <div className="settings-label">游戏包 (.zip)</div>
 
-      {/* Current path display */}
+      {/* Hidden file input */}
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".zip"
+        style={{ display: "none" }}
+        onChange={handleInputChange}
+      />
+
+      {/* Current zip display */}
       <p
         style={{
           fontSize: "0.78rem",
@@ -209,7 +208,7 @@ const AssetsDirRow: React.FC = () => {
           lineHeight: 1.5,
         }}
       >
-        {assetsDir ?? (
+        {zipFileName ?? (
           <span
             style={{ color: "rgba(255,160,80,0.8)", fontFamily: "inherit" }}
           >
@@ -218,31 +217,49 @@ const AssetsDirRow: React.FC = () => {
         )}
       </p>
 
-      <button
-        onClick={isIOS ? handleIOSDocuments : handleReselect}
-        disabled={picking}
-        style={{
-          alignSelf: "flex-start",
-          padding: "0.4rem 1rem",
-          fontSize: "0.85rem",
-          fontWeight: 600,
-          background: picking
-            ? "rgba(255,255,255,0.05)"
-            : "rgba(255,255,255,0.08)",
-          color: picking ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.8)",
-          border: "1px solid rgba(255,255,255,0.14)",
-          borderRadius: "6px",
-          cursor: picking ? "default" : "pointer",
-          transition: "background 0.15s",
-        }}
-        aria-label={isIOS ? "从应用文稿目录加载" : "重新选择 Assets 文件夹"}
-      >
-        {picking
-          ? "选择中…"
-          : isIOS
-            ? "📂 从“我的 iPhone”加载"
-            : "📂 重新选择文件夹"}
-      </button>
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+        <button
+          onClick={() => inputRef.current?.click()}
+          disabled={loading}
+          style={{
+            padding: "0.4rem 1rem",
+            fontSize: "0.85rem",
+            fontWeight: 600,
+            background: loading
+              ? "rgba(255,255,255,0.05)"
+              : "rgba(255,255,255,0.08)",
+            color: loading ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.8)",
+            border: "1px solid rgba(255,255,255,0.14)",
+            borderRadius: "6px",
+            cursor: loading ? "default" : "pointer",
+            transition: "background 0.15s",
+          }}
+          aria-label="重新选择 zip 文件"
+        >
+          {loading ? "加载中…" : "📦 更换 zip"}
+        </button>
+
+        {zipFileName && (
+          <button
+            onClick={unmountZip}
+            disabled={loading}
+            style={{
+              padding: "0.4rem 1rem",
+              fontSize: "0.85rem",
+              fontWeight: 600,
+              background: "rgba(200,40,40,0.12)",
+              color: "rgba(255,140,130,0.85)",
+              border: "1px solid rgba(255,80,80,0.2)",
+              borderRadius: "6px",
+              cursor: loading ? "default" : "pointer",
+              transition: "background 0.15s",
+            }}
+            aria-label="卸载当前 zip"
+          >
+            卸载
+          </button>
+        )}
+      </div>
 
       {error && (
         <p
