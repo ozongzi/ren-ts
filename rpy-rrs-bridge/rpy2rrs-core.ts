@@ -689,7 +689,16 @@ class Converter {
     // ── jump LABEL ────────────────────────────────────────────────────────────
     const jumpMatch = line.match(/^jump\s+(\w+)\s*$/);
     if (jumpMatch) {
-      this.emit(`${this.pad()}jump ${jumpMatch[1]};`);
+      const label = jumpMatch[1];
+
+      // special case to avoid getting into minigame
+      if (label === "journal_start") {
+        this.emit(`${this.pad()}jump label_afterjournal;`);
+      } else if (label === "foreplay") {
+        this.emit(`${this.pad()}jump label_afterforeplay;`);
+      } else {
+        this.emit(`${this.pad()}jump ${label};`);
+      }
       return;
     }
 
