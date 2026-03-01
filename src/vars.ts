@@ -1,5 +1,8 @@
 // ─── VarStore ─────────────────────────────────────────────────────────────────
 //
+// applySet() is the preferred way to apply a `set` step — it operates directly
+// on the _game layer without the toRecord() + replaceGameVars() round-trip.
+//
 // Two-layer variable store that separates read-only define vars from mutable
 // game vars.
 //
@@ -16,6 +19,12 @@
 // Engine code works with VarStore directly.
 // evaluate.ts / applySetStep receive a plain merged Record via toRecord() so
 // their internal logic requires zero changes.
+
+// Imported here rather than in evaluate.ts to break the potential circular
+// dependency: evaluate.ts → vars.ts is fine; vars.ts → evaluate.ts is also
+// fine because resolveSetValue does not import from vars.ts.
+import { resolveSetValue } from "./evaluate";
+import type { Step } from "./types";
 
 export class VarStore {
   private readonly _game: Record<string, unknown>;
@@ -92,6 +101,47 @@ export class VarStore {
    */
   stored(): Record<string, unknown> {
     return this.gameVars();
+  }
+
+  // ── Apply a set step (preferred path — no full Record copy) ───────────────
+
+  /**
+   * Apply a `set` step directly on the game-vars layer and return a new
+   * VarStore.  This is the fast path used by the engine: it skips the
+   * toRecord() + replaceGameVars() round-trip and never touches _defines.
+   *
+   * The RHS is resolved via resolveSetValue() which handles:
+   *   - Numeric / boolean JSON literals (returned as-is)
+   *   - Variable references (looked up in the merged view)
+   *   - Function calls like renpy.random.randint(a, b)
+   *   - Plain string / number literals
+   */
+  applySet(step: Extract<Step, { type: "set" }>): VarStore {
+    // Resolve the RHS against the merged view so variable references work.
+    const merged = this.toRecord();
+    let value = resolveSetValue(step.value, merged);
+    const current = merged[step.var] ?? 0;
+
+    switch (step.op) {
+      case "=":
+        break;
+      case "+=":
+        value = (current as number) + (value as number);
+        break;
+      case "-=":
+        value = (current as number) - (value as number);
+        break;
+      case "*=":
+        value = (current as number) * (value as number);
+        break;
+      case "/=": {
+        const d = value as number;
+        value = d !== 0 ? (current as number) / d : 0;
+        break;
+      }
+    }
+
+    return new VarStore({ ...this._game, [step.var]: value }, this._defines);
   }
 
   // ── Bulk replace (used by applySetStep result merging) ─────────────────────

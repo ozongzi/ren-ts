@@ -23,7 +23,7 @@ import type {
   DialogueState,
 } from "./types";
 import { getLabel, getManifestStart, getDefineVars } from "./loader";
-import { evaluateCondition, applySetStep } from "./evaluate";
+import { evaluateCondition } from "./evaluate";
 import { resolveAsset } from "./assets";
 import { VarStore } from "./vars";
 
@@ -413,11 +413,8 @@ function executeStep(state: GameState, step: Step): StepResult {
   switch (step.type) {
     // ── Variable assignment ─────────────────────────────────────────────────
     case "set": {
-      // applySetStep works on a plain Record; feed it the merged view and
-      // write the result back into the gameVars layer only.
-      const merged = applySetStep(state.vars.toRecord(), step);
-      const vars = state.vars.replaceGameVars(merged);
-      return advance({ ...state, vars });
+      // applySet operates directly on the game-vars layer — no toRecord() copy.
+      return advance({ ...state, vars: state.vars.applySet(step) });
     }
 
     // ── Scene (background swap) ─────────────────────────────────────────────

@@ -97,6 +97,36 @@ function splitTopLevelCommas(s: string): string[] {
 }
 
 /**
+ * Resolve the RHS of a `set` step to a concrete JavaScript value.
+ *
+ * Handles three cases in order:
+ *  1. Non-string JSON values (number / boolean) — returned as-is.
+ *  2. String that names a known variable — resolved to that variable's value.
+ *  3. String that looks like a function call (contains parentheses) — evaluated
+ *     via `_evaluate` so expressions like `renpy.random.randint(1,2)` work.
+ *  4. Anything else — parsed as a literal via `parseValue`.
+ *
+ * Exported so that `VarStore.applySet` can reuse this logic without going
+ * through the full `toRecord()` + `replaceGameVars()` round-trip.
+ */
+export function resolveSetValue(
+  raw: string | number | boolean,
+  vars: Vars,
+): unknown {
+  const parsed = parseValue(raw);
+  if (typeof parsed !== "string") return parsed;
+
+  const rawStr = raw as string;
+  if (rawStr in vars) return vars[rawStr];
+
+  if (rawStr.includes("(") && rawStr.includes(")")) {
+    return _evaluate(rawStr, vars);
+  }
+
+  return parsed;
+}
+
+/**
  * Apply a `set` step's operation to the vars map and return a new map.
  *
  * Supported operators: =  +=  -=  *=  /=
@@ -108,33 +138,15 @@ function splitTopLevelCommas(s: string): string[] {
  * Additionally, if the RHS is a function call like `renpy.random.randint(a,b)`
  * we evaluate it at runtime via the evaluator so assignments such as
  * `choicet = renpy.random.randint(1,2);` produce a concrete random integer.
+ *
+ * @deprecated Prefer `VarStore.applySet()` which operates directly on the
+ * game-vars layer and avoids the full `toRecord()` copy overhead.
  */
 export function applySetStep(
   vars: Vars,
   step: Extract<Step, { type: "set" }>,
 ): Vars {
-  const parsed = parseValue(step.value);
-
-  // Resolve variable references or evaluate simple function-call expressions.
-  const rawStr = typeof step.value === "string" ? step.value : undefined;
-  let value: unknown = parsed;
-
-  if (typeof parsed === "string" && rawStr !== undefined) {
-    // Direct variable reference in the merged plain record
-    if (rawStr in vars) {
-      value = vars[rawStr];
-    } else {
-      // If RHS looks like a function call / expression, evaluate it with the
-      // evaluator so constructs like renpy.random.randint(a, b) work.
-      // Use a conservative heuristic: contains '(' and ')'.
-      if (rawStr.includes("(") && rawStr.includes(")")) {
-        value = _evaluate(rawStr, vars);
-      } else {
-        value = parsed;
-      }
-    }
-  }
-
+  let value = resolveSetValue(step.value, vars);
   const current = vars[step.var] ?? 0;
 
   switch (step.op) {
