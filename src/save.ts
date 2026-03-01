@@ -29,10 +29,8 @@ import { getDefineVars } from "./loader";
 import { pruneInlineRegistry } from "./engine";
 import {
   isTauri,
-  isIOS,
   makeDirTauri,
   getAppDocumentsDir,
-  getActiveAssetsDir,
   pickAndReadTextFile,
   pickAndWriteTextFile,
   writeTextFileTauri,
@@ -172,16 +170,9 @@ export async function listTauriSaves(): Promise<
 > {
   if (!isTauri) return [];
   try {
-    let savesDir: string;
-    if (isIOS) {
-      const docDir = await getAppDocumentsDir();
-      if (!docDir) return [];
-      savesDir = `${docDir}/Saves`;
-    } else {
-      const assetsDir = getActiveAssetsDir();
-      if (!assetsDir) return [];
-      savesDir = `${assetsDir}/Saves`;
-    }
+    const docDir = await getAppDocumentsDir();
+    if (!docDir) return [];
+    const savesDir = `${docDir}/Saves`;
     const entries = await readDirectory(savesDir);
     const results = [];
     for (const e of entries) {
@@ -223,16 +214,9 @@ export async function importTauriSave(): Promise<LoadedSave | null> {
     const save = validateSave(JSON.parse(result.text));
 
     // Try to copy the imported save into the Saves directory
-    let savesDir: string;
-    if (isIOS) {
-      const docDir = await getAppDocumentsDir();
-      if (!docDir) return { save, handle: null, savePath: null };
-      savesDir = `${docDir}/Saves`;
-    } else {
-      const assetsDir = getActiveAssetsDir();
-      if (!assetsDir) return { save, handle: null, savePath: null };
-      savesDir = `${assetsDir}/Saves`;
-    }
+    const docDir = await getAppDocumentsDir();
+    if (!docDir) return { save, handle: null, savePath: null };
+    const savesDir = `${docDir}/Saves`;
 
     await makeDirTauri(savesDir);
     const fileName =
@@ -334,16 +318,9 @@ export async function pickNewSaveFile(): Promise<NewSaveLocation> {
   // ── Tauri path ────────────────────────────────────────────────────────────
   if (isTauri) {
     try {
-      let savesDir: string;
-      if (isIOS) {
-        const docDir = await getAppDocumentsDir();
-        if (!docDir) return { handle: null, path: null, fileName: null };
-        savesDir = `${docDir}/Saves`;
-      } else {
-        const assetsDir = getActiveAssetsDir();
-        if (!assetsDir) return { handle: null, path: null, fileName: null };
-        savesDir = `${assetsDir}/Saves`;
-      }
+      const docDir = await getAppDocumentsDir();
+      if (!docDir) return { handle: null, path: null, fileName: null };
+      const savesDir = `${docDir}/Saves`;
       await makeDirTauri(savesDir);
       const chosenPath = `${savesDir}/${suggestedName}`;
       await writeTextFileTauri(chosenPath, "{}");
