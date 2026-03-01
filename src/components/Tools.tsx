@@ -14,6 +14,10 @@ import {
 import { convertRpy } from "../../rpy-rrs-bridge/rpy2rrs-core";
 import { parseTranslationBlocks } from "../../rpy-rrs-bridge/translation-extractor";
 import { parseGalleryRpy } from "../../rpy-rrs-bridge/parse-gallery-core";
+import {
+  generateImageDefines,
+  renderDefinesBlock,
+} from "../../rpy-rrs-bridge/scan-assets-core";
 
 /* ─── Inline Styles ───────────────────────────────────────────────────────── */
 
@@ -565,6 +569,12 @@ export const Tools: React.FC = () => {
   const [galleryPathStatus, setGalleryPathStatus] = useState<
     "ok" | "no" | "checking" | null
   >(null);
+  const [enableAssetScan, setEnableAssetScan] = useState(false);
+  const [assetScanDir, setAssetScanDir] = useState<string | null>(null);
+  const [assetScanDirStatus, setAssetScanDirStatus] = useState<
+    "ok" | "no" | "checking" | null
+  >(null);
+  const [assetScanCount, setAssetScanCount] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [totalFiles, setTotalFiles] = useState<number>(0);
@@ -579,6 +589,7 @@ export const Tools: React.FC = () => {
   const outputDirTimer = useRef<number | null>(null);
   const translationDirTimer = useRef<number | null>(null);
   const galleryPathTimer = useRef<number | null>(null);
+  const assetScanDirTimer = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
@@ -587,6 +598,7 @@ export const Tools: React.FC = () => {
         outputDirTimer,
         translationDirTimer,
         galleryPathTimer,
+        assetScanDirTimer,
       ].forEach((r) => {
         if (r.current) window.clearTimeout(r.current);
       });
@@ -647,6 +659,17 @@ export const Tools: React.FC = () => {
     [galleryPath, enableGallery],
   );
 
+  useEffect(
+    () =>
+      makePathEffect(
+        assetScanDir,
+        setAssetScanDirStatus,
+        assetScanDirTimer,
+        enableAssetScan,
+      ),
+    [assetScanDir, enableAssetScan],
+  );
+
   // Auto-scroll log
   useEffect(() => {
     if (logRef.current) {
@@ -692,6 +715,44 @@ export const Tools: React.FC = () => {
     return map;
   }
 
+  /**
+   * Walk `dir`, collect all image file paths relative to `dir`, run
+   * `generateImageDefines`, and return the rendered RRS block string.
+   * Returns null on error (errors are logged via `log`).
+   */
+  async function buildAssetDefinesBlock(dir: string): Promise<string | null> {
+    if (!isTauri) return null;
+    try {
+      const allFiles = await walkDir(dir, () => true);
+      // Make paths relative to dir and normalise separators
+      const relativePaths = allFiles.map((f) => {
+        const rel = f.startsWith(dir)
+          ? f.slice(dir.length).replace(/^\/+/, "")
+          : (f.split("/").pop() ?? f);
+        return rel.replace(/\\/g, "/");
+      });
+      const result = generateImageDefines(relativePaths);
+      setAssetScanCount(result.defines.length);
+      if (result.conflicts.length > 0) {
+        for (const c of result.conflicts) {
+          log(
+            `  [资源扫描] key冲突 '${c.key}'：'${c.winner}' 优先于 '${c.loser}'`,
+          );
+        }
+      }
+      log(
+        `资源扫描：发现 ${result.defines.length} 个图片定义（跳过 ${result.skipped.length} 个非图片文件）`,
+      );
+      return renderDefinesBlock(
+        result,
+        "// Auto-generated image defines — do not edit manually",
+      );
+    } catch (err) {
+      log(`资源扫描失败：${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   async function buildGalleryEntries(path: string) {
     if (!isTauri) return null;
     try {
@@ -725,6 +786,7 @@ export const Tools: React.FC = () => {
     setTotalFiles(0);
     setProcessedFiles(0);
     setCurrentFile(null);
+    setAssetScanCount(null);
     log(`开始扫描：${gameDir}`);
     try {
       let translationMap: Map<string, string> | undefined;
@@ -738,6 +800,13 @@ export const Tools: React.FC = () => {
       if (enableGallery && galleryPath) {
         log(`解析图鉴文件：${galleryPath}`);
         galleryEntries = await buildGalleryEntries(galleryPath);
+      }
+
+      // ── Asset scan: generate image defines block ──
+      let assetDefinesBlock: string | null = null;
+      if (enableAssetScan && assetScanDir) {
+        log(`扫描资源目录：${assetScanDir}`);
+        assetDefinesBlock = await buildAssetDefinesBlock(assetScanDir);
       }
 
       const rpyFiles = await walkDir(gameDir, (name) =>
@@ -780,6 +849,22 @@ export const Tools: React.FC = () => {
         }
       }
 
+      // ── Write standalone asset defines file ──
+      if (enableAssetScan && assetDefinesBlock) {
+        const definesPath = `${outDir}/image_defines.rrs`;
+        try {
+          await writeTextFileTauri(
+            definesPath,
+            `// Source: image_defines.rrs\n\n` + assetDefinesBlock,
+          );
+          log(`已生成资源定义文件：image_defines.rrs`);
+        } catch (err) {
+          log(
+            `写入 image_defines.rrs 失败：${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
       setCurrentFile(null);
       try {
         const manifestPath = `${outDir}/manifest.json`;
@@ -795,6 +880,15 @@ export const Tools: React.FC = () => {
         manifest["files"] = writtenFiles;
         if (enableGallery && galleryEntries)
           manifest["gallery"] = galleryEntries;
+        // Add image_defines.rrs to manifest if scan produced it
+        if (enableAssetScan && assetDefinesBlock) {
+          const existing = Array.isArray(manifest["files"])
+            ? (manifest["files"] as string[])
+            : [];
+          if (!existing.includes("image_defines.rrs")) {
+            manifest["files"] = ["image_defines.rrs", ...existing];
+          }
+        }
         await writeTextFileTauri(
           manifestPath,
           JSON.stringify(manifest, null, 2),
@@ -1012,6 +1106,77 @@ export const Tools: React.FC = () => {
                 disabled={running || !enableGallery}
                 browseLabel="浏览"
               />
+            </div>
+
+            {/* Section 5 — Asset Scan */}
+            <div className="tools-section">
+              <div className="section-label">
+                <span className="section-num">05</span>
+                <span className="section-title">资源扫描</span>
+                <span
+                  style={{
+                    fontSize: "0.67rem",
+                    color: "rgba(255,255,255,0.2)",
+                    marginLeft: "0.25rem",
+                  }}
+                >
+                  可选
+                </span>
+              </div>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  className="toggle-checkbox"
+                  checked={enableAssetScan}
+                  onChange={(e) => {
+                    setEnableAssetScan(e.target.checked);
+                    if (!e.target.checked) setAssetScanCount(null);
+                  }}
+                  disabled={running}
+                />
+                <span className="toggle-label">
+                  自动扫描资源目录，生成 image.XX 定义
+                </span>
+              </label>
+              <PathRow
+                value={assetScanDir ?? ""}
+                onChange={(v) => setAssetScanDir(v || null)}
+                placeholder="选择包含图片资源的目录（如 assets/images）"
+                status={assetScanDirStatus}
+                onBrowse={async () => {
+                  if (!isTauri) return;
+                  const dir = await pickDirectory();
+                  if (dir) setAssetScanDir(dir);
+                }}
+                onClear={() => {
+                  setAssetScanDir(null);
+                  setAssetScanDirStatus(null);
+                  setAssetScanCount(null);
+                }}
+                disabled={running || !enableAssetScan}
+                browseLabel="浏览"
+              />
+              {enableAssetScan && (
+                <div className="section-hint">
+                  扫描所选目录中的所有图片文件（.jpg/.png/.webp/.webm 等），
+                  为每个文件生成{" "}
+                  <code style={{ opacity: 0.7 }}>image.文件名 = "路径";</code>{" "}
+                  定义，注入所有转换后的 .rrs 文件，并额外写出{" "}
+                  <code style={{ opacity: 0.7 }}>image_defines.rrs</code>。
+                  {assetScanCount !== null && (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        marginLeft: "0.5rem",
+                        color: "#6ee7b7",
+                        fontWeight: 600,
+                      }}
+                    >
+                      上次扫描：{assetScanCount} 个定义
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Progress + Actions */}

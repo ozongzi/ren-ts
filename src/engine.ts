@@ -122,6 +122,23 @@ export function advance(state: GameState, action: AdvanceAction): GameState {
     const option = state.choices[action.index];
     if (!option) return state;
 
+    // Debug: log choice selection and available options
+    try {
+      console.log(
+        `[engine-debug] choose action: index=${action.index} available=${state.choices?.length} currentLabel=${state.currentLabel} stepIndex=${state.stepIndex}`,
+      );
+      if (state.choices) {
+        for (let i = 0; i < state.choices.length; i++) {
+          const ch = state.choices[i];
+          console.log(
+            `[engine-debug]   option[${i}] text=${JSON.stringify(ch.text)} steps=${(ch as any).steps?.length ?? 0}`,
+          );
+        }
+      }
+    } catch (e) {
+      // ignore logging errors
+    }
+
     // Inline the option's steps into a mini-label and start executing them.
     // When those steps are exhausted we fall through to the next step after
     // the menu.  We achieve this by pushing the "after-menu" position onto
@@ -130,6 +147,7 @@ export function advance(state: GameState, action: AdvanceAction): GameState {
       label: state.currentLabel,
       stepIndex: state.stepIndex, // stepIndex is already menuIdx+1 (set by block() in executeStep)
     };
+    const currentInline = _registerInlineSteps(option.steps);
     const next: GameState = {
       ...state,
       choices: null,
@@ -141,9 +159,16 @@ export function advance(state: GameState, action: AdvanceAction): GameState {
       callStack: [...state.callStack, afterMenuStack],
       // Use a special synthetic label name to store inline steps.
       // We register it temporarily in the runtime store.
-      currentLabel: _registerInlineSteps(option.steps),
+      currentLabel: currentInline,
       stepIndex: 0,
     };
+
+    try {
+      console.log(
+        `[engine-debug] inlining choice index=${action.index} inlineLabel=${currentInline} returningTo=${afterMenuStack.label}@${afterMenuStack.stepIndex}`,
+      );
+    } catch (e) {}
+
     return runUntilBlocked(next);
   }
 
@@ -240,15 +265,17 @@ function runUntilBlocked(state: GameState): GameState {
       // Try to return from a call
       if (s.callStack.length > 0) {
         const [frame] = [...s.callStack].reverse();
+        // Capture the label that just ran out of steps BEFORE overwriting s
+        const exhaustedLabel = s.currentLabel;
         s = {
           ...s,
           currentLabel: frame.label,
           stepIndex: frame.stepIndex,
           callStack: s.callStack.slice(0, s.callStack.length - 1),
         };
-        // Clean up inline label if this was an inline block
-        if (s.currentLabel.startsWith("__inline_")) {
-          _inlineRegistry.delete(s.currentLabel);
+        // Clean up inline label if the exhausted block was an inline block
+        if (exhaustedLabel.startsWith("__inline_")) {
+          _inlineRegistry.delete(exhaustedLabel);
         }
         continue;
       }
@@ -264,11 +291,28 @@ function runUntilBlocked(state: GameState): GameState {
     }
 
     const step = steps[s.stepIndex];
+    // Debug: log the step being executed
+    try {
+      console.info(
+        `[engine-debug] running step index=${s.stepIndex} type=${step.type} currentLabel=${s.currentLabel}`,
+      );
+    } catch (e) {}
     const result = executeStep(s, step);
 
     if (result.blocked) {
       // The step produced a blocking state; stop and wait for user action.
       s = result.state;
+      // Debug: log that execution blocked on this step and dialogue/choices state
+      try {
+        console.info(
+          `[engine-debug] blocked on step index=${s.stepIndex} type=${step.type} currentLabel=${s.currentLabel} waitingForInput=${s.waitingForInput} choices=${s.choices ? s.choices.length : 0}`,
+        );
+        if (s.dialogue) {
+          console.info(
+            `[engine-debug]   dialogue who=${JSON.stringify(s.dialogue.who)} text=${JSON.stringify(s.dialogue.text).slice(0, 120)} voice=${s.dialogue.voice ?? "null"}`,
+          );
+        }
+      } catch (e) {}
       break;
     }
 
@@ -458,6 +502,12 @@ function executeStep(state: GameState, step: Step): StepResult {
         text: step.text,
         voice: resolvedVoice,
       };
+      // Debug: show brief info about the say being emitted
+      try {
+        console.info(
+          `[engine-debug] say: who=${JSON.stringify(dialogue.who)} text=${JSON.stringify(dialogue.text).slice(0, 120)} voice=${dialogue.voice ?? "null"} currentLabel=${state.currentLabel} stepIndex=${state.stepIndex}`,
+        );
+      } catch (e) {}
       return block({
         ...state,
         stepIndex: state.stepIndex + 1,
@@ -546,8 +596,22 @@ function executeStep(state: GameState, step: Step): StepResult {
         return evaluateCondition(opt.condition, state.vars.toRecord());
       });
 
+      try {
+        console.log(
+          `[engine-debug] menu at ${state.currentLabel}@${state.stepIndex} rawOptions=${step.options.length} filtered=${choices.length}`,
+        );
+        for (let i = 0; i < choices.length; i++) {
+          console.log(
+            `[engine-debug]   menu option[${i}] text=${JSON.stringify(choices[i].text)} steps=${choices[i].steps.length}`,
+          );
+        }
+      } catch (e) {}
+
       if (choices.length === 0) {
         // No valid choices — skip the menu entirely
+        try {
+          console.log(`[engine-debug] menu: no valid choices, skipping`);
+        } catch (e) {}
         return advance(state);
       }
 
@@ -558,6 +622,11 @@ function executeStep(state: GameState, step: Step): StepResult {
           label: state.currentLabel,
           stepIndex: state.stepIndex + 1,
         };
+        try {
+          console.log(
+            `[engine-debug] menu: auto-select single choice -> inlining ${afterMenuStack.label}@${afterMenuStack.stepIndex}`,
+          );
+        } catch (e) {}
         return {
           state: {
             ...state,
@@ -569,6 +638,12 @@ function executeStep(state: GameState, step: Step): StepResult {
           blocked: false,
         };
       }
+
+      try {
+        console.log(
+          `[engine-debug] menu: presenting ${choices.length} choices to player`,
+        );
+      } catch (e) {}
 
       return block({
         ...state,
@@ -609,6 +684,12 @@ function executeStep(state: GameState, step: Step): StepResult {
 
     // ── Jump ─────────────────────────────────────────────────────────────────
     case "jump": {
+      try {
+        console.log(
+          `[engine-debug] jump requested to "${step.target}" from ${state.currentLabel}@${state.stepIndex}`,
+        );
+      } catch (e) {}
+
       let target = step.target;
       if (!_getSteps(target)) {
         const varVal = state.vars.get(target);
@@ -622,6 +703,11 @@ function executeStep(state: GameState, step: Step): StepResult {
             varVal,
             ")",
           );
+          try {
+            console.log(
+              `[engine-debug] jump -> unknown label "${target}", advancing instead`,
+            );
+          } catch (e) {}
           return advance(state);
         }
       }
@@ -638,8 +724,19 @@ function executeStep(state: GameState, step: Step): StepResult {
           "[engine] jump to dead-end label (no blocking/CF steps), skipping:",
           target,
         );
+        try {
+          console.log(
+            `[engine-debug] jump -> dead-end label "${target}", skipping jump`,
+          );
+        } catch (e) {}
         return advance(state);
       }
+
+      try {
+        console.log(
+          `[engine-debug] performing jump -> "${target}" (clearing call stack)`,
+        );
+      } catch (e) {}
 
       return {
         state: {
