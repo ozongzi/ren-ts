@@ -13,6 +13,7 @@ import { isTauri } from "../tauri_bridge";
 export const TitleScreen: React.FC = () => {
   const newGame = useGameStore((s) => s.newGame);
   const saveImport = useGameStore((s) => s.saveImport);
+  const openSaveSelector = useGameStore((s) => s.openSaveSelector);
   const loading = useGameStore((s) => s.loading);
   const error = useGameStore((s) => s.error);
   const manifestLoaded = useGameStore((s) => s.manifestLoaded);
@@ -36,6 +37,10 @@ export const TitleScreen: React.FC = () => {
 
   const handleContinue = async () => {
     if (!manifestLoaded || importing) return;
+    if (isTauri) {
+      openSaveSelector();
+      return;
+    }
     setImporting(true);
     try {
       await saveImport();

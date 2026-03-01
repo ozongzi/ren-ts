@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useGameStore } from "../store";
-import { pickDirectory } from "../tauri_bridge";
+import { getAppDocumentsDir, isIOS, pickDirectory } from "../tauri_bridge";
 
 /**
  * Shown on first launch inside Tauri when no assets directory has been chosen,
@@ -24,6 +24,32 @@ export const AssetsDirScreen: React.FC = () => {
 
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isIOS) {
+      // Calling this will create the placeholder file so the folder appears in the iOS Files app
+      getAppDocumentsDir().catch(console.warn);
+    }
+  }, []);
+
+  const handleIOSDocuments = async () => {
+    if (picking || storeLoading) return;
+    setPickError(null);
+    setPicking(true);
+    try {
+      const dir = await getAppDocumentsDir();
+      if (!dir) {
+        throw new Error("无法获取应用文稿目录");
+      }
+      setAssetsDir(dir);
+    } catch (err) {
+      setPickError(
+        err instanceof Error ? err.message : "获取文稿目录时发生未知错误",
+      );
+    } finally {
+      setPicking(false);
+    }
+  };
 
   const handlePick = async () => {
     if (picking || storeLoading) return;
@@ -179,7 +205,9 @@ export const AssetsDirScreen: React.FC = () => {
               color: "rgba(255,255,255,0.8)",
             }}
           >
-            游戏的图片和音频文件存放在你的本地磁盘上，需要你指定它们的位置。
+            {isIOS
+              ? "在 iOS 上，请打开系统自带的“文件”App，将资源复制到「我的 iPhone -> 此应用」文件夹内，然后点击下方按钮。"
+              : "游戏的图片和音频文件存放在你的本地磁盘上，需要你指定它们的位置。"}
           </p>
           <p
             style={{
@@ -188,7 +216,9 @@ export const AssetsDirScreen: React.FC = () => {
               color: "rgba(255,255,255,0.45)",
             }}
           >
-            请选择包含以下子文件夹的目录：
+            {isIOS
+              ? "请确保该应用目录下直接包含以下子文件夹："
+              : "请选择包含以下子文件夹的目录："}
           </p>
           <ul
             style={{
@@ -282,43 +312,87 @@ export const AssetsDirScreen: React.FC = () => {
           }}
         >
           {/* Pick button */}
-          <button
-            onClick={handlePick}
-            disabled={isLoading}
-            style={{
-              width: "100%",
-              padding: "0.75rem 2.2rem",
-              fontSize: "1.05rem",
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              background: isLoading
-                ? "rgba(233,69,96,0.25)"
-                : "rgba(233,69,96,0.85)",
-              color: "#fff",
-              border: "1px solid rgba(233,69,96,0.6)",
-              borderRadius: "8px",
-              cursor: isLoading ? "default" : "pointer",
-              transition: "background 0.2s, transform 0.1s",
-              boxShadow: isLoading ? "none" : "0 4px 20px rgba(233,69,96,0.3)",
-            }}
-            onMouseEnter={(e) => {
-              if (!isLoading)
-                (e.currentTarget as HTMLButtonElement).style.background =
-                  "rgba(233,69,96,1)";
-            }}
-            onMouseLeave={(e) => {
-              if (!isLoading)
-                (e.currentTarget as HTMLButtonElement).style.background =
-                  "rgba(233,69,96,0.85)";
-            }}
-            aria-label="打开文件夹选择对话框"
-          >
-            {isLoading
-              ? picking
-                ? "选择中…"
-                : "加载中…"
-              : "📂 选择 Assets 文件夹"}
-          </button>
+          {isIOS ? (
+            <button
+              onClick={handleIOSDocuments}
+              disabled={isLoading}
+              style={{
+                width: "100%",
+                padding: "0.75rem 2.2rem",
+                fontSize: "1.05rem",
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                background: isLoading
+                  ? "rgba(69,150,233,0.25)"
+                  : "rgba(69,150,233,0.85)",
+                color: "#fff",
+                border: "1px solid rgba(69,150,233,0.6)",
+                borderRadius: "8px",
+                cursor: isLoading ? "default" : "pointer",
+                transition: "background 0.2s, transform 0.1s",
+                boxShadow: isLoading
+                  ? "none"
+                  : "0 4px 20px rgba(69,150,233,0.3)",
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading)
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "rgba(69,150,233,1)";
+              }}
+              onMouseLeave={(e) => {
+                if (!isLoading)
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "rgba(69,150,233,0.85)";
+              }}
+              aria-label="从应用文稿目录加载"
+            >
+              {isLoading
+                ? picking
+                  ? "加载中…"
+                  : "加载中…"
+                : "📂 从“我的 iPhone”加载"}
+            </button>
+          ) : (
+            <button
+              onClick={handlePick}
+              disabled={isLoading}
+              style={{
+                width: "100%",
+                padding: "0.75rem 2.2rem",
+                fontSize: "1.05rem",
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                background: isLoading
+                  ? "rgba(233,69,96,0.25)"
+                  : "rgba(233,69,96,0.85)",
+                color: "#fff",
+                border: "1px solid rgba(233,69,96,0.6)",
+                borderRadius: "8px",
+                cursor: isLoading ? "default" : "pointer",
+                transition: "background 0.2s, transform 0.1s",
+                boxShadow: isLoading
+                  ? "none"
+                  : "0 4px 20px rgba(233,69,96,0.3)",
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading)
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "rgba(233,69,96,1)";
+              }}
+              onMouseLeave={(e) => {
+                if (!isLoading)
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    "rgba(233,69,96,0.85)";
+              }}
+              aria-label="打开文件夹选择对话框"
+            >
+              {isLoading
+                ? picking
+                  ? "选择中…"
+                  : "加载中…"
+                : "📂 选择 Assets 文件夹"}
+            </button>
+          )}
         </div>
 
         {/* ── Pick error message (dialog/OS-level errors) ── */}

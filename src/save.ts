@@ -28,9 +28,15 @@ import { VarStore } from "./vars";
 import { getDefineVars } from "./loader";
 import {
   isTauri,
+  isIOS,
+  makeDirTauri,
+  getAppDocumentsDir,
+  getActiveAssetsDir,
   pickAndReadTextFile,
   pickAndWriteTextFile,
   writeTextFileTauri,
+  readDirectory,
+  readTextFileTauri,
 } from "./tauri_bridge";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -160,6 +166,90 @@ export interface LoadedSave {
   savePath: string | null;
 }
 
+export async function listTauriSaves(): Promise<
+  { path: string; save: SaveData; fileName: string }[]
+> {
+  if (!isTauri) return [];
+  try {
+    let savesDir: string;
+    if (isIOS) {
+      const docDir = await getAppDocumentsDir();
+      if (!docDir) return [];
+      savesDir = `${docDir}/Saves`;
+    } else {
+      const assetsDir = getActiveAssetsDir();
+      if (!assetsDir) return [];
+      savesDir = `${assetsDir}/Saves`;
+    }
+    const entries = await readDirectory(savesDir);
+    const results = [];
+    for (const e of entries) {
+      if (e.isFile && e.name.endsWith(".json")) {
+        const path = `${savesDir}/${e.name}`;
+        const text = await readTextFileTauri(path);
+        if (text) {
+          try {
+            const save = validateSave(JSON.parse(text));
+            results.push({ path, save, fileName: e.name });
+          } catch (err) {
+            console.warn(`[save] Failed to parse save file ${e.name}:`, err);
+          }
+        }
+      }
+    }
+    // Sort by timestamp descending
+    results.sort(
+      (a, b) =>
+        new Date(b.save.timestamp).getTime() -
+        new Date(a.save.timestamp).getTime(),
+    );
+    return results;
+  } catch (err) {
+    console.warn("[save] listTauriSaves failed:", err);
+    return [];
+  }
+}
+
+export async function importTauriSave(): Promise<LoadedSave | null> {
+  if (!isTauri) return null;
+  const result = await pickAndReadTextFile({
+    title: "导入存档文件",
+    filters: [{ name: "游戏存档", extensions: ["json"] }],
+  });
+  if (!result) return null;
+
+  try {
+    const save = validateSave(JSON.parse(result.text));
+
+    // Try to copy the imported save into the Saves directory
+    let savesDir: string;
+    if (isIOS) {
+      const docDir = await getAppDocumentsDir();
+      if (!docDir) return { save, handle: null, savePath: null };
+      savesDir = `${docDir}/Saves`;
+    } else {
+      const assetsDir = getActiveAssetsDir();
+      if (!assetsDir) return { save, handle: null, savePath: null };
+      savesDir = `${assetsDir}/Saves`;
+    }
+
+    await makeDirTauri(savesDir);
+    const fileName =
+      result.path.split(/[/\\]/).pop() ?? `import_${Date.now()}.json`;
+    const newPath = `${savesDir}/${fileName}`;
+
+    // Only overwrite if it's not already in the Saves dir
+    if (result.path !== newPath) {
+      await writeTextFileTauri(newPath, result.text);
+    }
+
+    return { save, handle: null, savePath: newPath };
+  } catch (err) {
+    console.warn("[save] importTauriSave failed:", err);
+    throw err;
+  }
+}
+
 /**
  * Open an existing save file.
  *
@@ -176,13 +266,12 @@ export interface LoadedSave {
 export async function openSaveFile(): Promise<LoadedSave> {
   // ── Tauri path ────────────────────────────────────────────────────────────
   if (isTauri) {
-    const result = await pickAndReadTextFile({
-      title: "打开存档文件",
-      filters: [{ name: "游戏存档", extensions: ["json"] }],
-    });
-    if (!result) throw new Error("已取消");
-    const save = validateSave(JSON.parse(result.text));
-    return { save, handle: null, savePath: result.path };
+    // In the new UX, opening a save on Tauri is handled by the UI listing
+    // the listTauriSaves() output and passing it directly to continueSave.
+    // However, if we need to manually pick one (e.g. "import"), we use importTauriSave.
+    const imported = await importTauriSave();
+    if (!imported) throw new Error("已取消");
+    return imported;
   }
 
   // ── FSA path (Chrome/Edge) ────────────────────────────────────────────────
@@ -243,14 +332,25 @@ export async function pickNewSaveFile(): Promise<NewSaveLocation> {
 
   // ── Tauri path ────────────────────────────────────────────────────────────
   if (isTauri) {
-    const chosenPath = await pickAndWriteTextFile("{}", {
-      title: "选择自动存档位置",
-      defaultPath: suggestedName,
-      filters: [{ name: "游戏存档", extensions: ["json"] }],
-    });
-    if (!chosenPath) return { handle: null, path: null, fileName: null };
-    const fileName = chosenPath.split(/[/\\]/).pop() ?? chosenPath;
-    return { handle: null, path: chosenPath, fileName };
+    try {
+      let savesDir: string;
+      if (isIOS) {
+        const docDir = await getAppDocumentsDir();
+        if (!docDir) return { handle: null, path: null, fileName: null };
+        savesDir = `${docDir}/Saves`;
+      } else {
+        const assetsDir = getActiveAssetsDir();
+        if (!assetsDir) return { handle: null, path: null, fileName: null };
+        savesDir = `${assetsDir}/Saves`;
+      }
+      await makeDirTauri(savesDir);
+      const chosenPath = `${savesDir}/${suggestedName}`;
+      await writeTextFileTauri(chosenPath, "{}");
+      return { handle: null, path: chosenPath, fileName: suggestedName };
+    } catch (err) {
+      console.warn("[save] Bypass save picker error:", err);
+      return { handle: null, path: null, fileName: null };
+    }
   }
 
   // ── FSA path (Chrome/Edge) ────────────────────────────────────────────────
@@ -319,19 +419,26 @@ export async function autoSaveToHandle(
  * Serialize the current game state and trigger a browser file download.
  * The suggested file name is `rr_save_<timestamp>.json`.
  */
-export function exportSave(state: GameState): void {
+export async function exportSave(state: GameState): Promise<void> {
   const data = stateToSave(state);
   const json = JSON.stringify(data, null, 2);
-  const blob = new Blob([json], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const filename = `rr_save_${ts}.json`;
 
+  if (isTauri) {
+    await pickAndWriteTextFile(json, {
+      title: "导出存档",
+      defaultPath: filename,
+      filters: [{ name: "游戏存档", extensions: ["json"] }],
+    });
+    return;
+  }
+
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
-  anchor.style.display = "none";
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);

@@ -55,7 +55,7 @@ export const SaveLoadedScreen: React.FC = () => {
       />
 
       {/* ── Content ── */}
-      <div className="title-content">
+      <div className="title-content" style={{ gap: "1.5rem" }}>
         {/* Title */}
         <h1 className="title-fallback-text">{displayTitle}</h1>
 
@@ -65,11 +65,13 @@ export const SaveLoadedScreen: React.FC = () => {
             background: "rgba(255,255,255,0.06)",
             border: "1px solid rgba(255,255,255,0.12)",
             borderRadius: "8px",
-            padding: "0.65rem 1.4rem",
+            padding: "0.5rem 1.2rem",
             textAlign: "center",
             backdropFilter: "blur(6px)",
             WebkitBackdropFilter: "blur(6px)",
             maxWidth: "340px",
+            width: "100%",
+            flexShrink: 0,
           }}
         >
           <p
@@ -151,7 +153,11 @@ export const SaveLoadedScreen: React.FC = () => {
         </div>
 
         {/* ── Menu ── */}
-        <nav className="title-menu" aria-label="存档菜单">
+        <nav
+          className="title-menu"
+          aria-label="存档菜单"
+          style={{ gap: "0.6rem", flexShrink: 0 }}
+        >
           {/* Primary CTA */}
           <button
             className="title-btn"
@@ -174,6 +180,14 @@ export const SaveLoadedScreen: React.FC = () => {
             aria-label="CG 图鉴"
           >
             🖼️ CG 图鉴
+          </button>
+
+          <button
+            className="title-btn"
+            onClick={() => useGameStore.getState().openSettings()}
+            aria-label="设置"
+          >
+            ⚙️ 设置
           </button>
 
           {/* Divider */}

@@ -26,6 +26,19 @@
 export const isTauri: boolean =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** True if we are running in a mobile environment (iOS or Android). */
+export const isMobile: boolean =
+  typeof navigator !== "undefined" &&
+  /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent,
+  );
+
+/** True if we are running specifically on iOS. */
+export const isIOS: boolean =
+  typeof navigator !== "undefined" &&
+  (/iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+
 // ─── convertFileSrc ───────────────────────────────────────────────────────────
 
 /**
@@ -65,6 +78,9 @@ export async function initTauriBridge(): Promise<void> {
  *  - `initTauriBridge()` has not yet been called.
  */
 export function convertFileSrcSync(nativePath: string): string {
+  if (nativePath.startsWith("file://")) {
+    nativePath = decodeURIComponent(nativePath.slice(7));
+  }
   if (_convertFileSrc) return _convertFileSrc(nativePath);
   return nativePath;
 }
@@ -168,6 +184,46 @@ export function buildNativeAudioPath(assetsDir: string, src: string): string {
 // These thin wrappers import the Tauri plugins lazily so that a tree-shake /
 // bundler in non-Tauri builds can eliminate the dead code.
 
+/**
+ * Creates a placeholder file in the iOS Documents directory so that
+ * the folder becomes visible in the native iOS "Files" app.
+ */
+export async function ensureIOSDocumentsFolder(dir: string): Promise<void> {
+  if (!isIOS) return;
+  if (dir.startsWith("file://")) {
+    dir = decodeURIComponent(dir.slice(7));
+  }
+  try {
+    const { writeTextFile, exists } = await import("@tauri-apps/plugin-fs");
+    const path = `${dir}/请将游戏文件（data, images, Audio等）放在此文件夹下.txt`;
+    if (!(await exists(path))) {
+      await writeTextFile(
+        path,
+        "为了在 iOS 上游玩，请将您电脑端的游戏文件（包含 data、images、Audio 等目录）复制到当前文件夹下，然后在应用内点击「从“我的 iPhone”加载」。\n",
+      );
+    }
+  } catch (e) {
+    console.warn("[tauri_bridge] Failed to ensure iOS documents folder:", e);
+  }
+}
+
+/** Get the app's documents directory (useful for iOS where directory picker fails). */
+export async function getAppDocumentsDir(): Promise<string | null> {
+  if (!isTauri) return null;
+  try {
+    const { documentDir } = await import("@tauri-apps/api/path");
+    let dir = await documentDir();
+    if (dir.startsWith("file://")) {
+      dir = decodeURIComponent(dir.slice(7));
+    }
+    await ensureIOSDocumentsFolder(dir);
+    return dir;
+  } catch (err) {
+    console.warn("[tauri_bridge] getAppDocumentsDir failed:", err);
+    return null;
+  }
+}
+
 /** Open a native directory picker and return the chosen path, or null. */
 export async function pickDirectory(): Promise<string | null> {
   if (!isTauri) return null;
@@ -178,12 +234,15 @@ export async function pickDirectory(): Promise<string | null> {
       multiple: false,
       title: "选择游戏 assets 文件夹",
     });
-    if (typeof result === "string") return result;
+    if (typeof result === "string") {
+      return result.startsWith("file://")
+        ? decodeURIComponent(result.slice(7))
+        : result;
+    }
     return null;
   } catch (err) {
-    // User cancelled → DismissedError; treat as null
-    console.warn("[tauri_bridge] pickDirectory cancelled or failed:", err);
-    return null;
+    console.warn("[tauri_bridge] pickDirectory failed:", err);
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }
 
@@ -198,20 +257,23 @@ export async function pickAndReadTextFile(opts?: {
   if (!isTauri) return null;
   try {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const filePath = await open({
+    let filePath = await open({
       multiple: false,
       directory: false,
       title: opts?.title,
       filters: opts?.filters,
     });
     if (typeof filePath !== "string") return null;
+    if (filePath.startsWith("file://")) {
+      filePath = decodeURIComponent(filePath.slice(7));
+    }
 
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const text = await readTextFile(filePath);
     return { path: filePath, text };
   } catch (err) {
     console.warn("[tauri_bridge] pickAndReadTextFile failed:", err);
-    return null;
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }
 
@@ -230,19 +292,22 @@ export async function pickAndWriteTextFile(
   if (!isTauri) return null;
   try {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const filePath = await save({
+    let filePath = await save({
       title: opts?.title,
       defaultPath: opts?.defaultPath,
       filters: opts?.filters,
     });
     if (typeof filePath !== "string") return null;
+    if (filePath.startsWith("file://")) {
+      filePath = decodeURIComponent(filePath.slice(7));
+    }
 
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     await writeTextFile(filePath, text);
     return filePath;
   } catch (err) {
     console.warn("[tauri_bridge] pickAndWriteTextFile failed:", err);
-    return null;
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }
 
@@ -253,6 +318,9 @@ export async function writeTextFileTauri(
   filePath: string,
   text: string,
 ): Promise<void> {
+  if (filePath.startsWith("file://")) {
+    filePath = decodeURIComponent(filePath.slice(7));
+  }
   const { writeTextFile } = await import("@tauri-apps/plugin-fs");
   await writeTextFile(filePath, text);
 }
@@ -271,6 +339,9 @@ export interface DirEntry {
  */
 export async function readDirectory(dirPath: string): Promise<DirEntry[]> {
   if (!isTauri) return [];
+  if (dirPath.startsWith("file://")) {
+    dirPath = decodeURIComponent(dirPath.slice(7));
+  }
   try {
     const { readDir } = await import("@tauri-apps/plugin-fs");
     const entries = await readDir(dirPath);
@@ -293,6 +364,9 @@ export async function readBinaryFileTauri(
   filePath: string,
 ): Promise<Uint8Array | null> {
   if (!isTauri) return null;
+  if (filePath.startsWith("file://")) {
+    filePath = decodeURIComponent(filePath.slice(7));
+  }
   try {
     const { readFile } = await import("@tauri-apps/plugin-fs");
     return (await readFile(filePath)) as Uint8Array;
@@ -309,6 +383,9 @@ export async function writeBinaryFileTauri(
   data: Uint8Array,
 ): Promise<boolean> {
   if (!isTauri) return false;
+  if (filePath.startsWith("file://")) {
+    filePath = decodeURIComponent(filePath.slice(7));
+  }
   try {
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     await writeFile(filePath, data);
@@ -323,6 +400,9 @@ export async function writeBinaryFileTauri(
  */
 export async function makeDirTauri(dirPath: string): Promise<boolean> {
   if (!isTauri) return false;
+  if (dirPath.startsWith("file://")) {
+    dirPath = decodeURIComponent(dirPath.slice(7));
+  }
   try {
     const { mkdir } = await import("@tauri-apps/plugin-fs");
     await mkdir(dirPath, { recursive: true });
@@ -337,6 +417,9 @@ export async function makeDirTauri(dirPath: string): Promise<boolean> {
  */
 export async function pathExists(p: string): Promise<boolean> {
   if (!isTauri) return false;
+  if (p.startsWith("file://")) {
+    p = decodeURIComponent(p.slice(7));
+  }
   try {
     const { exists } = await import("@tauri-apps/plugin-fs");
     return await exists(p);
@@ -352,6 +435,9 @@ export async function readTextFileTauri(
   filePath: string,
 ): Promise<string | null> {
   if (!isTauri) return null;
+  if (filePath.startsWith("file://")) {
+    filePath = decodeURIComponent(filePath.slice(7));
+  }
   try {
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     return await readTextFile(filePath);
@@ -368,6 +454,9 @@ export async function walkDir(
   dir: string,
   predicate: (name: string) => boolean,
 ): Promise<string[]> {
+  if (dir.startsWith("file://")) {
+    dir = decodeURIComponent(dir.slice(7));
+  }
   const results: string[] = [];
   const entries = await readDirectory(dir);
   for (const e of entries) {

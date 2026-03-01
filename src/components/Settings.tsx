@@ -1,6 +1,11 @@
 import React, { useState } from "react";
 import { useGameStore } from "../store";
-import { isTauri, pickDirectory } from "../tauri_bridge";
+import {
+  isTauri,
+  pickDirectory,
+  isIOS,
+  getAppDocumentsDir,
+} from "../tauri_bridge";
 
 /**
  * Settings modal panel.
@@ -156,6 +161,21 @@ const AssetsDirRow: React.FC = () => {
   const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const handleIOSDocuments = async () => {
+    if (picking) return;
+    setError(null);
+    setPicking(true);
+    try {
+      const dir = await getAppDocumentsDir();
+      if (!dir) throw new Error("无法获取应用文稿目录");
+      setAssetsDir(dir);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "未知错误");
+    } finally {
+      setPicking(false);
+    }
+  };
+
   const handleReselect = async () => {
     if (picking) return;
     setError(null);
@@ -199,7 +219,7 @@ const AssetsDirRow: React.FC = () => {
       </p>
 
       <button
-        onClick={handleReselect}
+        onClick={isIOS ? handleIOSDocuments : handleReselect}
         disabled={picking}
         style={{
           alignSelf: "flex-start",
@@ -215,9 +235,13 @@ const AssetsDirRow: React.FC = () => {
           cursor: picking ? "default" : "pointer",
           transition: "background 0.15s",
         }}
-        aria-label="重新选择 Assets 文件夹"
+        aria-label={isIOS ? "从应用文稿目录加载" : "重新选择 Assets 文件夹"}
       >
-        {picking ? "选择中…" : "📂 重新选择文件夹"}
+        {picking
+          ? "选择中…"
+          : isIOS
+            ? "📂 从“我的 iPhone”加载"
+            : "📂 重新选择文件夹"}
       </button>
 
       {error && (

@@ -8,6 +8,7 @@ import { Tools } from "./components/Tools";
 import { SaveLoadedScreen } from "./components/SaveLoadedScreen";
 import { EndScreen } from "./components/EndScreen";
 import { AssetsDirScreen } from "./components/AssetsDirScreen";
+import { SaveSelector } from "./components/SaveSelector";
 import { isTauri } from "./tauri_bridge";
 
 /**
@@ -159,6 +160,7 @@ export const App: React.FC = () => {
       {showGallery && <CGGallery />}
       {showSettings && <Settings />}
       {showTools && <Tools />}
+      <SaveSelector />
 
       {/* ── Global error toast ── */}
       {saveError && (

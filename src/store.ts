@@ -81,7 +81,7 @@ interface StoreActions {
   jumpTo: (label: string) => void;
 
   // ── Save / Load ──
-  saveExport: () => void;
+  saveExport: () => Promise<void>;
   saveImport: () => Promise<void>;
   continueSave: (save: import("./save").LoadedSave) => void;
 
@@ -90,6 +90,10 @@ interface StoreActions {
   clearAssetsDir: () => void;
 
   // ── UI toggles ──
+  showSaveSelector: boolean;
+  openSaveSelector: () => void;
+  closeSaveSelector: () => void;
+
   openGallery: () => void;
   closeGallery: () => void;
   openSettings: () => void;
@@ -346,11 +350,11 @@ export const useGameStore = create<Store>((set, get) => {
 
     // ── Save / Load ────────────────────────────────────────────────────────
 
-    saveExport: () => {
+    saveExport: async () => {
       const state = get();
       if (state.phase !== "playing") return;
       try {
-        exportSave(state);
+        await exportSave(state);
       } catch (err) {
         set({
           saveError: `导出失败：${err instanceof Error ? err.message : String(err)}`,
@@ -391,6 +395,10 @@ export const useGameStore = create<Store>((set, get) => {
     },
 
     // ── UI toggles ─────────────────────────────────────────────────────────
+
+    showSaveSelector: false,
+    openSaveSelector: () => set({ showSaveSelector: true }),
+    closeSaveSelector: () => set({ showSaveSelector: false }),
 
     openGallery: () => set({ showGallery: true }),
     closeGallery: () => set({ showGallery: false }),
