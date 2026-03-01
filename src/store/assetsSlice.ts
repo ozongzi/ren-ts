@@ -1,56 +1,62 @@
 // ─── Assets Slice ─────────────────────────────────────────────────────────────
 //
-// Manages the user-selected assets directory (Tauri only) and the initial
-// manifest / script loading that happens on startup or when the directory
-// changes.
+// Manages the active assets.zip and the initial manifest / script loading.
 //
-//   assetsDir      — absolute path chosen by the user (null = not yet chosen)
+//   zipFileName    — display name of the mounted zip (e.g. "assets.zip")
 //   gameTitle      — display name from manifest.json (undefined when absent)
 //   manifestLoaded — true once loadAll() has completed successfully
 //
 // Lifecycle:
-//   init()          — called once on app mount; rehydrates assetsDir from
-//                     localStorage then kicks off loadAll()
-//   setAssetsDir()  — called when the user picks a new folder; persists path
-//                     and re-runs loadAll() when manifest hasn't loaded yet
-//   clearAssetsDir()— resets to unset state (returns to AssetsDirScreen)
+//   init()       — called once on app mount; in Web mode auto-mounts
+//                  WebFetchFS so self-hosted deployments work without any
+//                  user interaction.  In Tauri mode waits for the user to
+//                  pick a zip (no stored path to rehydrate).
+//   mountZip()   — called when the user selects an assets.zip file; mounts
+//                  ZipFS and kicks off loadAll().
+//   unmountZip() — resets to unset state (returns to ZipPickerScreen).
 
 import type { StateCreator } from "zustand";
-import { loadAll, getManifestGame } from "../loader";
+import { loadAll, getManifestGame, defaultGameData } from "../loader";
 import {
-  isTauri,
-  getStoredAssetsDir,
-  persistAssetsDir,
-  clearStoredAssetsDir,
-  setActiveAssetsDir,
-} from "../tauri_bridge";
+  mountFilesystem,
+  unmountFilesystem,
+  ZipFS,
+  WebFetchFS,
+} from "../filesystem";
+import { isTauri } from "../tauri_bridge";
 
 // ─── Slice interface ──────────────────────────────────────────────────────────
 
 export interface AssetsSlice {
-  /** Absolute path to the game's assets folder (Tauri only; null = not set). */
-  assetsDir: string | null;
+  /** Display name of the currently mounted zip, e.g. "assets.zip". Null = none. */
+  zipFileName: string | null;
   /** Display name from manifest.json, or undefined when not present. */
   gameTitle: string | undefined;
   /** True once all .rrs files have been parsed and registered. */
   manifestLoaded: boolean;
 
-  /** Bootstrap: rehydrate stored dir and kick off script loading. */
+  /** Bootstrap: auto-mount WebFetchFS on web, or wait for user zip selection in Tauri. */
   init: () => Promise<void>;
-  /** Update the assets directory, persist it, and (re)load scripts. */
-  setAssetsDir: (dir: string) => void;
-  /** Clear the stored directory and return to the AssetsDirScreen. */
-  clearAssetsDir: () => void;
+  /**
+   * Mount the given File as a ZipFS, parse the Central Directory index, then
+   * run loadAll().  Called when the user selects a file via the picker.
+   */
+  mountZip: (file: File) => Promise<void>;
+  /** Unmount the current filesystem and return to the ZipPickerScreen. */
+  unmountZip: () => void;
 }
 
-// ─── Shared load helper (used by both init and setAssetsDir) ─────────────────
+// ─── Shared load helper ───────────────────────────────────────────────────────
 
-/** Run loadAll() and update loading / error / manifest state accordingly. */
-async function runLoadAll(
-  set: (partial: Partial<AssetsSlice & { loading: boolean; error: string | null }>) => void,
-): Promise<void> {
-  set({ loading: true });
+type SetFn = (
+  partial: Partial<AssetsSlice & { loading: boolean; error: string | null }>,
+) => void;
+
+async function runLoadAll(set: SetFn): Promise<void> {
+  set({ loading: true, error: null });
   try {
+    // Reset any previously loaded game data so stale labels/defines don't bleed in.
+    defaultGameData.reset();
     await loadAll();
     set({
       manifestLoaded: true,
@@ -59,14 +65,12 @@ async function runLoadAll(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // Loading failed — clear the stored dir so the user is returned to
-    // AssetsDirScreen where they can pick a correct folder.
-    clearStoredAssetsDir();
-    setActiveAssetsDir(null);
+    unmountFilesystem();
     set({
       loading: false,
       error: `无法加载剧本数据：${msg}`,
-      assetsDir: null,
+      zipFileName: null,
+      manifestLoaded: false,
     });
   }
 }
@@ -74,53 +78,80 @@ async function runLoadAll(
 // ─── Slice factory ────────────────────────────────────────────────────────────
 
 export const createAssetsSlice: StateCreator<
-  AssetsSlice & { loading: boolean; error: string | null; manifestLoaded: boolean },
+  AssetsSlice & {
+    loading: boolean;
+    error: string | null;
+    manifestLoaded: boolean;
+  },
   [],
   [],
   AssetsSlice
-> = (set, get) => ({
-  assetsDir: null,
+> = (set) => ({
+  zipFileName: null,
   gameTitle: undefined,
   manifestLoaded: false,
 
   // ── init ───────────────────────────────────────────────────────────────────
   init: async () => {
-    set({ loading: true, error: null } as Partial<AssetsSlice & { loading: boolean; error: string | null }>);
+    set({ loading: true, error: null } as Partial<
+      AssetsSlice & { loading: boolean; error: string | null }
+    >);
 
-    if (isTauri) {
-      const stored = getStoredAssetsDir();
-      if (!stored) {
-        // First launch — no directory chosen yet. Show AssetsDirScreen.
-        set({ loading: false } as Partial<AssetsSlice & { loading: boolean; error: string | null }>);
-        return;
-      }
-      // Rehydrate: sync module-level variable so resolveAsset() works immediately.
-      setActiveAssetsDir(stored);
-      set({ assetsDir: stored } as Partial<AssetsSlice & { loading: boolean; error: string | null }>);
+    if (!isTauri) {
+      // Web mode: auto-mount WebFetchFS so self-hosted deployments work
+      // without the user having to pick any file.
+      mountFilesystem(new WebFetchFS("/assets"));
+      await runLoadAll(set as SetFn);
+      return;
     }
 
-    await runLoadAll(set as Parameters<typeof runLoadAll>[0]);
+    // Tauri mode: wait for the user to pick a zip — nothing to auto-load.
+    set({ loading: false } as Partial<
+      AssetsSlice & { loading: boolean; error: string | null }
+    >);
   },
 
-  // ── setAssetsDir ───────────────────────────────────────────────────────────
-  setAssetsDir: (dir: string) => {
-    setActiveAssetsDir(dir);
-    persistAssetsDir(dir);
-    // Clear any previous load error while the new folder loads.
-    set({ assetsDir: dir, error: null } as Partial<AssetsSlice & { loading: boolean; error: string | null }>);
+  // ── mountZip ───────────────────────────────────────────────────────────────
+  mountZip: async (file: File) => {
+    set({ loading: true, error: null } as Partial<
+      AssetsSlice & { loading: boolean; error: string | null }
+    >);
 
-    // Only re-run loadAll if scripts haven't been loaded yet.
-    // If they were already loaded (user is just switching dirs), a full page
-    // reload is needed anyway — the store's game state would be stale.
-    if (!get().manifestLoaded) {
-      runLoadAll(set as Parameters<typeof runLoadAll>[0]);
+    // Tear down any previously mounted filesystem (revokes old Blob URLs).
+    unmountFilesystem();
+
+    let zipFs: ZipFS;
+    try {
+      zipFs = await ZipFS.mount(file);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      set({
+        loading: false,
+        error: `ZIP 文件无法解析：${msg}`,
+        zipFileName: null,
+        manifestLoaded: false,
+      } as Partial<AssetsSlice & { loading: boolean; error: string | null }>);
+      return;
     }
+
+    mountFilesystem(zipFs);
+
+    set({ zipFileName: file.name } as Partial<
+      AssetsSlice & { loading: boolean; error: string | null }
+    >);
+
+    await runLoadAll(set as SetFn);
   },
 
-  // ── clearAssetsDir ─────────────────────────────────────────────────────────
-  clearAssetsDir: () => {
-    setActiveAssetsDir(null);
-    clearStoredAssetsDir();
-    set({ assetsDir: null } as Partial<AssetsSlice & { loading: boolean; error: string | null }>);
+  // ── unmountZip ─────────────────────────────────────────────────────────────
+  unmountZip: () => {
+    unmountFilesystem();
+    defaultGameData.reset();
+    set({
+      zipFileName: null,
+      manifestLoaded: false,
+      gameTitle: undefined,
+      error: null,
+    } as Partial<AssetsSlice & { loading: boolean; error: string | null }>);
   },
 });

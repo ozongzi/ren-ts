@@ -24,7 +24,7 @@ import type {
 } from "./types";
 import { getLabel, getManifestStart, getDefineVars } from "./loader";
 import { evaluateCondition } from "./evaluate";
-import { resolveAsset } from "./assets";
+
 import { VarStore } from "./vars";
 
 // ─── Debug logging ────────────────────────────────────────────────────────────
@@ -419,7 +419,7 @@ function executeStep(state: GameState, step: Step): StepResult {
 
     // ── Scene (background swap) ─────────────────────────────────────────────
     case "scene": {
-      const backgroundSrc = resolveAsset(resolveImageSrc(step.src, state.vars));
+      const backgroundSrc = resolveImageSrc(step.src, state.vars);
       // A `scene` command hides all sprites
       return advance({
         ...state,
@@ -445,7 +445,7 @@ function executeStep(state: GameState, step: Step): StepResult {
       const newTag = spriteTag(step.sprite);
       // Resolve sprite src via vars["image." + sprite]; step.src is no longer
       // pre-resolved at compile time.
-      const src = resolveAsset(resolveImageSrc(step.sprite, state.vars));
+      const src = resolveImageSrc(step.sprite, state.vars);
 
       // Inherit position from existing same-tag sprite when not specified
       const existingIdx = state.sprites.findIndex(
@@ -531,7 +531,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         ...state,
         stepIndex: state.stepIndex + 1,
         dialogue,
-        voiceSrc: resolvedVoice ? resolveAsset(resolvedVoice) : null,
+        voiceSrc: resolvedVoice ?? null,
         waitingForInput: true,
         autoAdvanceDelay: null,
       });
@@ -549,7 +549,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         ...state,
         stepIndex: state.stepIndex + 1,
         dialogue,
-        voiceSrc: resolvedVoice ? resolveAsset(resolvedVoice) : null,
+        voiceSrc: resolvedVoice ?? null,
         waitingForInput: true,
         autoAdvanceDelay: null,
       });
@@ -568,11 +568,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         ...state,
         stepIndex: state.stepIndex + 1,
         dialogue,
-        voiceSrc: resolvedVoice
-          ? resolveAsset(resolvedVoice)
-          : prev?.voice
-            ? resolveAsset(prev.voice)
-            : state.voiceSrc,
+        voiceSrc: resolvedVoice ?? prev?.voice ?? state.voiceSrc ?? null,
         waitingForInput: true,
         autoAdvanceDelay: null,
       });
@@ -584,7 +580,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         const resolved = resolveAudioSrc(step.src, state.vars);
         return advance({
           ...state,
-          bgmSrc: resolved ? resolveAsset(resolved) : null,
+          bgmSrc: resolved ?? null,
         });
       }
       if (step.action === "stop") {
@@ -599,7 +595,7 @@ function executeStep(state: GameState, step: Step): StepResult {
         const resolved = resolveAudioSrc(step.src, state.vars);
         return advance({
           ...state,
-          sfxSrc: resolved ? resolveAsset(resolved) : null,
+          sfxSrc: resolved ?? null,
         });
       }
       if (step.action === "stop") {

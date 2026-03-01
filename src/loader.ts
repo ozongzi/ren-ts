@@ -1,31 +1,12 @@
 import type { Step, ScriptFile, Manifest, GalleryEntry } from "./types";
 import { parseScript } from "../rrs/index";
-import { isTauri, getActiveAssetsDir } from "./tauri_bridge";
+import { getFs } from "./filesystem";
 import { registerPosition } from "./assets";
 
 // ─── Data file reader (module-level, no state) ────────────────────────────────
 
 async function readDataFile(filename: string): Promise<string> {
-  if (isTauri) {
-    const assetsDir = getActiveAssetsDir();
-    if (!assetsDir) {
-      throw new Error(
-        `[loader] Cannot read "${filename}": assets directory has not been selected yet.`,
-      );
-    }
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
-    return readTextFile(`${assetsDir}/data/${filename}`);
-  }
-
-  const url = `/assets/data/${filename}`;
-  const resp = await fetch(url, {
-    cache: "no-store",
-    headers: { Pragma: "no-cache" },
-  });
-  if (!resp.ok) {
-    throw new Error(`[loader] HTTP ${resp.status} fetching ${url}`);
-  }
-  return resp.text();
+  return getFs().readText(`data/${filename}`);
 }
 
 // ─── GameData class ───────────────────────────────────────────────────────────

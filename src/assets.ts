@@ -10,25 +10,100 @@
 //   "Audio/Voice/..."            → audio
 //   "#000000"                    → CSS color (no file)
 //
-// ── Web mode ──
-//   All image assets live under /assets/images/
-//   All audio assets live under /assets/Audio/
-//   (note: capital A in "Audio" matches the real directory)
+// All resolution goes through the active IFileSystem (ZipFS or WebFetchFS).
+// resolveAsset() and resolveAudio() are now async; callers that previously
+// received a synchronous URL string should await them instead.
 //
-// ── Tauri mode (user-specified assets directory) ──
-//   The user picks their `assets/` folder at first launch.  Paths are
-//   converted via convertFileSrc() from tauri_bridge so the WebView can load
-//   them via the asset:// protocol.
-//     images  → <assetsDir>/images/<src>
-//     audio   → <assetsDir>/<src>
+// Path conventions inside the zip / server layout:
+//   images/BGs/bg_bus.jpg        → image asset
+//   Audio/BGM/foo.ogg            → audio asset
+//   data/manifest.json           → loaded by loader.ts, not here
 
-import {
-  isTauri,
-  getActiveAssetsDir,
-  convertFileSrcSync,
-  buildNativeImagePath,
-  buildNativeAudioPath,
-} from "./tauri_bridge";
+import { getFs } from "./filesystem";
+
+// ─── Blob URL cache (sync access for already-resolved assets) ─────────────────
+//
+// Components that need a synchronous URL (e.g. <img src={url}>) can call
+// resolveAssetSync() which returns the cached Blob URL if available, or an
+// empty string while the async resolve is in-flight.  The component should
+// call resolveAsset() in a useEffect / useAsset hook and re-render on settle.
+
+const _urlCache: Map<string, string> = new Map();
+
+/**
+ * Async: resolve an asset path to a URL and cache it.
+ * Returns "" for CSS colours (they need no resolution).
+ */
+export async function resolveAssetAsync(src: string): Promise<string> {
+  if (!src) return "";
+  if (isCssColor(src)) return src;
+
+  const cached = _urlCache.get(src);
+  if (cached !== undefined) return cached;
+
+  const fsPath = _toFsPath(src);
+  try {
+    const url = await getFs().resolveUrl(fsPath);
+    _urlCache.set(src, url);
+    return url;
+  } catch (err) {
+    console.error(`[assets] Failed to resolve "${src}":`, err);
+    _urlCache.set(src, "");
+    return "";
+  }
+}
+
+/**
+ * Synchronous: return a cached URL, or "" if not yet resolved.
+ * CSS colours are returned as-is immediately.
+ */
+export function resolveAsset(src: string): string {
+  if (!src) return "";
+  if (isCssColor(src)) return src;
+  return _urlCache.get(src) ?? "";
+}
+
+/**
+ * Async: resolve an audio src to a URL and cache it.
+ */
+export async function resolveAudioAsync(
+  src: string | undefined,
+): Promise<string> {
+  if (!src) return "";
+  return resolveAssetAsync(src);
+}
+
+/**
+ * Synchronous: return a cached audio URL, or "" if not yet resolved.
+ */
+export function resolveAudio(src: string): string {
+  if (!src) return "";
+  return _urlCache.get(src) ?? "";
+}
+
+/**
+ * Convert a raw script asset path to the filesystem path used inside the zip
+ * or on the static server.
+ *
+ *   "BGs/bg.jpg"         → "images/BGs/bg.jpg"
+ *   "images/BGs/bg.jpg"  → "images/BGs/bg.jpg"   (already prefixed)
+ *   "Audio/BGM/foo.ogg"  → "Audio/BGM/foo.ogg"   (already correct)
+ *   "#000000"            → "#000000"              (CSS colour, unchanged)
+ */
+function _toFsPath(src: string): string {
+  if (isCssColor(src)) return src;
+  if (isAudioPath(src)) return src;
+  if (isVideoPath(src)) {
+    // videos/ directory at zip root
+    if (src.startsWith("videos/")) return src;
+    return `videos/${src}`;
+  }
+  // Image: strip any existing "images/" prefix then re-add
+  const stripped = src.startsWith("images/")
+    ? src.slice("images/".length)
+    : src;
+  return `images/${stripped}`;
+}
 
 // ─── Type guard helpers ───────────────────────────────────────────────────────
 
@@ -48,94 +123,6 @@ export function isVideoPath(src: string): boolean {
 }
 
 // ─── Path resolution ──────────────────────────────────────────────────────────
-
-/**
- * Convert a raw src string from the JSON data into a URL that the browser
- * can load at runtime.
- *
- * Web mode:
- *   - CSS colours  → returned as-is
- *   - Audio paths  → prefixed with /assets/
- *   - Image paths  → prefixed with /assets/images/
- *
- * Tauri mode (assetsDir set):
- *   - CSS colours  → returned as-is
- *   - Audio paths  → convertFileSrc(<assetsDir>/<src>)
- *   - Image paths  → convertFileSrc(<assetsDir>/images/<src>)
- */
-/**
- * Convert a raw src string from the JSON data into a URL the browser can load.
- *
- * When `src` contains no "/" and is not a CSS colour, it is treated as an
- * unresolved image key (e.g. "cg.arrival2" — not found in the defines dict).
- * The fallback converts it to a path by replacing "." with "_":
- *   "cg.arrival2"      → images/cg_arrival2.jpg   (tries .jpg first)
- *   "bg_entrance_day"  → images/bg_entrance_day.jpg
- * Extensions other than .jpg will not be found via this fallback — games
- * should declare all images explicitly in their script.rpy so the codegen
- * resolves them at compile time.
- */
-export function resolveAsset(src: string): string {
-  if (!src) return "";
-  if (isCssColor(src)) return src;
-
-  // ── Unresolved image key handling ─────────────────────────────────────────
-  // Keys reach here when the codegen couldn't find the image in the imageMap.
-  // They have no "/" and are not a colour.  Previously we attempted a best-guess
-  // fallback by converting dots to underscores and trying images/<name>.jpg.
-  // That behavior has been removed: now we log an error and return an empty src
-  // so the renderer does not attempt to load a guessed file.
-  if (!src.includes("/") && !src.startsWith("#")) {
-    console.error(`[assets] Unresolved image key: ${src}`);
-    return "";
-  }
-
-  if (isTauri) {
-    const assetsDir = getActiveAssetsDir();
-    if (assetsDir) {
-      if (isAudioPath(src)) {
-        return convertFileSrcSync(buildNativeAudioPath(assetsDir, src));
-      }
-      return convertFileSrcSync(buildNativeImagePath(assetsDir, src));
-    }
-    // Tauri but no assetsDir chosen yet — return empty so <img> doesn't 404
-    return "";
-  }
-
-  // ── Web mode ──
-  if (isAudioPath(src)) return `/assets/${src}`;
-  // Image asset (BGs, CGs, Sprites, UI, FX, Animated CGs, …)
-  // Some verbatim .rpy paths already include the "images/" segment
-  // (e.g. "images/BGs/foo.jpg"); strip it before prepending so we never
-  // produce a double "images/images/" prefix.
-  const imgSrc = src.startsWith("images/") ? src.slice("images/".length) : src;
-  return `/assets/images/${imgSrc}`;
-}
-
-/**
- * Convenience: resolve an audio src.
- *
- * Web:   returns the /assets/ prefixed URL.
- * Tauri: returns an asset:// URL using the active assetsDir.
- *
- * If the src is already an absolute path / URL it is returned unchanged.
- */
-export function resolveAudio(src: string): string {
-  if (!src) return "";
-  // Already an absolute URL or native path
-  if (src.startsWith("/") || src.startsWith("asset://")) return src;
-
-  if (isTauri) {
-    const assetsDir = getActiveAssetsDir();
-    if (assetsDir && isAudioPath(src)) {
-      return convertFileSrcSync(buildNativeAudioPath(assetsDir, src));
-    }
-    return "";
-  }
-
-  if (isAudioPath(src)) return `/assets/${src}`;
-  return src;
-}
 
 // ─── Sprite classification ────────────────────────────────────────────────────
 

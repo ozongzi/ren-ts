@@ -9,7 +9,7 @@
 //   store/saveSlice   — save file location + newGame / enterGame / save I/O
 //   store/uiSlice     — modal visibility flags + saveError toast
 //   store/volumeSlice — volume levels + setVolume* + localStorage persistence
-//   store/assetsSlice — assetsDir + init + setAssetsDir (Tauri)
+//   store/assetsSlice — zipFileName + init + mountZip / unmountZip
 //
 //   engine.ts         — pure state machine (no React, no side-effects)
 //   audio.ts          — AudioManager singleton (side-effects only)

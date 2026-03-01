@@ -14,21 +14,18 @@
 
 import type { StateCreator } from "zustand";
 import type { GameState } from "../types";
-import {
-  createInitialState,
-  advance,
-  type AdvanceAction,
-} from "../engine";
+import { createInitialState, advance, type AdvanceAction } from "../engine";
 import { audioManager } from "../audio";
 import { autoSaveToHandle } from "../save";
+import { resolveAssetAsync } from "../assets";
 
 // ─── Slice interface ──────────────────────────────────────────────────────────
 
 export interface GameSlice extends GameState {
-  click:  () => void;
+  click: () => void;
   choose: (index: number) => void;
   jumpTo: (label: string) => void;
-  goToTitle:    () => void;
+  goToTitle: () => void;
   backToSaveMenu: () => void;
 }
 
@@ -36,13 +33,13 @@ export interface GameSlice extends GameState {
 
 type GameSliceDeps = GameSlice & {
   // from assetsSlice
-  assetsDir:      string | null;
-  gameTitle:      string | undefined;
+  zipFileName: string | null;
+  gameTitle: string | undefined;
   manifestLoaded: boolean;
   // from saveSlice
   saveFileHandle: FileSystemFileHandle | null;
-  saveFilePath:   string | null;
-  saveFileName:   string | null;
+  saveFilePath: string | null;
+  saveFileName: string | null;
   // from uiSlice
   showTools: boolean;
 };
@@ -53,19 +50,29 @@ function syncAudio(prev: GameState, next: GameState): void {
   // BGM
   if (next.bgmSrc !== prev.bgmSrc) {
     if (next.bgmSrc) {
-      audioManager.playBGM(next.bgmSrc, { fadein: 1 });
+      const rawBgm = next.bgmSrc;
+      resolveAssetAsync(rawBgm).then((url) => {
+        if (url) audioManager.playBGM(url, { fadein: 1 });
+      });
     } else {
       audioManager.stopBGM({ fadeout: 1 });
     }
   }
   // SFX
   if (next.sfxSrc !== prev.sfxSrc && next.sfxSrc) {
-    audioManager.playSFX(next.sfxSrc);
+    const rawSfx = next.sfxSrc;
+    resolveAssetAsync(rawSfx).then((url) => {
+      if (url) audioManager.playSFX(url);
+    });
   }
   // Voice
   if (next.voiceSrc !== prev.voiceSrc) {
     if (next.voiceSrc) {
-      audioManager.playVoice(next.voiceSrc);
+      const rawVoice = next.voiceSrc;
+      resolveAssetAsync(rawVoice).then((url) => {
+        if (url) audioManager.playVoice(url);
+        else audioManager.stopVoice();
+      });
     } else {
       audioManager.stopVoice();
     }
@@ -105,12 +112,10 @@ export function makeApplyGameState(
 
 // ─── Slice factory ────────────────────────────────────────────────────────────
 
-export const createGameSlice: StateCreator<
-  GameSliceDeps,
-  [],
-  [],
-  GameSlice
-> = (set, get) => {
+export const createGameSlice: StateCreator<GameSliceDeps, [], [], GameSlice> = (
+  set,
+  get,
+) => {
   const applyGameState = makeApplyGameState(set, get);
 
   return {
@@ -143,16 +148,16 @@ export const createGameSlice: StateCreator<
     // ── goToTitle ────────────────────────────────────────────────────────────
     goToTitle: () => {
       audioManager.stopAll();
-      // Preserve assetsDir and gameTitle so the user does not have to re-pick
-      // on every visit to the title screen.
-      const { assetsDir, gameTitle } = get();
+      // Preserve zip / manifest state so the user does not have to re-select
+      // the zip on every visit to the title screen.
+      const { zipFileName, gameTitle } = get();
       set({
         ...createInitialState(),
         manifestLoaded: true,
         saveFileHandle: null,
-        saveFilePath:   null,
-        saveFileName:   null,
-        assetsDir,
+        saveFilePath: null,
+        saveFileName: null,
+        zipFileName,
         gameTitle,
         showTools: false,
       } as Partial<GameSliceDeps>);

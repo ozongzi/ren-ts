@@ -30,8 +30,10 @@ export const App: React.FC = () => {
   const showTools = useGameStore((s) => s.showTools);
   const saveError = useGameStore((s) => s.saveError);
   const clearSaveError = useGameStore((s) => s.clearSaveError);
-  // Tauri: assetsDir is null until the user picks a folder on first launch.
-  const assetsDir = useGameStore((s) => s.assetsDir);
+  // Show the zip picker when no filesystem is mounted yet (Tauri) or when
+  // the manifest failed to load.  In web mode init() auto-mounts WebFetchFS
+  // so manifestLoaded flips to true without user interaction.
+  const manifestLoaded = useGameStore((s) => s.manifestLoaded);
 
   // Load all script data once on mount
   useEffect(() => {
@@ -55,8 +57,8 @@ export const App: React.FC = () => {
         background: "#000",
       }}
     >
-      {/* In Tauri mode, block all game UI until the user has chosen an assets folder. */}
-      {isTauri && !assetsDir ? (
+      {/* Block all game UI until a zip is mounted and scripts are loaded. */}
+      {isTauri && !manifestLoaded ? (
         <AssetsDirScreen />
       ) : (
         <>
