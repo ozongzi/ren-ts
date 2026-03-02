@@ -61,6 +61,7 @@ import {
   type VirtualZipEntry as TauriBridgeVirtualEntry,
   type RpaFileEntry as TauriBridgeRpaEntry,
 } from "./tauri_bridge";
+import { RpaReader } from "./rpaReader";
 
 // ─── CancelledError ───────────────────────────────────────────────────────────
 
@@ -896,6 +897,15 @@ function dosDateTime(d: Date): { modTime: number; modDate: number } {
 
 // ─── FsaConverterFs ──────────────────────────────────────────────────────────
 
+/**
+ * Maps a game-root-relative path to the RpaReader that owns it and the
+ * exact in-archive entry name.
+ */
+interface FsaRpaVirtualFile {
+  reader: RpaReader;
+  entry: string;
+}
+
 class FsaConverterFs implements IConverterFs {
   constructor(private readonly root: FileSystemDirectoryHandle) {}
 
@@ -903,23 +913,116 @@ class FsaConverterFs implements IConverterFs {
     return this.root.name;
   }
 
+  // ── RPA index cache ─────────────────────────────────────────────────────────
+  //
+  // Built lazily on the first walkDir call.  Maps each relative path
+  // (game-root-relative, forward-slash) to the RpaReader + entry name.
+  //
+  // Real disk files always win over RPA virtual files, matching Ren'Py's own
+  // precedence rules.
+
+  private _rpaCache: Map<string, FsaRpaVirtualFile> | null = null;
+
+  private async _getRpaIndex(): Promise<Map<string, FsaRpaVirtualFile>> {
+    if (this._rpaCache !== null) return this._rpaCache;
+
+    const cache = new Map<string, FsaRpaVirtualFile>();
+
+    // Find all .rpa files under the root directory.
+    let rpaPaths: string[];
+    try {
+      rpaPaths = await fsaWalkDir(
+        this.root,
+        (name) => name.toLowerCase().endsWith(".rpa"),
+        "",
+      );
+    } catch {
+      this._rpaCache = cache;
+      return cache;
+    }
+
+    // Open and index each archive in parallel.
+    await Promise.all(
+      rpaPaths.map(async (rpaRel) => {
+        try {
+          const fh = await fsaResolveFile(this.root, rpaRel, false);
+          if (!fh) return;
+          const file = await fh.getFile();
+          const reader = await RpaReader.open(file);
+          for (const entry of reader.paths) {
+            const normEntry = entry.replace(/\\/g, "/");
+            // First RPA to claim a path wins (same as Ren'Py).
+            if (!cache.has(normEntry)) {
+              cache.set(normEntry, { reader, entry: normEntry });
+            }
+          }
+        } catch (err) {
+          console.warn(`[FsaConverterFs] Failed to index RPA ${rpaRel}:`, err);
+        }
+      }),
+    );
+
+    this._rpaCache = cache;
+    return cache;
+  }
+
+  // ── IConverterFs implementation ─────────────────────────────────────────────
+
   async walkDir(
     dir: string,
     predicate: (name: string) => boolean,
   ): Promise<string[]> {
+    // 1. Regular disk files.
     const dirHandle =
       dir === "" ? this.root : await fsaResolveDir(this.root, dir, false);
-    if (!dirHandle) return [];
-    return fsaWalkDir(dirHandle, predicate, dir === "" ? "" : dir);
+    const diskFiles = new Set<string>(
+      dirHandle
+        ? await fsaWalkDir(dirHandle, predicate, dir === "" ? "" : dir)
+        : [],
+    );
+
+    // 2. Virtual files from RPA archives.
+    const rpaIndex = await this._getRpaIndex();
+    const dirPrefix = dir === "" ? "" : dir.endsWith("/") ? dir : dir + "/";
+
+    const rpaFiles: string[] = [];
+    for (const [relPath] of rpaIndex) {
+      if (dirPrefix !== "" && !relPath.startsWith(dirPrefix)) continue;
+      if (diskFiles.has(relPath)) continue;
+      const name = relPath.slice(relPath.lastIndexOf("/") + 1);
+      if (predicate(name)) rpaFiles.push(relPath);
+    }
+
+    rpaFiles.sort();
+    return [...diskFiles, ...rpaFiles];
   }
 
   async readText(relPath: string): Promise<string | null> {
+    // Prefer disk file.
     try {
       const fh = await fsaResolveFile(this.root, relPath, false);
-      if (!fh) return null;
-      const file = await fh.getFile();
-      return file.text();
+      if (fh) {
+        const file = await fh.getFile();
+        return file.text();
+      }
     } catch {
+      // fall through to RPA
+    }
+
+    // Fall back to RPA.
+    const rpaIndex = await this._getRpaIndex();
+    const vf = rpaIndex.get(relPath.replace(/\\/g, "/"));
+    if (!vf) return null;
+
+    try {
+      const bytes = await vf.reader.read(vf.entry);
+      if (!bytes) return null;
+      return new TextDecoder("utf-8").decode(bytes);
+    } catch (err) {
+      console.warn(
+        `[FsaConverterFs] readText from RPA failed for ${relPath}:`,
+        err,
+      );
       return null;
     }
   }
@@ -934,13 +1037,17 @@ class FsaConverterFs implements IConverterFs {
 
   async exists(relPath: string): Promise<boolean> {
     if (relPath === "" || relPath === ".") return true;
+
+    // Check disk first.
     const parts = relPath.split("/").filter(Boolean);
     let dir: FileSystemDirectoryHandle = this.root;
     for (let i = 0; i < parts.length - 1; i++) {
       try {
         dir = await dir.getDirectoryHandle(parts[i], { create: false });
       } catch {
-        return false;
+        // Not on disk — check RPA below.
+        const rpaIndex = await this._getRpaIndex();
+        return rpaIndex.has(relPath.replace(/\\/g, "/"));
       }
     }
     const last = parts[parts.length - 1];
@@ -954,8 +1061,12 @@ class FsaConverterFs implements IConverterFs {
       await dir.getDirectoryHandle(last, { create: false });
       return true;
     } catch {
-      return false;
+      /* not a dir */
     }
+
+    // Check RPA index.
+    const rpaIndex = await this._getRpaIndex();
+    return rpaIndex.has(relPath.replace(/\\/g, "/"));
   }
 
   /**
@@ -1029,6 +1140,9 @@ class FsaConverterFs implements IConverterFs {
       }
     }
 
+    // Pre-build RPA index so we can classify each include path.
+    const rpaIndex = await this._getRpaIndex();
+
     const writable = await saveHandle.createWritable();
     const virt = virtualEntries ?? [];
     const total = include.length + virt.length;
@@ -1037,132 +1151,134 @@ class FsaConverterFs implements IConverterFs {
     const now = new Date();
     const { modTime, modDate } = dosDateTime(now);
 
+    /**
+     * Write one ReadableStream<Uint8Array> entry into the open ZIP writable.
+     * Handles both STORE and DEFLATE methods, writes the local header +
+     * file data + data descriptor, appends to centralDir, advances
+     * archiveOffset.
+     */
+    const writeStreamEntry = async (
+      relPath: string,
+      rawStream: ReadableStream<Uint8Array>,
+      index: number,
+    ): Promise<void> => {
+      const nameBytes = encodeUtf8(relPath);
+      const method = shouldDeflate(relPath)
+        ? ZIP_METHOD_DEFLATE
+        : ZIP_METHOD_STORE;
+
+      const localHeaderOffset = archiveOffset;
+      const localHeader = buildLocalHeader(nameBytes, method, modTime, modDate);
+      await writable.write(u8(localHeader));
+      archiveOffset += localHeader.length;
+
+      let crc: number;
+      let uncompressedSize: number;
+      let compressedSize: number;
+
+      if (method === ZIP_METHOD_STORE) {
+        const result = await crc32Stream(rawStream, async (chunk) => {
+          await writable.write(u8(chunk));
+          archiveOffset += chunk.length;
+        });
+        crc = result.crc;
+        uncompressedSize = result.size;
+        compressedSize = result.size;
+      } else {
+        const [branchA, branchB] = rawStream.tee();
+
+        const crcPromise = crc32Stream(branchA, async () => {});
+
+        const compressedPromise = (async () => {
+          const compStream = new CompressionStream(
+            "deflate-raw",
+          ) as unknown as TransformStream<Uint8Array, Uint8Array>;
+          const compressed = branchB.pipeThrough(compStream);
+          const reader = compressed.getReader();
+          let compBytes = 0;
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              await writable.write(u8(value));
+              compBytes += value.length;
+              archiveOffset += value.length;
+            }
+          } finally {
+            reader.releaseLock();
+          }
+          return compBytes;
+        })();
+
+        const [crcResult, compSize] = await Promise.all([
+          crcPromise,
+          compressedPromise,
+        ]);
+        crc = crcResult.crc;
+        uncompressedSize = crcResult.size;
+        compressedSize = compSize;
+      }
+
+      const dataDescriptor = buildDataDescriptor(
+        crc,
+        compressedSize,
+        uncompressedSize,
+      );
+      await writable.write(u8(dataDescriptor));
+      archiveOffset += dataDescriptor.length;
+
+      centralDir.push({
+        nameBytes,
+        method,
+        modTime,
+        modDate,
+        crc,
+        compressedSize,
+        uncompressedSize,
+        localHeaderOffset,
+      });
+
+      onProgress?.({ index, total, zipPath: relPath });
+    };
+
     try {
       for (let index = 0; index < include.length; index++) {
         const relPath = include[index];
-        const nameBytes = encodeUtf8(relPath);
-        const method = shouldDeflate(relPath)
-          ? ZIP_METHOD_DEFLATE
-          : ZIP_METHOD_STORE;
+        const normRel = relPath.replace(/\\/g, "/");
 
-        // Resolve file handle
-        const fh = await fsaResolveFile(this.root, relPath, false);
-        if (!fh) {
-          onSkip?.(relPath);
-          continue;
-        }
+        // ── Determine source: disk file or RPA virtual entry ──────────────
+        const diskFh = await fsaResolveFile(this.root, normRel, false);
 
-        let file: File;
-        try {
-          file = await fh.getFile();
-        } catch {
-          onSkip?.(relPath);
-          continue;
-        }
-
-        const localHeaderOffset = archiveOffset;
-
-        // Write Local File Header (sizes/crc zeroed; data descriptor follows)
-        const localHeader = buildLocalHeader(
-          nameBytes,
-          method,
-          modTime,
-          modDate,
-        );
-        await writable.write(u8(localHeader));
-        archiveOffset += localHeader.length;
-
-        // ── Stream file data ──────────────────────────────────────────────────
-        //
-        // STORE: pipe raw bytes, accumulate CRC and size.
-        // DEFLATE: pipe through CompressionStream("deflate-raw"), accumulate
-        //          CRC over raw bytes (before compression) and track
-        //          compressed output size separately.
-
-        let crc = 0;
-        let uncompressedSize = 0;
-        let compressedSize = 0;
-
-        if (method === ZIP_METHOD_STORE) {
-          // One async pass: read raw → write → update CRC
-          const rawStream = file.stream() as ReadableStream<Uint8Array>;
-          const result = await crc32Stream(rawStream, async (chunk) => {
-            await writable.write(u8(chunk));
-            archiveOffset += chunk.length;
-          });
-          crc = result.crc;
-          uncompressedSize = result.size;
-          compressedSize = result.size;
-        } else {
-          // DEFLATE: we need both raw (for CRC/uncompressed size) and
-          // compressed (for compressed size) counts simultaneously.
-          //
-          // We tee the raw stream:
-          //   branch A → CRC accumulator (raw bytes, uncompressed size)
-          //   branch B → CompressionStream → compressed byte counter + writable
-          //
-          // Both branches are drained concurrently.
-
-          const [branchA, branchB] = (
-            file.stream() as ReadableStream<Uint8Array>
-          ).tee();
-
-          // Branch A: CRC + uncompressed size (drain raw bytes, don't write)
-          const crcPromise = crc32Stream(branchA, async () => {
-            // We only need CRC/size, not to write the raw bytes anywhere.
-          });
-
-          // Branch B: compress and write to archive
-          const compressedPromise = (async () => {
-            // Cast through unknown to satisfy strict DOM lib variance on
-            // CompressionStream's WritableStream<BufferSource> input type.
-            const compStream = new CompressionStream(
-              "deflate-raw",
-            ) as unknown as TransformStream<Uint8Array, Uint8Array>;
-            const compressed = branchB.pipeThrough(compStream);
-            const reader = compressed.getReader();
-            let compBytes = 0;
-            try {
-              for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                await writable.write(u8(value));
-                compBytes += value.length;
-                archiveOffset += value.length;
-              }
-            } finally {
-              reader.releaseLock();
-            }
-            return compBytes;
-          })();
-
-          [{ crc, size: uncompressedSize }, compressedSize] = await Promise.all(
-            [crcPromise, compressedPromise],
+        if (diskFh) {
+          // Real disk file — stream directly from FSA handle.
+          let file: File;
+          try {
+            file = await diskFh.getFile();
+          } catch {
+            onSkip?.(normRel);
+            continue;
+          }
+          await writeStreamEntry(
+            normRel,
+            file.stream() as ReadableStream<Uint8Array>,
+            index,
           );
+        } else {
+          // Not on disk — look up in RPA index.
+          const vf = rpaIndex.get(normRel);
+          if (!vf) {
+            onSkip?.(normRel);
+            continue;
+          }
+
+          const rawStream = vf.reader.stream(vf.entry);
+          if (!rawStream) {
+            onSkip?.(normRel);
+            continue;
+          }
+
+          await writeStreamEntry(normRel, rawStream, index);
         }
-
-        // Write Data Descriptor (CRC-32, compressed size, uncompressed size)
-        const dataDescriptor = buildDataDescriptor(
-          crc,
-          compressedSize,
-          uncompressedSize,
-        );
-        await writable.write(u8(dataDescriptor));
-        archiveOffset += dataDescriptor.length;
-
-        // Record metadata for the Central Directory
-        centralDir.push({
-          nameBytes,
-          method,
-          modTime,
-          modDate,
-          crc,
-          compressedSize,
-          uncompressedSize,
-          localHeaderOffset,
-        });
-
-        onProgress?.({ index, total, zipPath: relPath });
       }
 
       // ── Virtual (in-memory text) entries ──────────────────────────────────
