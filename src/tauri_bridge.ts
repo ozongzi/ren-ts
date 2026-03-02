@@ -193,16 +193,29 @@ export async function saveFsaHandle(
   }
 }
 
+// queryPermission / requestPermission are not in lib.dom yet — cast helpers.
+type HandleWithPerm = FileSystemFileHandle & {
+  queryPermission: (d: { mode: string }) => Promise<PermissionState>;
+  requestPermission: (d: { mode: string }) => Promise<PermissionState>;
+};
+
 /**
- * Try to restore a previously saved FileSystemFileHandle from IndexedDB and
- * re-request read permission.
+ * Read the stored FileSystemFileHandle from IndexedDB and silently check
+ * whether permission is already granted — WITHOUT prompting the user.
  *
- * Returns the File if permission is granted, or null if:
- *   - No handle was stored
- *   - The user denies permission
- *   - The browser doesn't support FSA
+ * Returns:
+ *   { handle, file }  — permission already granted, File is ready to use.
+ *   { handle, file: null } — handle exists but permission is "prompt"/"denied";
+ *                            call requestFsaPermission(handle) inside a user
+ *                            gesture to ask for it.
+ *   null              — no handle stored, or FSA not supported.
+ *
+ * Safe to call during app init (no user gesture required).
  */
-export async function loadFsaHandle(): Promise<File | null> {
+export async function queryFsaHandle(): Promise<{
+  handle: FileSystemFileHandle;
+  file: File | null;
+} | null> {
   if (!fsaSupported) return null;
   try {
     const db = await openFsaDb();
@@ -218,25 +231,56 @@ export async function loadFsaHandle(): Promise<File | null> {
     db.close();
     if (!handle) return null;
 
-    // Check / request read permission.  On Chrome this is instant if the
-    // page was recently used; otherwise it shows a small permission prompt.
-    // queryPermission / requestPermission are not yet in lib.dom, so we cast.
-    type HandleWithPerm = FileSystemFileHandle & {
-      queryPermission: (d: { mode: string }) => Promise<PermissionState>;
-      requestPermission: (d: { mode: string }) => Promise<PermissionState>;
-    };
-    const h = handle as HandleWithPerm;
-    const perm = await h.queryPermission({ mode: "read" });
-    if (perm === "granted") return handle.getFile();
-
-    const requested = await h.requestPermission({ mode: "read" });
-    if (requested === "granted") return handle.getFile();
-
-    return null;
+    const perm = await (handle as HandleWithPerm).queryPermission({
+      mode: "read",
+    });
+    if (perm === "granted") {
+      const file = await handle.getFile();
+      return { handle, file };
+    }
+    // Permission not yet granted — caller must use requestFsaPermission()
+    // inside a user-gesture handler.
+    return { handle, file: null };
   } catch (err) {
-    console.warn("[tauri_bridge] loadFsaHandle failed:", err);
+    console.warn("[tauri_bridge] queryFsaHandle failed:", err);
     return null;
   }
+}
+
+/**
+ * Request read permission for a previously stored FileSystemFileHandle.
+ * MUST be called inside a user-gesture handler (e.g. onClick) — browsers
+ * block requestPermission() when called outside one.
+ *
+ * Returns the File on success, or null if the user denies.
+ */
+export async function requestFsaPermission(
+  handle: FileSystemFileHandle,
+): Promise<File | null> {
+  try {
+    const requested = await (handle as HandleWithPerm).requestPermission({
+      mode: "read",
+    });
+    if (requested === "granted") return handle.getFile();
+    return null;
+  } catch (err) {
+    console.warn("[tauri_bridge] requestFsaPermission failed:", err);
+    return null;
+  }
+}
+
+/**
+ * @deprecated Use queryFsaHandle() + requestFsaPermission() instead.
+ *
+ * Try to restore a previously saved FileSystemFileHandle from IndexedDB and
+ * re-request read permission.  Kept for backward compatibility.
+ */
+export async function loadFsaHandle(): Promise<File | null> {
+  const result = await queryFsaHandle();
+  if (!result) return null;
+  if (result.file) return result.file;
+  // Cannot request permission here (no user gesture) — return null.
+  return null;
 }
 
 /**

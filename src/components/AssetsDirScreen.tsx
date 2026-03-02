@@ -9,6 +9,7 @@ import {
   persistZipPath,
   getStoredZipPath,
 } from "../tauri_bridge";
+import type { AssetsSlice } from "../store/assetsSlice";
 
 /**
  * Full-screen zip picker shown whenever no assets.zip is mounted.
@@ -22,6 +23,12 @@ import {
 export const AssetsDirScreen: React.FC = () => {
   const mountZip = useGameStore((s) => s.mountZip);
   const mountZipFromHandle = useGameStore((s) => s.mountZipFromHandle);
+  const restoreFromPendingHandle = useGameStore(
+    (s) => (s as unknown as AssetsSlice).restoreFromPendingHandle,
+  );
+  const pendingFsaHandle = useGameStore(
+    (s) => (s as unknown as AssetsSlice).pendingFsaHandle,
+  );
   const storeLoading = useGameStore((s) => s.loading);
   const storeError = useGameStore((s) => s.error);
 
@@ -31,6 +38,8 @@ export const AssetsDirScreen: React.FC = () => {
 
   // Show the previously remembered path/name as a hint.
   const [rememberedPath, setRememberedPath] = useState<string | null>(null);
+  // Tauri: reloading from last path
+  const [reloading, setReloading] = useState(false);
   useEffect(() => {
     if (isTauri) setRememberedPath(getStoredZipPath());
   }, []);
@@ -98,6 +107,23 @@ export const AssetsDirScreen: React.FC = () => {
     }
   };
 
+  // Tauri: one-click reload from remembered path
+  const handleTauriReload = async () => {
+    if (isLoading || reloading || !rememberedPath) return;
+    setReloading(true);
+    try {
+      const shim = await openTauriFileShim(rememberedPath);
+      if (!shim) {
+        alert("无法读取上次的文件，请重新选择。");
+        setRememberedPath(null);
+        return;
+      }
+      await mountZip(shim as unknown as File);
+    } finally {
+      setReloading(false);
+    }
+  };
+
   const handlePick = () => {
     if (isLoading) return;
     if (isTauri) {
@@ -107,6 +133,12 @@ export const AssetsDirScreen: React.FC = () => {
     } else {
       inputRef.current?.click();
     }
+  };
+
+  // Web FSA: one-click restore from pending handle (needs user gesture)
+  const handleFsaRestore = async () => {
+    if (isLoading || !pendingFsaHandle) return;
+    await restoreFromPendingHandle();
   };
 
   // ── Drag-and-drop (non-FSA web only) ────────────────────────────────────────
@@ -299,21 +331,71 @@ export const AssetsDirScreen: React.FC = () => {
         )}
       </div>
 
-      {/* ── Remembered path/name hint ── */}
-      {rememberedPath && !isLoading && (
-        <p
+      {/* ── Web FSA: pending handle needs authorization ── */}
+      {!isTauri && pendingFsaHandle && !isLoading && (
+        <div
           style={{
-            fontSize: "0.73rem",
-            color: "rgba(255,255,255,0.25)",
-            fontFamily: "var(--font-mono)",
             maxWidth: 460,
-            wordBreak: "break-all",
-            textAlign: "center",
-            lineHeight: 1.6,
+            width: "100%",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: "0.5rem",
           }}
         >
-          上次使用：{rememberedPath}
-        </p>
+          <button
+            className="btn"
+            onClick={handleFsaRestore}
+            style={{ width: "100%", padding: "0.7rem", fontSize: "0.9rem" }}
+          >
+            🔓 授权并加载上次的文件
+          </button>
+          <p
+            style={{
+              fontSize: "0.72rem",
+              color: "rgba(255,255,255,0.25)",
+              fontFamily: "var(--font-mono)",
+              wordBreak: "break-all",
+              textAlign: "center",
+            }}
+          >
+            {pendingFsaHandle.name}
+          </p>
+        </div>
+      )}
+
+      {/* ── Tauri: remembered path + one-click reload ── */}
+      {isTauri && rememberedPath && !isLoading && (
+        <div
+          style={{
+            maxWidth: 460,
+            width: "100%",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: "0.5rem",
+          }}
+        >
+          <button
+            className="btn"
+            onClick={handleTauriReload}
+            disabled={reloading}
+            style={{ width: "100%", padding: "0.7rem", fontSize: "0.9rem" }}
+          >
+            {reloading ? "加载中…" : "📂 重新加载上次文件"}
+          </button>
+          <p
+            style={{
+              fontSize: "0.72rem",
+              color: "rgba(255,255,255,0.25)",
+              fontFamily: "var(--font-mono)",
+              wordBreak: "break-all",
+              textAlign: "center",
+            }}
+          >
+            {rememberedPath}
+          </p>
+        </div>
       )}
 
       {/* ── Zip structure hint ── */}
@@ -378,9 +460,9 @@ export const AssetsDirScreen: React.FC = () => {
           }}
         >
           {isTauri
-            ? "文件路径将保存在本地，下次启动自动加载。"
+            ? "文件路径将保存在本地，下次启动可一键加载。"
             : fsaSupported
-              ? "文件句柄将保存在本地，下次启动只需点击确认授权即可自动加载。"
+              ? "文件句柄将保存在本地，下次启动点击授权按钮即可自动加载。"
               : "zip 文件仅在本设备本地读取，当前浏览器不支持记住文件位置，每次需重新选择。"}
         </p>
       )}

@@ -24,7 +24,8 @@ import {
   getStoredZipPath,
   clearStoredZipPath,
   saveFsaHandle,
-  loadFsaHandle,
+  queryFsaHandle,
+  requestFsaPermission,
   clearFsaHandle,
 } from "../tauri_bridge";
 
@@ -37,6 +38,13 @@ export interface AssetsSlice {
   gameTitle: string | undefined;
   /** True once all .rrs files have been parsed and registered. */
   manifestLoaded: boolean;
+
+  /**
+   * Web FSA only: a previously saved handle whose permission has not yet been
+   * granted in this session. Shown in AssetsDirScreen as a "重新授权" button.
+   * Null on Tauri and on browsers without FSA support.
+   */
+  pendingFsaHandle: FileSystemFileHandle | null;
 
   /**
    * Bootstrap: attempt to auto-restore the last used zip.
@@ -59,6 +67,12 @@ export interface AssetsSlice {
    * re-picking.  Chrome/Edge only — falls back to mountZip on other browsers.
    */
   mountZipFromHandle: (handle: FileSystemFileHandle) => Promise<void>;
+
+  /**
+   * Web FSA only: called inside a user-gesture handler when there is a
+   * pendingFsaHandle. Requests permission and mounts the zip if granted.
+   */
+  restoreFromPendingHandle: () => Promise<void>;
 
   /** Unmount the current filesystem and return to the picker screen. */
   unmountZip: () => void;
@@ -126,10 +140,11 @@ export const createAssetsSlice: StateCreator<
   [],
   [],
   AssetsSlice
-> = (set) => ({
+> = (set, get) => ({
   zipFileName: null,
   gameTitle: undefined,
   manifestLoaded: false,
+  pendingFsaHandle: null,
 
   // ── init ───────────────────────────────────────────────────────────────────
   init: async () => {
@@ -163,17 +178,27 @@ export const createAssetsSlice: StateCreator<
     }
 
     // ── Web: try to restore from FSA handle (Chrome/Edge only) ───────────
-    // loadFsaHandle() re-requests permission and returns the File directly —
-    // no bytes are copied.  On Firefox/Safari it returns null immediately.
-    const restoredFile = await loadFsaHandle();
-    if (restoredFile) {
-      const ok = await mountZipFile(restoredFile, set as SetFn);
-      if (ok) {
-        await runLoadAll(set as SetFn);
+    // queryFsaHandle() only calls queryPermission (no user gesture needed).
+    // If permission is already granted the file loads automatically.
+    // If not, we surface pendingFsaHandle so the UI can show a one-click
+    // "重新授权" button — the actual requestPermission must happen inside a
+    // user gesture, which is why we can't do it here.
+    const result = await queryFsaHandle();
+    if (result) {
+      if (result.file) {
+        // Permission already granted — mount immediately.
+        const ok = await mountZipFile(result.file, set as SetFn);
+        if (ok) {
+          await runLoadAll(set as SetFn);
+          return;
+        }
+        // Handle was stale or file unreadable — clear it.
+        await clearFsaHandle();
+      } else {
+        // Handle exists but needs a user gesture to grant permission.
+        set({ loading: false, pendingFsaHandle: result.handle });
         return;
       }
-      // Handle was stale or file unreadable — clear it.
-      await clearFsaHandle();
     }
 
     // Nothing to restore (or unsupported browser) — show picker.
@@ -192,6 +217,26 @@ export const createAssetsSlice: StateCreator<
     // Web FSA: the caller passes an optional handle via mountZipWithHandle.
     // Nothing extra to do here for plain File objects.
 
+    await runLoadAll(set as SetFn);
+  },
+
+  // ── restoreFromPendingHandle ───────────────────────────────────────────────
+  restoreFromPendingHandle: async () => {
+    const { pendingFsaHandle } = get();
+    if (!pendingFsaHandle) return;
+    set({ loading: true, error: null, pendingFsaHandle: null });
+    // requestFsaPermission MUST be called from within a user gesture — the
+    // caller (AssetsDirScreen button onClick) guarantees this.
+    const file = await requestFsaPermission(pendingFsaHandle);
+    if (!file) {
+      set({ loading: false, pendingFsaHandle });
+      return;
+    }
+    const ok = await mountZipFile(file, set as SetFn);
+    if (!ok) return;
+    saveFsaHandle(pendingFsaHandle).catch((e) =>
+      console.warn("[assetsSlice] saveFsaHandle failed:", e),
+    );
     await runLoadAll(set as SetFn);
   },
 
@@ -235,6 +280,7 @@ export const createAssetsSlice: StateCreator<
       manifestLoaded: false,
       gameTitle: undefined,
       error: null,
+      pendingFsaHandle: null,
     });
   },
 });
