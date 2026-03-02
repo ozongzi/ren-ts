@@ -1163,40 +1163,6 @@ body {
     color: rgba(255, 255, 255, 0.2);
 }
 
-/* Platform support banner (shown in Tools panel on unsupported / partial platforms) */
-.tools-platform-banner {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.6rem;
-    border-radius: 8px;
-    padding: 0.65rem 0.85rem;
-    font-size: 0.82rem;
-    line-height: 1.6;
-    margin-bottom: 1rem;
-}
-
-.tools-platform-banner--warn {
-    background: rgba(234, 179, 8, 0.12);
-    border: 1px solid rgba(234, 179, 8, 0.35);
-    color: #fde68a;
-}
-
-.tools-platform-banner--error {
-    background: rgba(239, 68, 68, 0.12);
-    border: 1px solid rgba(239, 68, 68, 0.35);
-    color: #fca5a5;
-}
-
-.tools-platform-banner__icon {
-    flex-shrink: 0;
-    font-size: 1rem;
-    line-height: 1.6;
-}
-
-.tools-platform-banner strong {
-    color: #fef08a;
-}
-
 .tools-log-line {
     color: var(--color-text-dim);
 }
