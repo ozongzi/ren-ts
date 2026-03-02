@@ -57,17 +57,7 @@ function StatusDot({ status }: { status: PathStatus }) {
   if (!status || status === "checking") {
     return (
       <span
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background:
-            status === "checking"
-              ? "rgba(255,255,255,0.25)"
-              : "rgba(255,255,255,0.1)",
-          flexShrink: 0,
-          display: "inline-block",
-        }}
+        className={`status-dot ${status === "checking" ? "status-dot--loading" : ""}`}
         title={status === "checking" ? "检查中…" : "未检查"}
         aria-hidden
       />
@@ -75,18 +65,7 @@ function StatusDot({ status }: { status: PathStatus }) {
   }
   return (
     <span
-      style={{
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: status === "ok" ? "#4ade80" : "#f87171",
-        flexShrink: 0,
-        display: "inline-block",
-        boxShadow:
-          status === "ok"
-            ? "0 0 6px rgba(74,222,128,0.5)"
-            : "0 0 6px rgba(248,113,113,0.5)",
-      }}
+      className={`status-dot ${status === "ok" ? "status-dot--ok" : "status-dot--error"}`}
       title={status === "ok" ? "路径存在" : "路径不存在"}
       aria-hidden
     />
@@ -115,58 +94,29 @@ function PathRow({
   browseLabel?: string;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "0.5rem",
-        background: "rgba(255,255,255,0.04)",
-        border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: 8,
-        padding: "0.35rem 0.6rem",
-      }}
-    >
+    <div className="path-row">
       <StatusDot status={status} />
       <input
+        className="path-row__input"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         disabled={disabled}
-        style={{
-          flex: 1,
-          background: "transparent",
-          border: "none",
-          outline: "none",
-          color: "var(--color-text)",
-          fontFamily: "var(--font-mono)",
-          fontSize: "0.82rem",
-          opacity: disabled ? 0.45 : 1,
-        }}
       />
       {value && (
         <button
+          className="path-row__btn"
           onClick={onClear}
           disabled={disabled}
           aria-label="清除"
-          style={{
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            color: "var(--color-text-dim)",
-            fontSize: "0.85rem",
-            padding: "0 0.2rem",
-            lineHeight: 1,
-            opacity: disabled ? 0.4 : 1,
-          }}
         >
           ✕
         </button>
       )}
       <button
-        className="btn"
+        className="btn path-row__btn"
         onClick={onBrowse}
         disabled={!isTauri || disabled}
-        style={{ padding: "0.3rem 0.7rem", fontSize: "0.8rem" }}
       >
         {browseLabel}
       </button>
@@ -184,28 +134,11 @@ function SectionLabel({
   optional?: boolean;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "0.4rem",
-        marginBottom: "0.6rem",
-      }}
-    >
+    <div className="section-label">
       <span className="settings-label" style={{ marginBottom: 0 }}>
         {children}
       </span>
-      {optional && (
-        <span
-          style={{
-            fontSize: "0.7rem",
-            color: "rgba(255,255,255,0.22)",
-            fontWeight: 400,
-          }}
-        >
-          可选
-        </span>
-      )}
+      {optional && <span className="tools-optional-tag">可选</span>}
     </div>
   );
 }
@@ -673,27 +606,14 @@ export const Tools: React.FC = () => {
             }}
             disabled={running}
           />
-          <p
-            style={{
-              marginTop: "0.45rem",
-              fontSize: "0.78rem",
-              color: "var(--color-text-dim)",
-              lineHeight: 1.6,
-            }}
-          >
+          <p className="tools-hint">
             选择后自动推断输出目录（
             <code style={{ fontFamily: "var(--font-mono)" }}>game/data/</code>
             ）、 资源目录（
             <code style={{ fontFamily: "var(--font-mono)" }}>game/images/</code>
             ）。
             {assetScanCount !== null && (
-              <span
-                style={{
-                  color: "#4ade80",
-                  marginLeft: "0.4rem",
-                  fontWeight: 600,
-                }}
-              >
+              <span className="tools-asset-count">
                 上次扫描：{assetScanCount} 个图片定义
               </span>
             )}
@@ -704,38 +624,18 @@ export const Tools: React.FC = () => {
 
         {/* ── Section 2: 翻译 ── */}
         <div className="settings-group">
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.5rem",
-              cursor: "pointer",
-              marginBottom: "0.6rem",
-            }}
-          >
+          <label className="tools-optional-row">
             <input
               type="checkbox"
+              className="tools-optional-checkbox"
               checked={enableTranslation}
               onChange={(e) => setEnableTranslation(e.target.checked)}
               disabled={running}
-              style={{
-                accentColor: "var(--color-accent)",
-                width: 14,
-                height: 14,
-              }}
             />
             <span className="settings-label" style={{ marginBottom: 0 }}>
               翻译目录
             </span>
-            <span
-              style={{
-                fontSize: "0.7rem",
-                color: "rgba(255,255,255,0.22)",
-                fontWeight: 400,
-              }}
-            >
-              可选
-            </span>
+            <span className="tools-optional-tag">可选</span>
           </label>
           <PathRow
             value={translationDir ?? ""}
@@ -760,38 +660,18 @@ export const Tools: React.FC = () => {
 
         {/* ── Section 3: 图鉴 ── */}
         <div className="settings-group">
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.5rem",
-              cursor: "pointer",
-              marginBottom: "0.6rem",
-            }}
-          >
+          <label className="tools-optional-row">
             <input
               type="checkbox"
+              className="tools-optional-checkbox"
               checked={enableGallery}
               onChange={(e) => setEnableGallery(e.target.checked)}
               disabled={running}
-              style={{
-                accentColor: "var(--color-accent)",
-                width: 14,
-                height: 14,
-              }}
             />
             <span className="settings-label" style={{ marginBottom: 0 }}>
               图鉴文件
             </span>
-            <span
-              style={{
-                fontSize: "0.7rem",
-                color: "rgba(255,255,255,0.22)",
-                fontWeight: 400,
-              }}
-            >
-              可选
-            </span>
+            <span className="tools-optional-tag">可选</span>
           </label>
           <PathRow
             value={galleryPath ?? ""}
@@ -824,32 +704,19 @@ export const Tools: React.FC = () => {
 
         {/* ── Progress ── */}
         <div className="settings-group" style={{ marginBottom: "0.75rem" }}>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "0.4rem",
-            }}
-          >
+          <div className="tools-progress-header">
             <span
-              style={{
-                fontSize: "0.8rem",
-                fontWeight: 600,
-                color:
-                  phase === "done"
-                    ? "#4ade80"
-                    : running
-                      ? "var(--color-text)"
-                      : "var(--color-text-dim)",
-                letterSpacing: "0.04em",
-              }}
+              className={`tools-progress-label ${
+                phase === "done"
+                  ? "tools-progress-label--done"
+                  : running
+                    ? "tools-progress-label--running"
+                    : "tools-progress-label--idle"
+              }`}
             >
               {statusLabel}
             </span>
-            <span
-              style={{ fontSize: "0.78rem", color: "var(--color-text-dim)" }}
-            >
+            <span className="tools-progress-count">
               {phase === "packing"
                 ? `${zipProgress}%`
                 : totalFiles > 0
@@ -860,73 +727,33 @@ export const Tools: React.FC = () => {
 
           {/* Conversion progress bar */}
           {totalFiles > 0 && phase !== "packing" && (
-            <div
-              style={{
-                height: 3,
-                background: "rgba(255,255,255,0.08)",
-                borderRadius: 4,
-                overflow: "hidden",
-                marginBottom: "0.35rem",
-              }}
-            >
+            <div className="tools-progress-bar-wrap">
               <div
-                style={{
-                  height: "100%",
-                  width: `${percent}%`,
-                  background:
-                    phase === "done" ? "#4ade80" : "var(--color-accent)",
-                  borderRadius: 4,
-                  transition: "width 0.2s ease",
-                }}
+                className={`tools-progress-bar ${phase === "done" ? "tools-progress-bar--convert-done" : "tools-progress-bar--convert"}`}
+                style={{ width: `${percent}%` }}
               />
             </div>
           )}
 
           {/* ZIP progress bar */}
           {phase === "packing" || (phase === "done" && zipProgress === 100) ? (
-            <div
-              style={{
-                height: 3,
-                background: "rgba(255,255,255,0.08)",
-                borderRadius: 4,
-                overflow: "hidden",
-                marginBottom: "0.35rem",
-              }}
-            >
+            <div className="tools-progress-bar-wrap">
               <div
-                style={{
-                  height: "100%",
-                  width: `${zipProgress}%`,
-                  background: zipProgress === 100 ? "#4ade80" : "#60a5fa",
-                  borderRadius: 4,
-                  transition: "width 0.2s ease",
-                }}
+                className={`tools-progress-bar ${zipProgress === 100 ? "tools-progress-bar--zip-done" : "tools-progress-bar--zip"}`}
+                style={{ width: `${zipProgress}%` }}
               />
             </div>
           ) : null}
 
           {currentFile && running && (
-            <p
-              style={{
-                fontSize: "0.72rem",
-                color: "var(--color-text-dim)",
-                fontFamily: "var(--font-mono)",
-                marginTop: "0.2rem",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              › {currentFile}
-            </p>
+            <p className="tools-current-file">› {currentFile}</p>
           )}
         </div>
 
         {/* ── Actions ── */}
-        <div style={{ display: "flex", gap: "0.6rem", marginBottom: "1rem" }}>
+        <div className="tools-actions">
           <button
-            className="btn primary"
-            style={{ flex: 1, fontWeight: 700, padding: "0.6rem 1rem" }}
+            className="btn primary tools-run-btn"
             onClick={() => {
               setPhase("idle");
               setZipProgress(0);
@@ -956,34 +783,20 @@ export const Tools: React.FC = () => {
         {/* ── Log ── */}
         <div>
           <div className="settings-label">输出日志</div>
-          <div
-            ref={logRef}
-            style={{
-              background: "rgba(0,0,0,0.35)",
-              border: "1px solid rgba(255,255,255,0.07)",
-              borderRadius: 8,
-              padding: "0.6rem 0.75rem",
-              height: 180,
-              overflowY: "auto",
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.75rem",
-              lineHeight: 1.7,
-            }}
-          >
+          <div ref={logRef} className="tools-log-wrap">
             {logs.length === 0 ? (
-              <span style={{ color: "rgba(255,255,255,0.2)" }}>暂无输出</span>
+              <span className="tools-log-empty">暂无输出</span>
             ) : (
               logs.map((l, i) => (
                 <div
                   key={i}
-                  style={{
-                    color:
-                      l.startsWith("失败") || l.includes("失败")
-                        ? "#f87171"
-                        : l.startsWith("✓")
-                          ? "#4ade80"
-                          : "var(--color-text-dim)",
-                  }}
+                  className={`tools-log-line ${
+                    l.startsWith("失败") || l.includes("失败")
+                      ? "tools-log-line--error"
+                      : l.startsWith("✓")
+                        ? "tools-log-line--success"
+                        : ""
+                  }`}
                 >
                   {l}
                 </div>

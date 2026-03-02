@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { collectDefines } from "../rrs/codegen";
-import { parseValue, applySetStep } from "../src/evaluate";
+import { parseValue } from "../src/evaluate";
+import { VarStore } from "../src/vars";
 
 describe("Literal parsing semantics (shared behavior)", () => {
   it("collectDefines converts token-kind+raw into typed runtime values", () => {
     // Construct a set of defines mirroring parser output (token-kind + raw)
-    const defines: any[] = [
+    const defines: import("../rrs/ast").DefineDecl[] = [
       {
         kind: "Define",
         key: "GAME_NAME",
@@ -55,28 +56,46 @@ describe("Literal parsing semantics (shared behavior)", () => {
     expect(parseValue("#abc")).toBe("#abc"); // hex color preserved as string
   });
 
-  it("applySetStep uses parseValue and resolves variable references", () => {
+  it("VarStore.applySet uses parseValue and resolves variable references", () => {
     // Basic assignment from quoted string -> string
-    const stepA: any = { type: "set", var: "x", op: "=", value: '"true"' };
-    const varsA = {};
-    const resA = applySetStep(varsA as any, stepA);
-    expect(resA.x).toBe("true");
+    const stepA = {
+      type: "set" as const,
+      var: "x",
+      op: "=" as const,
+      value: '"true"',
+    };
+    const resA = VarStore.empty().applySet(stepA);
+    expect(resA.get("x")).toBe("true");
 
     // Unquoted True -> boolean true
-    const stepB: any = { type: "set", var: "y", op: "=", value: "True" };
-    const resB = applySetStep(varsA as any, stepB);
-    expect(resB.y).toBe(true);
+    const stepB = {
+      type: "set" as const,
+      var: "y",
+      op: "=" as const,
+      value: "True",
+    };
+    const resB = VarStore.empty().applySet(stepB);
+    expect(resB.get("y")).toBe(true);
 
     // Numeric RHS -> number
-    const stepC: any = { type: "set", var: "z", op: "=", value: "42" };
-    const resC = applySetStep(varsA as any, stepC);
-    expect(resC.z).toBe(42);
+    const stepC = {
+      type: "set" as const,
+      var: "z",
+      op: "=" as const,
+      value: "42",
+    };
+    const resC = VarStore.empty().applySet(stepC);
+    expect(resC.get("z")).toBe(42);
 
-    // Variable reference: RHS is an identifier matching an existing key
-    const baseVars = { otherVar: 123 } as Record<string, unknown>;
-    const stepD: any = { type: "set", var: "a", op: "=", value: "otherVar" };
-    const merged = { ...baseVars }; // applySetStep expects a merged plain record
-    const resD = applySetStep(merged as any, stepD);
-    expect(resD.a).toBe(123);
+    // Variable reference: RHS is an identifier matching an existing key in game vars
+    const baseStore = VarStore.empty().set("otherVar", 123);
+    const stepD = {
+      type: "set" as const,
+      var: "a",
+      op: "=" as const,
+      value: "otherVar",
+    };
+    const resD = baseStore.applySet(stepD);
+    expect(resD.get("a")).toBe(123);
   });
 });

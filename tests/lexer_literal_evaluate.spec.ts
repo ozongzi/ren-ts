@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { tokenize, type Token } from "../rrs/lexer";
+import { tokenize } from "../rrs/lexer";
 import { tokenRawToValue, rawStringToValue } from "../rrs/literal";
-import { parseValue, applySetStep, evaluateCondition } from "../src/evaluate";
+import { parseValue, evaluateCondition } from "../src/evaluate";
+import { VarStore } from "../src/vars";
 
 describe("Lexer: tokenization edge cases", () => {
   it("parses string literals with escapes and preserves inner content", () => {
@@ -119,60 +120,95 @@ describe("evaluate pipeline: parseValue, applySetStep, evaluateCondition", () =>
     expect(parseValue("#fff")).toBe("#fff");
   });
 
-  it("applySetStep handles =, +=, -=, *=, /= and division by zero", () => {
+  it("VarStore.applySet handles =, +=, -=, *=, /= and division by zero", () => {
     // = assignment uses parsed value directly
-    let vars: Record<string, any> = {};
-    const stepA: any = { type: "set", var: "a", op: "=", value: "2" };
-    vars = applySetStep(vars, stepA);
-    expect(vars.a).toBe(2);
+    let store = VarStore.empty();
+    const stepA = {
+      type: "set" as const,
+      var: "a",
+      op: "=" as const,
+      value: "2",
+    };
+    store = store.applySet(stepA);
+    expect(store.get("a")).toBe(2);
 
     // += increments numeric
-    const stepB: any = { type: "set", var: "a", op: "+=", value: "3" };
-    vars = applySetStep(vars, stepB);
-    expect(vars.a).toBe(5);
+    const stepB = {
+      type: "set" as const,
+      var: "a",
+      op: "+=" as const,
+      value: "3",
+    };
+    store = store.applySet(stepB);
+    expect(store.get("a")).toBe(5);
 
     // -= subtract
-    const stepC: any = { type: "set", var: "a", op: "-=", value: "1" };
-    vars = applySetStep(vars, stepC);
-    expect(vars.a).toBe(4);
+    const stepC = {
+      type: "set" as const,
+      var: "a",
+      op: "-=" as const,
+      value: "1",
+    };
+    store = store.applySet(stepC);
+    expect(store.get("a")).toBe(4);
 
     // *= multiply
-    const stepD: any = { type: "set", var: "a", op: "*=", value: "2" };
-    vars = applySetStep(vars, stepD);
-    expect(vars.a).toBe(8);
+    const stepD = {
+      type: "set" as const,
+      var: "a",
+      op: "*=" as const,
+      value: "2",
+    };
+    store = store.applySet(stepD);
+    expect(store.get("a")).toBe(8);
 
     // /= divide by non-zero
-    const stepE: any = { type: "set", var: "a", op: "/=", value: "4" };
-    vars = applySetStep(vars, stepE);
-    expect(vars.a).toBe(2);
+    const stepE = {
+      type: "set" as const,
+      var: "a",
+      op: "/=" as const,
+      value: "4",
+    };
+    store = store.applySet(stepE);
+    expect(store.get("a")).toBe(2);
 
     // /= divide by zero -> result should be 0 per implementation
-    const stepF: any = { type: "set", var: "a", op: "/=", value: "0" };
-    vars = applySetStep(vars, stepF);
-    expect(vars.a).toBe(0);
+    const stepF = {
+      type: "set" as const,
+      var: "a",
+      op: "/=" as const,
+      value: "0",
+    };
+    store = store.applySet(stepF);
+    expect(store.get("a")).toBe(0);
   });
 
-  it("applySetStep resolves variable references and evaluates renpy.random.randint", () => {
-    const baseVars: Record<string, any> = { otherVar: 123 };
-    const stepRef: any = { type: "set", var: "x", op: "=", value: "otherVar" };
-    const out = applySetStep({ ...baseVars }, stepRef);
-    expect(out.x).toBe(123);
+  it("VarStore.applySet resolves variable references and evaluates renpy.random.randint", () => {
+    const base = VarStore.empty().set("otherVar", 123);
+    const stepRef = {
+      type: "set" as const,
+      var: "x",
+      op: "=" as const,
+      value: "otherVar",
+    };
+    const out = base.applySet(stepRef);
+    expect(out.get("x")).toBe(123);
 
     // Function call: renpy.random.randint(a,b) should produce integer in range
-    const stepRand: any = {
-      type: "set",
+    const stepRand = {
+      type: "set" as const,
       var: "r",
-      op: "=",
+      op: "=" as const,
       value: "renpy.random.randint(1,3)",
     };
-    const out2 = applySetStep({ ...baseVars }, stepRand);
-    expect(typeof out2.r).toBe("number");
-    expect(out2.r).toBeGreaterThanOrEqual(1);
-    expect(out2.r).toBeLessThanOrEqual(3);
+    const out2 = base.applySet(stepRand);
+    expect(typeof out2.get("r")).toBe("number");
+    expect(out2.get("r") as number).toBeGreaterThanOrEqual(1);
+    expect(out2.get("r") as number).toBeLessThanOrEqual(3);
   });
 
   it("evaluateCondition supports and/or/not, comparisons, in-operator and unknown tokens", () => {
-    const vars: Record<string, any> = {
+    const vars: Record<string, unknown> = {
       a: 5,
       b: 10,
       arr: ["x", "y"],
@@ -193,6 +229,10 @@ describe("evaluate pipeline: parseValue, applySetStep, evaluateCondition", () =>
     expect(evaluateCondition(`'x' in arr`, vars)).toBe(true);
     expect(evaluateCondition(`'z' in arr`, vars)).toBe(false);
 
+    // not in operator
+    expect(evaluateCondition(`'z' not in arr`, vars)).toBe(true);
+    expect(evaluateCondition(`'x' not in arr`, vars)).toBe(false);
+
     // dotted lookup into nested object
     expect(evaluateCondition("nested.inner == 2", vars)).toBe(true);
 
@@ -205,7 +245,7 @@ describe("evaluate pipeline: parseValue, applySetStep, evaluateCondition", () =>
   });
 
   it("evaluateCondition handles parentheses and precedence correctly", () => {
-    const vars: Record<string, any> = { x: 1, y: 2 };
+    const vars: Record<string, unknown> = { x: 1, y: 2 };
     // (x == 1 and y == 2) -> true
     expect(evaluateCondition("(x == 1 and y == 2)", vars)).toBe(true);
     // not (x == 1 and y == 2) -> false

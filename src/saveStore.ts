@@ -22,6 +22,7 @@
 // (Tauri: native save/open dialog; Web: download anchor / <input> picker).
 
 import type { SaveData } from "./types";
+import { validateSave as _validateSave } from "./save";
 import {
   isTauri,
   getAppDocumentsDir,
@@ -29,6 +30,7 @@ import {
   readDirectory,
   readTextFileTauri,
   writeTextFileTauri,
+  removeFileTauri,
   pickAndReadTextFile,
   pickAndWriteTextFile,
 } from "./tauri_bridge";
@@ -81,14 +83,13 @@ export interface SaveStore {
 
   /**
    * Open a platform-native import dialog so the user can load a .json copy
-   * from anywhere.  Returns the parsed save, or null if cancelled.
+   * from anywhere.  Returns the persisted SaveEntry (with a stable id), or
+   * null if the user cancelled.
    */
-  importFromFile(): Promise<SaveData | null>;
+  importFromFile(): Promise<SaveEntry | null>;
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
-
-const SAVE_VERSION = 1 as const;
 
 function makeSaveId(): string {
   return `rr_save_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
@@ -98,44 +99,12 @@ function saveFileName(id: string): string {
   return `${id}.json`;
 }
 
-export function validateSave(obj: unknown): SaveData {
-  if (!obj || typeof obj !== "object") {
-    throw new Error("存档文件无效（不是对象）");
-  }
-  const s = obj as Record<string, unknown>;
-  if (s.version !== SAVE_VERSION) {
-    throw new Error(
-      `存档版本不兼容（期望 ${SAVE_VERSION}，实际 ${s.version}）`,
-    );
-  }
-  if (typeof s.currentLabel !== "string") {
-    throw new Error("存档损坏：缺少 currentLabel");
-  }
-  if (typeof s.stepIndex !== "number") {
-    throw new Error("存档损坏：缺少 stepIndex");
-  }
-  return {
-    version: SAVE_VERSION,
-    timestamp:
-      typeof s.timestamp === "string" ? s.timestamp : new Date().toISOString(),
-    currentLabel: s.currentLabel,
-    stepIndex: s.stepIndex,
-    callStack: Array.isArray(s.callStack) ? s.callStack : [],
-    vars:
-      s.vars && typeof s.vars === "object" && !Array.isArray(s.vars)
-        ? (s.vars as Record<string, unknown>)
-        : {},
-    completedRoutes: Array.isArray(s.completedRoutes) ? s.completedRoutes : [],
-    backgroundSrc: typeof s.backgroundSrc === "string" ? s.backgroundSrc : null,
-    bgFilter: typeof s.bgFilter === "string" ? s.bgFilter : null,
-    sprites: Array.isArray(s.sprites) ? s.sprites : [],
-    bgmSrc: typeof s.bgmSrc === "string" ? s.bgmSrc : null,
-    dialogue:
-      s.dialogue && typeof s.dialogue === "object" && !Array.isArray(s.dialogue)
-        ? (s.dialogue as import("./types").DialogueState)
-        : null,
-  };
-}
+// Re-export the canonical validateSave from save.ts so external callers that
+// import it from this module continue to work unchanged.
+export { _validateSave as validateSave };
+
+// Local alias used within this file.
+const validateSave = _validateSave;
 
 function toEntry(id: string, fileName: string, save: SaveData): SaveEntry {
   return {
@@ -252,10 +221,10 @@ class TauriSaveStore implements SaveStore {
   async remove(id: string): Promise<void> {
     try {
       const dir = await this.getSavesDir();
-      // Tauri plugin-fs remove is not exposed through our bridge yet;
-      // overwrite with a tombstone marker so list() skips it.
-      // A proper delete would require adding a removeFile helper.
-      await writeTextFileTauri(`${dir}/${saveFileName(id)}`, "null");
+      const deleted = await removeFileTauri(`${dir}/${saveFileName(id)}`);
+      if (!deleted) {
+        // File not found or already gone — not an error.
+      }
     } catch {
       // Not fatal.
     }
@@ -271,7 +240,7 @@ class TauriSaveStore implements SaveStore {
     });
   }
 
-  async importFromFile(): Promise<SaveData | null> {
+  async importFromFile(): Promise<SaveEntry | null> {
     const result = await pickAndReadTextFile({
       title: "导入存档",
       filters: [{ name: "游戏存档", extensions: ["json"] }],
@@ -279,15 +248,16 @@ class TauriSaveStore implements SaveStore {
     if (!result) return null;
     try {
       const save = validateSave(JSON.parse(result.text));
-      // Copy into the Saves directory so it appears in the list.
+      // Always write with a fresh id so the imported entry gets a stable,
+      // predictable id independent of the source file name.
+      const id = makeSaveId();
+      const fileName = saveFileName(id);
       const dir = await this.getSavesDir();
-      const baseName =
-        result.path.split(/[/\\]/).pop() ?? saveFileName(makeSaveId());
-      const dest = `${dir}/${baseName}`;
-      if (result.path !== dest) {
-        await writeTextFileTauri(dest, result.text);
-      }
-      return save;
+      await writeTextFileTauri(
+        `${dir}/${fileName}`,
+        JSON.stringify(save, null, 2),
+      );
+      return toEntry(id, fileName, save);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`存档文件无效：${msg}`, { cause: err });
@@ -373,7 +343,7 @@ class OpfsSaveStore implements SaveStore {
     triggerDownload(JSON.stringify(data, null, 2), `rr_save_${ts}.json`);
   }
 
-  async importFromFile(): Promise<SaveData | null> {
+  async importFromFile(): Promise<SaveEntry | null> {
     let text: string;
     try {
       text = await pickFileViaInput();
@@ -383,10 +353,11 @@ class OpfsSaveStore implements SaveStore {
       throw err;
     }
     const save = validateSave(JSON.parse(text));
-    // Copy into OPFS so it appears in the list.
+    // Persist with a fresh id so the entry is stable and appears in the list.
     const id = makeSaveId();
     await this.writeJson(id, save);
-    return save;
+    // Return the full entry so callers can use the id directly without a list() round-trip.
+    return toEntry(id, saveFileName(id), save);
   }
 }
 
@@ -424,7 +395,7 @@ class LegacySaveStore implements SaveStore {
     triggerDownload(JSON.stringify(data, null, 2), `rr_save_${ts}.json`);
   }
 
-  async importFromFile(): Promise<SaveData | null> {
+  async importFromFile(): Promise<SaveEntry | null> {
     let text: string;
     try {
       text = await pickFileViaInput();
@@ -433,7 +404,11 @@ class LegacySaveStore implements SaveStore {
       if (msg === "已取消") return null;
       throw err;
     }
-    return validateSave(JSON.parse(text));
+    const save = validateSave(JSON.parse(text));
+    // LegacySaveStore has no persistent storage, so we return a transient
+    // entry. The id is still usable as a session-scoped identifier.
+    const id = makeSaveId();
+    return toEntry(id, saveFileName(id), save);
   }
 }
 
@@ -463,5 +438,6 @@ export function getSaveStore(): SaveStore {
     _store = new LegacySaveStore();
   }
 
-  return _store;
+  // _store is guaranteed non-null after the branches above.
+  return _store!;
 }

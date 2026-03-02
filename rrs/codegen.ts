@@ -26,7 +26,6 @@ import type {
   JsonStep,
   JumpStmt,
   LabelDecl,
-  LabelStmt,
   MenuStmt,
   MusicStmt,
   Program,
@@ -66,8 +65,8 @@ export function collectDefines(defines: DefineDecl[]): Record<string, unknown> {
     // The parser now preserves define value tokens as objects of the form:
     //   { kind: "Str" | "Num" | "Ident" | "HexColor" | "Other", raw: string }
     // Older code (or other inputs) may still provide plain strings; handle both.
-    let raw = "";
-    let tokenKind: TokenKind = "Other";
+    let raw: string;
+    let tokenKind: TokenKind;
 
     if (d.value === "" || d.value === undefined || d.value === null) {
       // skip complex/unparseable defines (parser indicates with empty string)
@@ -344,6 +343,7 @@ class CodegenContext {
     return [{ type: "call", target: stmt.target }];
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   private genReturn(_stmt: ReturnStmt): JsonStep[] {
     return [{ type: "return" }];
   }

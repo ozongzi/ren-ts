@@ -625,6 +625,24 @@ export async function writeBinaryFileTauri(
 /**
  * Create a directory (and all parent directories) at the given path.
  */
+/**
+ * Delete a file at the given native path.
+ * Returns true on success, false if the file was not found or could not be deleted.
+ */
+export async function removeFileTauri(filePath: string): Promise<boolean> {
+  if (!isTauri) return false;
+  if (filePath.startsWith("file://")) {
+    filePath = decodeURIComponent(filePath.slice(7));
+  }
+  try {
+    const { remove } = await import("@tauri-apps/plugin-fs");
+    await remove(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function makeDirTauri(dirPath: string): Promise<boolean> {
   if (!isTauri) return false;
   if (dirPath.startsWith("file://")) {

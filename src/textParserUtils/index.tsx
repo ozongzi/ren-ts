@@ -119,15 +119,18 @@ export function parse(tokens: Token[]): TreeNode[] {
 
 // ─── Renderer: tree → React nodes ────────────────────────────────────────────
 
-let _keyCounter = 0;
-function nextKey(): string {
-  return `rp-${_keyCounter++}`;
+function makeKeyGen() {
+  let counter = 0;
+  return () => `rp-${counter++}`;
 }
 
 // Tags to silently strip (keep their children rendered)
 const STRIP_TAGS = new Set(["a", "plain", "outlinecolor", "font", "kerning"]);
 
-export function renderTree(nodes: TreeNode[]): React.ReactNode[] {
+export function renderTree(
+  nodes: TreeNode[],
+  nextKey: () => string,
+): React.ReactNode[] {
   return nodes.map((node): React.ReactNode => {
     if (node.type === "text") {
       // Preserve newlines as <br />
@@ -145,7 +148,7 @@ export function renderTree(nodes: TreeNode[]): React.ReactNode[] {
       );
     }
 
-    const children = renderTree(node.children);
+    const children = renderTree(node.children, nextKey);
 
     switch (node.tag) {
       case "i":
@@ -209,14 +212,14 @@ export function renderTree(nodes: TreeNode[]): React.ReactNode[] {
 
 /**
  * Parse a Ren'Py markup string and return an array of React nodes.
- * Resets the internal key counter so this should be called once per
- * dialogue update.
+ * Each call gets its own isolated key generator, so concurrent renders
+ * never share state.
  */
 export function parseRenpyText(text: string): React.ReactNode[] {
-  _keyCounter = 0;
+  const nextKey = makeKeyGen();
   const tokens = tokenise(text);
   const tree = parse(tokens);
-  return renderTree(tree);
+  return renderTree(tree, nextKey);
 }
 
 /**

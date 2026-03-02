@@ -33,6 +33,9 @@ const DBG = import.meta.env.DEV;
 // ─── Maximum steps to execute per tick (safety limit) ────────────────────────
 const MAX_STEPS_PER_TICK = 2000;
 
+// ─── Maximum call stack depth (guards against infinite recursion) ─────────────
+const MAX_CALL_DEPTH = 200;
+
 // ─── Sprite tag helpers ───────────────────────────────────────────────────────
 
 /**
@@ -370,8 +373,10 @@ function resolveImageSrc(src: string, vars: VarStore): string {
   const key = "image." + src;
   const resolved = vars.get(key);
   if (typeof resolved === "string") return resolved;
-  console.error(`[engine] image var not found: ${key}`);
-  return src;
+  // Key not found — log a warning and return empty string so the browser does
+  // not fire a 404 request for the raw key string.
+  console.warn(`[engine] image var not found: ${key}`);
+  return "";
 }
 
 function resolveCharName(who: string | null, vars: VarStore): string | null {
@@ -394,7 +399,8 @@ function resolveAudioSrc(
   const key = src.startsWith("audio.") ? src : "audio." + src;
   const resolved = vars.get(key);
   if (typeof resolved === "string") return resolved;
-  console.error(`[engine] audio var not found: ${key}`);
+  // Key not found — return undefined so callers skip playback gracefully.
+  console.warn(`[engine] audio var not found: ${key}`);
   return undefined;
 }
 
@@ -778,6 +784,13 @@ function executeStep(state: GameState, step: Step): StepResult {
           );
           return advance(state);
         }
+      }
+      if (state.callStack.length >= MAX_CALL_DEPTH) {
+        console.error(
+          `[engine] call stack depth limit (${MAX_CALL_DEPTH}) exceeded — ` +
+            `possible infinite recursion. Skipping call to "${target}".`,
+        );
+        return advance(state);
       }
       const returnFrame: StackFrame = {
         label: state.currentLabel,

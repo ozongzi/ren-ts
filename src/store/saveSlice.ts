@@ -143,32 +143,18 @@ export function createSaveSlice(
     // ── saveImport ───────────────────────────────────────────────────────────
     saveImport: async () => {
       try {
-        const save = await getSaveStore().importFromFile();
-        if (!save) return; // cancelled
+        const entry = await getSaveStore().importFromFile();
+        if (!entry) return; // cancelled
 
         const state = get();
-        const next = applySave(state, save);
-
-        // After import the data is now persisted inside the store (OPFS/Tauri).
-        // List the store to find the entry we just wrote so we have its id.
-        let saveId: string | null = null;
-        let saveFileName: string | null = null;
-        try {
-          const entries = await getSaveStore().list();
-          if (entries.length > 0) {
-            saveId = entries[0].id;
-            saveFileName = entries[0].fileName;
-          }
-        } catch {
-          // Non-fatal: we can still continue without auto-save.
-        }
+        const next = applySave(state, entry.save);
 
         get().clearSaveError();
         set({
           ...(next as unknown as Partial<SaveSliceDeps>),
           phase: "save_loaded",
-          saveId,
-          saveFileName,
+          saveId: entry.id,
+          saveFileName: entry.fileName,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

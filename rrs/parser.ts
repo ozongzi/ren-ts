@@ -20,25 +20,6 @@ export function parse(tokens: Token[]): Program {
 
 // ── Statement-keyword set (used to detect the end of a raw expression) ────────
 
-const STMT_KEYWORDS = new Set([
-  "label",
-  "scene",
-  "music",
-  "sound",
-  "show",
-  "hide",
-  "with",
-  "speak",
-  "wait",
-  "if",
-  "elif",
-  "else",
-  "menu",
-  "jump",
-  "call",
-  "return",
-]);
-
 // ── Parser ────────────────────────────────────────────────────────────────────
 
 class Parser {

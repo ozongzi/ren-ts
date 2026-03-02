@@ -3,6 +3,7 @@
 // Ren'Py conditions are written in Python syntax. We evaluate a safe subset:
 //   - Comparison:  ==  !=  <  >  <=  >=
 //   - Boolean:     and  or  not
+//   - Membership:  in   not in
 //   - Literals:    True  False  strings  numbers
 //   - Variables:   any key present in the vars map
 //   - persistent.* → always False (not implemented in web port)
@@ -12,7 +13,6 @@
 // values into the expression string, then use Function() only on the
 // resulting sanitised numeric/boolean/string expression.
 
-import type { Step } from "./types";
 import { rawStringToValue } from "../rrs/literal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -126,51 +126,6 @@ export function resolveSetValue(
   return parsed;
 }
 
-/**
- * Apply a `set` step's operation to the vars map and return a new map.
- *
- * Supported operators: =  +=  -=  *=  /=
- *
- * The `value` field in the JSON is a raw Python expression string. We parse
- * it with parseValue(); if the result is a string that matches a known
- * variable name, we resolve it as a variable reference.
- *
- * Additionally, if the RHS is a function call like `renpy.random.randint(a,b)`
- * we evaluate it at runtime via the evaluator so assignments such as
- * `choicet = renpy.random.randint(1,2);` produce a concrete random integer.
- *
- * @deprecated Prefer `VarStore.applySet()` which operates directly on the
- * game-vars layer and avoids the full `toRecord()` copy overhead.
- */
-export function applySetStep(
-  vars: Vars,
-  step: Extract<Step, { type: "set" }>,
-): Vars {
-  let value = resolveSetValue(step.value, vars);
-  const current = vars[step.var] ?? 0;
-
-  switch (step.op) {
-    case "=":
-      break; // value already set
-    case "+=":
-      value = (current as number) + (value as number);
-      break;
-    case "-=":
-      value = (current as number) - (value as number);
-      break;
-    case "*=":
-      value = (current as number) * (value as number);
-      break;
-    case "/=": {
-      const divisor = value as number;
-      value = divisor !== 0 ? (current as number) / divisor : 0;
-      break;
-    }
-  }
-
-  return { ...vars, [step.var]: value };
-}
-
 // ─── Condition evaluator ──────────────────────────────────────────────────────
 
 /**
@@ -223,6 +178,16 @@ function _evaluate(raw: string, vars: Vars): unknown {
     return _evaluate(left, vars) && _evaluate(right, vars);
   }
 
+  // Handle `not in` operator BEFORE generic `not` so we don't misparse it.
+  // e.g.  "hiro" not in completed_routes
+  const notInIdx = findTopLevel(expr, " not in ");
+  if (notInIdx !== -1) {
+    const leftVal = resolveOperand(expr.slice(0, notInIdx).trim(), vars);
+    const rightVal = resolveOperand(expr.slice(notInIdx + 8).trim(), vars);
+    if (Array.isArray(rightVal)) return !rightVal.includes(leftVal);
+    return true; // not in a non-array → always true (no match possible)
+  }
+
   // Handle `not expr`
   if (expr.startsWith("not ")) {
     return !_evaluate(expr.slice(4), vars);
@@ -239,6 +204,8 @@ function _evaluate(raw: string, vars: Vars): unknown {
   }
 
   // Handle `in` operator  (e.g.  "hiro" in completed_routes)
+  // Note: `not in` is already handled above, so any ` in ` found here is
+  // a plain membership test.
   const inIdx = findTopLevel(expr, " in ");
   if (inIdx !== -1) {
     const leftVal = resolveOperand(expr.slice(0, inIdx).trim(), vars);
