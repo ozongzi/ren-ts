@@ -3,17 +3,18 @@ import { useGameStore } from "../store";
 import type { GalleryEntry } from "../types";
 import {
   isTauri,
+  fsaSupported,
   pickDirectory,
   pickAndReadTextFile,
-  pickSavePath,
-  readTextFileTauri,
-  writeTextFileTauri,
-  makeDirTauri,
   pathExists,
-  walkDir,
-  streamingBuildZip,
-  type ZipFileEntry,
 } from "../tauri_bridge";
+import {
+  pickConverterFs,
+  tauriConverterFsFromPath,
+  type IConverterFs,
+  type ConverterId,
+  CancelledError,
+} from "../converterFs";
 import { convertRpy } from "../../rpy-rrs-bridge/rpy2rrs-core";
 import { parseTranslationBlocks } from "../../rpy-rrs-bridge/translation-extractor";
 import { parseGalleryRpy } from "../../rpy-rrs-bridge/parse-gallery-core";
@@ -28,7 +29,13 @@ type PathStatus = "ok" | "no" | "checking" | null;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Debounced path existence check. Returns a cleanup fn. */
+/**
+ * Debounced path-existence check.
+ * On Tauri: verifies the path on disk.
+ * On FSA (Chrome/Edge): paths are virtual relative strings; we just mark them
+ * as "ok" once non-empty (real validation happens when the fs handle is used).
+ * Returns a cleanup function.
+ */
 function checkPath(
   value: string | null,
   setStatus: (s: PathStatus) => void,
@@ -43,7 +50,13 @@ function checkPath(
   setStatus("checking");
   timerRef.current = window.setTimeout(async () => {
     try {
-      setStatus(!isTauri ? null : (await pathExists(value)) ? "ok" : "no");
+      if (isTauri) {
+        setStatus((await pathExists(value)) ? "ok" : "no");
+      } else {
+        // FSA mode: the path is a relative sub-path the user typed; we
+        // cannot verify it without an active handle, so just accept it.
+        setStatus(value.length > 0 ? "ok" : "no");
+      }
     } catch {
       setStatus("no");
     }
@@ -83,6 +96,7 @@ function PathRow({
   onClear,
   disabled,
   browseLabel = "浏览",
+  browseDisabled,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -92,7 +106,10 @@ function PathRow({
   onClear: () => void;
   disabled: boolean;
   browseLabel?: string;
+  /** Override for whether the browse button is disabled (defaults to !isTauri). */
+  browseDisabled?: boolean;
 }) {
+  const canBrowse = browseDisabled !== undefined ? !browseDisabled : isTauri;
   return (
     <div className="path-row">
       <StatusDot status={status} />
@@ -116,7 +133,8 @@ function PathRow({
       <button
         className="btn path-row__btn"
         onClick={onBrowse}
-        disabled={!isTauri || disabled}
+        disabled={!canBrowse || disabled}
+        title={!canBrowse ? "路径浏览仅在 Tauri 桌面端可用" : undefined}
       >
         {browseLabel}
       </button>
@@ -148,9 +166,15 @@ function SectionLabel({
 export const Tools: React.FC = () => {
   const closeTools = useGameStore((s) => s.closeTools);
 
-  // ── Required ──────────────────────────────────────────────────────────────
+  // ── Game dir / fs handle ──────────────────────────────────────────────────
+  // In Tauri mode: gameDir holds the absolute path string the user typed or
+  // picked.  In FSA mode: gameDir holds the directory name (label) for display,
+  // and gameFsRef holds the live IConverterFs rooted at that directory.
   const [gameDir, setGameDir] = useState<string | null>(null);
   const [gameDirStatus, setGameDirStatus] = useState<PathStatus>(null);
+  const [converterKind, setConverterKind] = useState<ConverterId | null>(null);
+  // Active IConverterFs for the chosen game dir (non-null once a dir is picked)
+  const gameFsRef = useRef<IConverterFs | null>(null);
 
   // ── Optional features ─────────────────────────────────────────────────────
   const [enableTranslation, setEnableTranslation] = useState(false);
@@ -227,24 +251,61 @@ export const Tools: React.FC = () => {
     if (e.target === e.currentTarget && !running) closeTools();
   };
 
-  // ── Auto-fill helpers from gameDir ────────────────────────────────────────
-  function applyGameDir(dir: string) {
-    setGameDir(dir);
-    if (!translationDir) setTranslationDir(`${dir}/tl/chinese`);
-    if (!galleryPath) setGalleryPath(`${dir}/gallery_images.rpy`);
+  // ── Apply chosen game dir ─────────────────────────────────────────────────
+  /**
+   * Called after the user picks a directory (either via Tauri dialog or FSA
+   * picker).  `label` is the display string; `fs` is the ready IConverterFs.
+   * Also pre-fills the optional sub-path fields.
+   */
+  function applyGameFs(label: string, fs: IConverterFs, kind: ConverterId) {
+    setGameDir(label);
+    setConverterKind(kind);
+    gameFsRef.current = fs;
+    // Pre-fill optional paths only when they are still empty
+    if (!translationDir) setTranslationDir("tl/chinese");
+    if (!galleryPath) setGalleryPath("gallery_images.rpy");
+  }
+
+  /**
+   * Called when the user types a path manually in Tauri mode.
+   * Builds a TauriConverterFs from the typed path and updates state.
+   */
+  function applyGameDirText(dir: string) {
+    setGameDir(dir || null);
+    setConverterKind(dir ? "tauri" : null);
+    gameFsRef.current = dir ? tauriConverterFsFromPath(dir) : null;
+    if (dir) {
+      if (!translationDir) setTranslationDir("tl/chinese");
+      if (!galleryPath) setGalleryPath("gallery_images.rpy");
+    }
+  }
+
+  // ── Browse: pick game directory ───────────────────────────────────────────
+  async function handleBrowseGameDir() {
+    if (isTauri) {
+      const path = await pickDirectory();
+      if (!path) return;
+      applyGameFs(path, tauriConverterFsFromPath(path), "tauri");
+    } else if (fsaSupported) {
+      const result = await pickConverterFs();
+      if (!result) return;
+      applyGameFs(result.fs.label, result.fs, result.kind);
+    }
   }
 
   // ── Business logic ────────────────────────────────────────────────────────
 
   async function buildTranslationMap(
+    fs: IConverterFs,
     dir: string,
   ): Promise<Map<string, string>> {
     const map = new Map<string, string>();
-    if (!isTauri) return map;
     try {
-      const files = await walkDir(dir, (n) => n.toLowerCase().endsWith(".rpy"));
+      const files = await fs.walkDir(dir, (n) =>
+        n.toLowerCase().endsWith(".rpy"),
+      );
       for (const f of files) {
-        const content = await readTextFileTauri(f);
+        const content = await fs.readText(f);
         if (!content) continue;
         try {
           const m = parseTranslationBlocks(content);
@@ -266,14 +327,16 @@ export const Tools: React.FC = () => {
     return map;
   }
 
-  async function buildAssetDefinesBlock(dir: string): Promise<string | null> {
-    if (!isTauri) return null;
+  async function buildAssetDefinesBlock(
+    fs: IConverterFs,
+    dir: string,
+  ): Promise<string | null> {
     try {
-      const allFiles = await walkDir(dir, () => true);
+      const allFiles = await fs.walkDir(dir, () => true);
       const relativePaths = allFiles.map((f) => {
-        const rel = f.startsWith(dir)
-          ? f.slice(dir.length).replace(/^\/+/, "")
-          : (f.split("/").pop() ?? f);
+        // Strip the leading dir prefix to get the path relative to images/
+        const prefix = dir ? dir + "/" : "";
+        const rel = f.startsWith(prefix) ? f.slice(prefix.length) : f;
         return rel.replace(/\\/g, "/");
       });
       const result = generateImageDefines(relativePaths);
@@ -297,13 +360,13 @@ export const Tools: React.FC = () => {
   }
 
   async function buildGalleryEntries(
-    path: string,
+    fs: IConverterFs,
+    relPath: string,
   ): Promise<GalleryEntry[] | null> {
-    if (!isTauri) return null;
     try {
-      const content = await readTextFileTauri(path);
+      const content = await fs.readText(relPath);
       if (!content) {
-        log(`无法读取图鉴文件：${path}`);
+        log(`无法读取图鉴文件：${relPath}`);
         return null;
       }
       const entries = parseGalleryRpy(content);
@@ -315,16 +378,12 @@ export const Tools: React.FC = () => {
     }
   }
 
-  async function runConversion() {
-    if (running || !gameDir) return;
-    if (!isTauri) {
-      log("仅在 Tauri 环境下支持文件系统操作。");
-      return;
-    }
+  async function runConversion(saveTarget?: unknown) {
+    const fs = gameFsRef.current;
+    if (running || !fs) return;
 
-    const outDir = `${gameDir}/data`;
-    // Images dir for asset defines
-    const imagesDir = `${gameDir}/images`;
+    const outDir = "data";
+    const imagesDir = "images";
 
     setRunning(true);
     setPhase("converting");
@@ -335,14 +394,14 @@ export const Tools: React.FC = () => {
     setAssetScanCount(null);
     setZipProgress(0);
 
-    log(`开始扫描：${gameDir}`);
+    log(`开始扫描：${fs.label}`);
 
     try {
       // ── Translation ──────────────────────────────────────────────────────
       let translationMap: Map<string, string> | undefined;
       if (enableTranslation && translationDir) {
         log(`加载翻译目录：${translationDir}`);
-        translationMap = await buildTranslationMap(translationDir);
+        translationMap = await buildTranslationMap(fs, translationDir);
         log(`翻译映射大小：${translationMap.size}`);
       }
 
@@ -350,21 +409,21 @@ export const Tools: React.FC = () => {
       let galleryEntries: GalleryEntry[] | null = null;
       if (enableGallery && galleryPath) {
         log(`解析图鉴文件：${galleryPath}`);
-        galleryEntries = await buildGalleryEntries(galleryPath);
+        galleryEntries = await buildGalleryEntries(fs, galleryPath);
       }
 
-      // ── Asset scan (always from game/images) ──────────────────────────────
+      // ── Asset scan ────────────────────────────────────────────────────────
       let assetDefinesBlock: string | null = null;
-      const imagesExists = await pathExists(imagesDir);
+      const imagesExists = await fs.exists(imagesDir);
       if (imagesExists) {
         log(`扫描资源目录：${imagesDir}`);
-        assetDefinesBlock = await buildAssetDefinesBlock(imagesDir);
+        assetDefinesBlock = await buildAssetDefinesBlock(fs, imagesDir);
       } else {
-        log(`未找到 images 目录，跳过资源扫描：${imagesDir}`);
+        log(`未找到 images 目录，跳过资源扫描`);
       }
 
       // ── Convert .rpy → .rrs ───────────────────────────────────────────────
-      const rpyFiles = await walkDir(gameDir, (n) =>
+      const rpyFiles = await fs.walkDir("", (n) =>
         n.toLowerCase().endsWith(".rpy"),
       );
       log(`发现 ${rpyFiles.length} 个 .rpy 文件`);
@@ -372,33 +431,25 @@ export const Tools: React.FC = () => {
 
       const writtenFiles: string[] = [];
 
-      for (const fullPath of rpyFiles) {
-        const relPreview = fullPath.startsWith(gameDir)
-          ? fullPath.slice(gameDir.length).replace(/^\/+/, "")
-          : (fullPath.split("/").pop() ?? fullPath);
-        setCurrentFile(relPreview);
+      for (const relPath of rpyFiles) {
+        setCurrentFile(relPath);
         try {
-          const content = await readTextFileTauri(fullPath);
+          const content = await fs.readText(relPath);
           if (content === null) {
-            log(`读取失败：${fullPath}`);
+            log(`读取失败：${relPath}`);
             setProcessedFiles((n) => n + 1);
             continue;
           }
-          const rel = fullPath.startsWith(gameDir)
-            ? fullPath.slice(gameDir.length).replace(/^\/+/, "")
-            : (fullPath.split("/").pop() ?? fullPath);
-          const rrsName = rel.replace(/\.rpy$/i, ".rrs");
+          const rrsName = relPath.replace(/\.rpy$/i, ".rrs");
           const outPath = `${outDir}/${rrsName}`;
-          const outParent = outPath.replace(/\/[^/]+$/, "");
-          if (!(await pathExists(outParent))) await makeDirTauri(outParent);
           const rrs = convertRpy(content, rrsName, translationMap);
-          await writeTextFileTauri(outPath, rrs);
+          await fs.writeText(outPath, rrs);
           writtenFiles.push(rrsName);
           setProcessedFiles((n) => n + 1);
           log(`转换：${rrsName}`);
         } catch (err) {
           log(
-            `失败：${fullPath} — ${err instanceof Error ? err.message : String(err)}`,
+            `失败：${relPath} — ${err instanceof Error ? err.message : String(err)}`,
           );
           setProcessedFiles((n) => n + 1);
         }
@@ -406,10 +457,9 @@ export const Tools: React.FC = () => {
 
       // ── Write image_defines.rrs ───────────────────────────────────────────
       if (assetDefinesBlock) {
-        const definesPath = `${outDir}/image_defines.rrs`;
         try {
-          await writeTextFileTauri(
-            definesPath,
+          await fs.writeText(
+            `${outDir}/image_defines.rrs`,
             `// Source: image_defines.rrs\n\n` + assetDefinesBlock,
           );
           log(`已生成资源定义文件：image_defines.rrs`);
@@ -425,7 +475,7 @@ export const Tools: React.FC = () => {
       try {
         const manifestPath = `${outDir}/manifest.json`;
         let manifest: Record<string, unknown> = {};
-        const existingText = await readTextFileTauri(manifestPath);
+        const existingText = await fs.readText(manifestPath);
         if (existingText) {
           try {
             manifest = JSON.parse(existingText);
@@ -444,10 +494,7 @@ export const Tools: React.FC = () => {
             manifest["files"] = ["image_defines.rrs", ...existing];
           }
         }
-        await writeTextFileTauri(
-          manifestPath,
-          JSON.stringify(manifest, null, 2),
-        );
+        await fs.writeText(manifestPath, JSON.stringify(manifest, null, 2));
         log(`已更新 manifest.json（${writtenFiles.length} 个文件）`);
       } catch (err) {
         log(
@@ -460,82 +507,55 @@ export const Tools: React.FC = () => {
 
       // ── Pack ZIP ──────────────────────────────────────────────────────────
       log("──────────────────────────");
-      log("请选择 ZIP 输出位置…");
-
-      const zipOutputPath = await pickSavePath({
-        title: "保存 assets.zip",
-        defaultPath: `assets.zip`,
-        filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
-      });
-
-      if (!zipOutputPath) {
-        log("已取消打包。");
-        setPhase("idle");
-        setRunning(false);
-        return;
-      }
-
-      log("开始打包 ZIP…");
+      log("正在收集文件列表…");
       setPhase("packing");
       setZipProgress(0);
 
       try {
-        // Collect data/ files
-        const dataFiles = await walkDir(outDir, () => true);
-        type FileToPack = { absPath: string; zipPath: string };
-        const filesToPack: FileToPack[] = [];
+        // Collect data/ files to pack
+        const dataFiles = await fs.walkDir(outDir, () => true);
+        const filesToPack: string[] = dataFiles.map((f) => f);
 
-        for (const abs of dataFiles) {
-          const rel = abs.startsWith(outDir)
-            ? abs.slice(outDir.length).replace(/^\/+/, "")
-            : (abs.split("/").pop() ?? abs);
-          filesToPack.push({ absPath: abs, zipPath: `data/${rel}` });
-        }
-
-        // Collect all top-level subdirectories of gameDir as asset dirs
-        // (images/, Audio/, videos/, BGM/, SE/, …)
+        // Also collect game assets (images, audio, video) for the zip
         const IMAGE_EXT = /\.(png|jpg|jpeg|webp|gif|bmp|avif)$/i;
         const AUDIO_EXT = /\.(mp3|ogg|wav|flac|opus|m4a)$/i;
         const VIDEO_EXT = /\.(mp4|webm|ogv|mov)$/i;
         const isAsset = (name: string) =>
           IMAGE_EXT.test(name) || AUDIO_EXT.test(name) || VIDEO_EXT.test(name);
 
-        const assetFiles = await walkDir(gameDir, isAsset);
-        for (const abs of assetFiles) {
-          const rel = abs.startsWith(gameDir)
-            ? abs.slice(gameDir.length).replace(/^\/+/, "")
-            : (abs.split("/").pop() ?? abs);
-          filesToPack.push({ absPath: abs, zipPath: rel });
+        const assetFiles = await fs.walkDir("", isAsset);
+        for (const f of assetFiles) {
+          filesToPack.push(f);
         }
 
         log(`共 ${filesToPack.length} 个文件待打包…`);
 
-        const zipDir = zipOutputPath.replace(/\/[^/]+$/, "");
-        if (!(await pathExists(zipDir))) await makeDirTauri(zipDir);
-
-        log("正在流式写入 ZIP…");
-        const zipFilesToPack: ZipFileEntry[] = filesToPack;
         let skippedCount = 0;
-        const writtenCount = await streamingBuildZip(
-          zipOutputPath,
-          zipFilesToPack,
-          ({ index, total: tot, zipPath: zp }) => {
+        await fs.buildZip(
+          filesToPack,
+          ({ index, total: tot }) => {
             setZipProgress(Math.round(((index + 1) / tot) * 95));
-            setCurrentFile(zp);
           },
-          (absPath, zipPath) => {
-            log(`  跳过（读取失败）：${zipPath} (${absPath})`);
+          (relPath) => {
+            log(`  跳过（读取失败）：${relPath}`);
             skippedCount++;
           },
+          saveTarget,
         );
+
         setZipProgress(100);
         log(
-          `✓ 打包完成：${zipOutputPath}  (${writtenCount} 文件写入${skippedCount > 0 ? `，${skippedCount} 个跳过` : ""})`,
+          `✓ 打包完成${skippedCount > 0 ? `，${skippedCount} 个文件跳过` : ""}`,
         );
         setPhase("done");
       } catch (err) {
-        log(`打包失败：${err instanceof Error ? err.message : String(err)}`);
-        setPhase("idle");
+        if (err instanceof CancelledError) {
+          log("已取消打包。");
+          setPhase("idle");
+        } else {
+          log(`打包失败：${err instanceof Error ? err.message : String(err)}`);
+          setPhase("idle");
+        }
       }
     } catch (err) {
       log(`运行出错：${err instanceof Error ? err.message : String(err)}`);
@@ -559,6 +579,8 @@ export const Tools: React.FC = () => {
       ? "◌  打包中…"
       : "◌  转换中…"
     : "▶  转换并打包";
+
+  const canRun = !running && !!gameFsRef.current;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -587,31 +609,111 @@ export const Tools: React.FC = () => {
           </button>
         </div>
 
+        {/* ── FSA mode notice ── */}
+        {!isTauri && fsaSupported && (
+          <div
+            className="tools-platform-banner tools-platform-banner--warn"
+            role="note"
+          >
+            <span className="tools-platform-banner__icon">ℹ️</span>
+            <span>
+              当前为 Chrome / Edge 浏览器环境。 点击「选择 Game
+              目录」授权访问游戏文件夹，转换完成后 ZIP 将直接下载到本地。
+              <strong>无需安装桌面端</strong>，完整流程均在浏览器内执行。
+            </span>
+          </div>
+        )}
+
         {/* ── Section 1: Game 目录 ── */}
         <div className="settings-group">
           <SectionLabel>Game 目录</SectionLabel>
-          <PathRow
-            value={gameDir ?? ""}
-            onChange={(v) => applyGameDir(v || "")}
-            placeholder="选择包含 .rpy 文件的 game 目录"
-            status={gameDirStatus}
-            onBrowse={async () => {
-              if (!isTauri) return;
-              const dir = await pickDirectory();
-              if (dir) applyGameDir(dir);
-            }}
-            onClear={() => {
-              setGameDir(null);
-              setGameDirStatus(null);
-            }}
-            disabled={running}
-          />
+
+          {/* FSA mode: single "pick directory" button replaces the path input */}
+          {!isTauri && fsaSupported ? (
+            <div
+              style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}
+            >
+              <button
+                className="btn"
+                onClick={handleBrowseGameDir}
+                disabled={running}
+                style={{ flex: "0 0 auto" }}
+              >
+                📂 选择 Game 目录
+              </button>
+              {gameDir && (
+                <>
+                  <span
+                    className="status-dot status-dot--ok"
+                    title="目录已选择"
+                    aria-hidden
+                  />
+                  <span
+                    style={{
+                      fontSize: "0.82rem",
+                      color: "var(--color-text-dim)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={gameDir}
+                  >
+                    {gameDir}
+                  </span>
+                  <button
+                    className="path-row__btn"
+                    onClick={() => {
+                      setGameDir(null);
+                      setConverterKind(null);
+                      gameFsRef.current = null;
+                      setGameDirStatus(null);
+                    }}
+                    disabled={running}
+                    aria-label="取消选择目录"
+                  >
+                    ✕
+                  </button>
+                </>
+              )}
+            </div>
+          ) : (
+            /* Tauri mode: path input + browse button */
+            <PathRow
+              value={gameDir ?? ""}
+              onChange={(v) => applyGameDirText(v)}
+              placeholder="选择包含 .rpy 文件的 game 目录"
+              status={gameDirStatus}
+              onBrowse={handleBrowseGameDir}
+              onClear={() => {
+                setGameDir(null);
+                setConverterKind(null);
+                gameFsRef.current = null;
+                setGameDirStatus(null);
+              }}
+              disabled={running}
+            />
+          )}
+
           <p className="tools-hint">
-            选择后自动推断输出目录（
-            <code style={{ fontFamily: "var(--font-mono)" }}>game/data/</code>
-            ）、 资源目录（
-            <code style={{ fontFamily: "var(--font-mono)" }}>game/images/</code>
-            ）。
+            {isTauri ? (
+              <>
+                选择后自动推断输出目录（
+                <code style={{ fontFamily: "var(--font-mono)" }}>
+                  game/data/
+                </code>
+                ）、资源目录（
+                <code style={{ fontFamily: "var(--font-mono)" }}>
+                  game/images/
+                </code>
+                ）。
+              </>
+            ) : (
+              <>
+                授权后可读写该目录下的所有文件。转换结果写入{" "}
+                <code style={{ fontFamily: "var(--font-mono)" }}>data/</code>{" "}
+                子目录，打包后通过浏览器下载 ZIP。
+              </>
+            )}
             {assetScanCount !== null && (
               <span className="tools-asset-count">
                 上次扫描：{assetScanCount} 个图片定义
@@ -640,7 +742,9 @@ export const Tools: React.FC = () => {
           <PathRow
             value={translationDir ?? ""}
             onChange={(v) => setTranslationDir(v || null)}
-            placeholder="game/tl/chinese"
+            placeholder={
+              isTauri ? "game/tl/chinese（绝对路径）" : "tl/chinese（相对路径）"
+            }
             status={translationDirStatus}
             onBrowse={async () => {
               if (!isTauri) return;
@@ -654,6 +758,13 @@ export const Tools: React.FC = () => {
             disabled={running || !enableTranslation}
             browseLabel="浏览"
           />
+          {!isTauri && fsaSupported && enableTranslation && (
+            <p className="tools-hint">
+              在 Chrome / Edge 中输入相对于 game 目录的路径，例如{" "}
+              <code style={{ fontFamily: "var(--font-mono)" }}>tl/chinese</code>
+              。
+            </p>
+          )}
         </div>
 
         <div className="divider" />
@@ -676,7 +787,11 @@ export const Tools: React.FC = () => {
           <PathRow
             value={galleryPath ?? ""}
             onChange={(v) => setGalleryPath(v || null)}
-            placeholder="gallery_images.rpy 路径"
+            placeholder={
+              isTauri
+                ? "gallery_images.rpy 路径（绝对）"
+                : "gallery_images.rpy（相对路径）"
+            }
             status={galleryPathStatus}
             onBrowse={async () => {
               if (!isTauri) return;
@@ -698,6 +813,15 @@ export const Tools: React.FC = () => {
             disabled={running || !enableGallery}
             browseLabel="浏览"
           />
+          {!isTauri && fsaSupported && enableGallery && (
+            <p className="tools-hint">
+              输入相对于 game 目录的路径，例如{" "}
+              <code style={{ fontFamily: "var(--font-mono)" }}>
+                gallery_images.rpy
+              </code>
+              。
+            </p>
+          )}
         </div>
 
         <div className="divider" />
@@ -754,12 +878,36 @@ export const Tools: React.FC = () => {
         <div className="tools-actions">
           <button
             className="btn primary tools-run-btn"
-            onClick={() => {
+            onClick={async () => {
               setPhase("idle");
               setZipProgress(0);
-              runConversion();
+              // Pre-acquire the save-file target while still inside the user
+              // gesture.  showSaveFilePicker (FSA) and the Tauri save dialog
+              // both require a user gesture — calling them after multiple
+              // awaits loses that context and throws a security error.
+              const fs = gameFsRef.current;
+              let saveTarget: unknown = undefined;
+              if (fs) {
+                try {
+                  const target = await fs.pickZipSaveTarget();
+                  if (target == null) return; // user cancelled the picker
+                  saveTarget = target;
+                } catch {
+                  // On Tauri the dialog may not be needed at this stage;
+                  // let runConversion handle any further errors.
+                  saveTarget = undefined;
+                }
+              }
+              runConversion(saveTarget);
             }}
-            disabled={running || !gameDir || !isTauri}
+            disabled={!canRun}
+            title={
+              !gameFsRef.current
+                ? isTauri
+                  ? "请先填写 Game 目录"
+                  : "请先点击「选择 Game 目录」授权访问"
+                : undefined
+            }
           >
             {btnLabel}
           </button>
@@ -804,6 +952,22 @@ export const Tools: React.FC = () => {
             )}
           </div>
         </div>
+
+        {/* ── platform kind indicator (subtle footer) ── */}
+        {converterKind && (
+          <p
+            style={{
+              marginTop: "0.5rem",
+              fontSize: "0.72rem",
+              color: "rgba(255,255,255,0.2)",
+              textAlign: "right",
+            }}
+          >
+            {converterKind === "tauri"
+              ? "模式：Tauri 原生"
+              : "模式：浏览器 FSA"}
+          </p>
+        )}
       </div>
     </div>
   );
