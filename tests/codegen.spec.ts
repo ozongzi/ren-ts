@@ -54,7 +54,9 @@ describe("codegen.collectDefines", () => {
     expect(out).not.toHaveProperty("COMPLEX");
 
     // position.p5 should exist as numeric; collectDefines returns the numeric value
-    expect(out).toHaveProperty("position.p5");
+    // Note: toHaveProperty("position.p5") treats the dot as a nested path separator,
+    // so we use `in` and bracket notation instead.
+    expect("position.p5" in out).toBe(true);
     expect(typeof out["position.p5"]).toBe("number");
     expect(out["position.p5"]).toBeCloseTo(0.42);
   });

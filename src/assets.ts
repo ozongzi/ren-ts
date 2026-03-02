@@ -93,12 +93,9 @@ export function resolveAudio(src: string): string {
 function _toFsPath(src: string): string {
   if (isCssColor(src)) return src;
   if (isAudioPath(src)) return src;
-  if (isVideoPath(src)) {
-    // videos/ directory at zip root
-    if (src.startsWith("videos/")) return src;
-    return `videos/${src}`;
-  }
-  // Image: strip any existing "images/" prefix then re-add
+  // Videos in Ren'Py are stored under the images/ directory by default,
+  // so treat .webm exactly like image assets.
+  // Image + video: strip any existing "images/" prefix then re-add
   const stripped = src.startsWith("images/")
     ? src.slice("images/".length)
     : src;

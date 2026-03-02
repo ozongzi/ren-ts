@@ -104,7 +104,7 @@ export function extractTexts(rrsContent: string): string[] {
     // ── speak WHO "single line";
     // ── speak WHO "single line" | "voice";
     const speakSingle = line.match(
-      /^speak\s+\S+\s+"((?:[^"\\]|\\.)*)"\s*(?:\|\s*"[^"]*")?\s*;/,
+      /^speak\s+\S+\s+"((?:[^"\\]|\\.)*)"\s*(?:\|\s*(?:"[^"]*"|\S+))?\s*;/,
     );
     if (speakSingle) {
       const text = unescapeRrs(speakSingle[1]);
@@ -116,7 +116,7 @@ export function extractTexts(rrsContent: string): string[] {
     //    "line text";
     //    "line text" | "voice";
     const blockLine = line.match(
-      /^"((?:[^"\\]|\\.)*)"\s*(?:\|\s*"[^"]*")?\s*;/,
+      /^"((?:[^"\\]|\\.)*)"\s*(?:\|\s*(?:"[^"]*"|\S+))?\s*;/,
     );
     if (blockLine) {
       const text = unescapeRrs(blockLine[1]);
@@ -253,7 +253,7 @@ function translateLine(raw: string, map: TranslationMap): string {
   // speak WHO "text" | "voice";
   {
     const m = line.match(
-      /^(speak\s+\S+\s+)"((?:[^"\\]|\\.)*)"(\s*(?:\|\s*"[^"]*")?\s*;.*)$/,
+      /^(speak\s+\S+\s+)"((?:[^"\\]|\\.)*)"(\s*(?:\|\s*(?:"[^"]*"|\S+))?\s*;.*)$/,
     );
     if (m) {
       const orig = unescapeRrs(m[2]);
@@ -269,7 +269,7 @@ function translateLine(raw: string, map: TranslationMap): string {
   // "text";  or  "text" | "voice";   (inside a speak block)
   {
     const m = line.match(
-      /^(")((?:[^"\\]|\\.)*)(")(\s*(?:\|\s*"[^"]*")?\s*;.*)$/,
+      /^(")((?:[^"\\]|\\.)*)(")(\s*(?:\|\s*(?:"[^"]*"|\S+))?\s*;.*)$/,
     );
     if (m) {
       const orig = unescapeRrs(m[2]);

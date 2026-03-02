@@ -6,7 +6,7 @@ import React, {
   useState,
 } from "react";
 import { useGameStore } from "../store";
-import { resolveAsset } from "../assets";
+import { resolveAsset, resolveAssetAsync } from "../assets";
 import { getGallery } from "../loader";
 import type { GalleryEntry } from "../types";
 
@@ -276,10 +276,26 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Use the first frame as the thumbnail
-  const firstFrame = entry.frames[0];
-  // Only assign the src once the item scrolls into view to avoid decoding
-  // dozens of webm files simultaneously on tab open.
-  const src = inView && firstFrame ? resolveAsset(firstFrame) : null;
+  const firstFrame = entry.frames[0] ?? "";
+
+  // Resolve the asset URL asynchronously once the item scrolls into view.
+  // resolveAsset() is sync but only returns a value if the URL was already
+  // cached — for gallery entries never shown in-game the cache is cold, so
+  // we kick off an async resolve and update state when it settles.
+  const [src, setSrc] = useState<string | null>(() =>
+    inView && firstFrame ? resolveAsset(firstFrame) || null : null,
+  );
+
+  useEffect(() => {
+    if (!inView || !firstFrame) return;
+    let cancelled = false;
+    resolveAssetAsync(firstFrame).then((url) => {
+      if (!cancelled) setSrc(url || null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [inView, firstFrame]);
 
   // Detect whether the entry contains video frames
   const isAnimated = firstFrame?.endsWith(".webm") ?? false;
@@ -485,8 +501,23 @@ const CGViewer: React.FC<CGViewerProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const totalFrames = entry.frames.length;
-  const currentSrc = resolveAsset(entry.frames[frameIdx]);
-  const isAnimated = entry.frames[frameIdx]?.endsWith(".webm") ?? false;
+  const rawSrc = entry.frames[frameIdx] ?? "";
+  const isAnimated = rawSrc.endsWith(".webm");
+
+  // Resolve asset async — sync cache may be cold for gallery entries that
+  // were never shown in-game.
+  const [currentSrc, setCurrentSrc] = useState<string>(() =>
+    resolveAsset(rawSrc),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    resolveAssetAsync(rawSrc).then((url) => {
+      if (!cancelled) setCurrentSrc(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [rawSrc]);
   const hasPrev = frameIdx > 0;
   const hasNext = frameIdx < totalFrames - 1;
 

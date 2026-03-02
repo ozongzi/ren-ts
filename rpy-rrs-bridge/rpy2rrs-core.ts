@@ -112,13 +112,19 @@ class Converter {
   private menuPreamble = false;
   private menuOpen = false;
   private menuPreambleCol = -1;
+  /** label name → exit label for minigame stubs */
+  private stubMap: Map<string, string>;
 
   constructor(
     lines: string[],
     private readonly filename: string,
     private readonly translation_map?: Map<string, string>,
+    stubs?: Array<{ entryLabel: string; exitLabel: string }>,
   ) {
     this.lines = lines;
+    this.stubMap = new Map(
+      stubs?.map((s) => [s.entryLabel, s.exitLabel]) ?? [],
+    );
   }
 
   private translate(text: string): string {
@@ -386,7 +392,31 @@ class Converter {
     if (labelMatch) {
       this.flushSpeak();
       this.closeBlocksAt(indent);
-      this.emit(`${this.pad()}label ${labelMatch[1]} {`);
+      const labelName = labelMatch[1];
+
+      // Minigame stub: emit a pass-through label and skip the entire body.
+      const stubExit = this.stubMap.get(labelName);
+      if (stubExit !== undefined) {
+        this.emit(`${this.pad()}label ${labelName} {`);
+        this.emit(`${this.pad()}  jump ${stubExit};`);
+        this.emit(`${this.pad()}}`);
+        // Skip all lines that belong to this label's body (indented deeper
+        // than the label declaration itself).
+        while (this.pos < this.lines.length) {
+          const peek = this.lines[this.pos];
+          const peekTrimmed = peek.trim();
+          if (peekTrimmed === "") {
+            this.pos++;
+            continue;
+          }
+          const peekIndent = getIndent(peek);
+          if (peekIndent <= indent) break;
+          this.pos++;
+        }
+        return;
+      }
+
+      this.emit(`${this.pad()}label ${labelName} {`);
       this.blockStack.push({ rpyCol: indent, type: "label" });
       return;
     }
@@ -895,14 +925,16 @@ class Converter {
  * @param src             - Raw content of the `.rpy` file
  * @param filename        - Logical filename used in the `// Source:` comment (e.g. "day1.rrs")
  * @param translation_map - Optional map of english text → translated text
+ * @param stubs           - Optional minigame stubs: label bodies are replaced with a direct jump
  * @returns               - The converted `.rrs` source string
  */
 export function convertRpy(
   src: string,
   filename: string,
   translation_map?: Map<string, string>,
+  stubs?: Array<{ entryLabel: string; exitLabel: string }>,
 ): string {
   const lines = src.split("\n");
-  const converter = new Converter(lines, filename, translation_map);
+  const converter = new Converter(lines, filename, translation_map, stubs);
   return converter.convert();
 }

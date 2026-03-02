@@ -241,6 +241,70 @@ screen tutorial():
     expect(entry?.exitLabel).toBe("label_afterjournal");
   });
 
+  // ── script.rpy-style: game entry file with reserved label names ──────────
+
+  it("does not flag 'splashscreen' label as a minigame even though it calls screen and has no dialogue", () => {
+    const src = `
+label splashscreen:
+
+    scene cg white with dissolve
+    show screen language_choice
+    $ renpy.pause(2.0)
+    show screen disclaimer
+    $ renpy.pause()
+
+    return
+`.trim();
+    const result = detectMinigame(src);
+    expect(result.stubs).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("does not flag 'start' label as a minigame even though it calls screen and jumps externally", () => {
+    const src = `
+label start:
+    $ score_hiro = 0
+    $ score_natsumi = 0
+
+    show screen keymap_screen
+    $ _game_menu_screen = None
+
+    $ foreplay = True
+
+    jump day1
+    return
+`.trim();
+    const result = detectMinigame(src);
+    expect(result.stubs).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("does not flag a file containing both 'splashscreen' and 'start' as a minigame", () => {
+    // Mirrors the real script.rpy structure: 26k lines of init definitions
+    // followed by two Ren'Py engine-reserved entry labels.
+    const src = `
+init:
+    $ a = Character("Aiden")
+    $ k = Character("Keitaro")
+
+label splashscreen:
+    show screen language_choice
+    $ renpy.pause(2.0)
+    show screen disclaimer
+    $ renpy.pause()
+    return
+
+label start:
+    $ score = 0
+    show screen keymap_screen
+    jump day1
+    return
+`.trim();
+    const result = detectMinigame(src);
+    expect(result.stubs).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+  });
+
   // ── foreplay-style: show screen + renpy.jump inside init python block ─────────
 
   it("detects show screen (not call screen) as callsScreen", () => {

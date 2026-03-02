@@ -417,8 +417,17 @@ function classifyAndMerge(src: string, result: ScanResult): void {
   // is itself a minigame candidate (callsScreen, no dialogue).  This handles
   // the pattern where exit jumps live inside init python functions rather than
   // directly in a label body (e.g. foreplay.rpy).
+  //
+  // IMPORTANT: only inject into labels that look like minigame candidates
+  // (callsScreen && !hasDialogue).  Injecting into ordinary dialogue labels
+  // would cause script.rpy-style definition files to be falsely detected as
+  // minigames when their init python blocks happen to contain a renpy.jump().
   for (const [, info] of labelInfos) {
-    if (info.externalJumps.size === 0) {
+    if (
+      info.externalJumps.size === 0 &&
+      info.callsScreen &&
+      !info.hasDialogue
+    ) {
       for (const t of topLevelJumps) {
         if (!localLabels.has(t)) {
           info.externalJumps.add(t);
@@ -429,6 +438,25 @@ function classifyAndMerge(src: string, result: ScanResult): void {
 }
 
 // ── Phase 3: find entry label candidates ─────────────────────────────────────
+
+/**
+ * Ren'Py built-in / game-entry reserved label names.
+ *
+ * These labels are called directly by the Ren'Py engine itself (not by any
+ * other label in the game files), so they will always appear as "unreferenced"
+ * entry points.  They must never be treated as minigame candidates even when
+ * they contain `show screen` / `renpy.pause()` and no dialogue — that is
+ * perfectly normal for a splash-screen or game-start initialisation label.
+ */
+const RENPY_RESERVED_LABELS = new Set([
+  "start",
+  "splashscreen",
+  "main_menu",
+  "after_load",
+  "quit",
+  "after_warp",
+  "hide_windows",
+]);
 
 function findEntryCandidates(
   localLabels: Set<string>,
@@ -449,9 +477,11 @@ function findEntryCandidates(
     }
   }
 
-  // Entry label candidates: not referenced by anyone, callsScreen, no dialogue
+  // Entry label candidates: not referenced by anyone, callsScreen, no dialogue,
+  // and not a Ren'Py engine-reserved label name.
   return [...localLabels].filter((name) => {
     if (referenced.has(name)) return false;
+    if (RENPY_RESERVED_LABELS.has(name)) return false;
     const info = labelInfos.get(name);
     return info != null && info.callsScreen && !info.hasDialogue;
   });
@@ -509,6 +539,13 @@ export function detectMinigame(src: string): MinigameDetectResult {
   classifyAndMerge(src, scanResult);
 
   const { localLabels, labelInfos } = scanResult;
+
+  // Early-out: if ANY label in the file has dialogue, this is a normal script
+  // file (e.g. script.rpy / definitions.rpy).  Minigame files are pure
+  // screen-interaction sequences with no character dialogue at all.
+  for (const [, info] of labelInfos) {
+    if (info.hasDialogue) return { stubs: [], warnings };
+  }
 
   // Phase 3: find all entry candidates
   const candidates = findEntryCandidates(

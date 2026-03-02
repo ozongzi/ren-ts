@@ -567,10 +567,11 @@ export class WebFetchFS implements IFileSystem {
  * Normalise a file path for use as a Map key:
  *   - Strip leading slashes
  *   - Collapse any backslashes to forward slashes
- *   - Preserve case (ZIP is case-sensitive by spec)
+ *   - Lowercase for case-insensitive lookup (game assets often differ in case
+ *     between the script definitions and the actual filenames on disk)
  */
 function normalisePath(p: string): string {
-  return p.replace(/\\/g, "/").replace(/^\/+/, "");
+  return p.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
 }
 
 /** Best-effort MIME type from file extension. */

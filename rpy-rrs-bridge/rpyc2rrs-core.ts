@@ -203,11 +203,18 @@ class AstConverter {
   private speakBuf: SpeakBuffer | null = null;
   private pendingVoice: string | null = null;
   private pendingWith: string | null = null;
+  /** label name → exit label for minigame stubs */
+  private stubMap: Map<string, string>;
 
   constructor(
     private readonly filename: string,
     private readonly translationMap?: Map<string, string>,
-  ) {}
+    stubs?: Array<{ entryLabel: string; exitLabel: string }>,
+  ) {
+    this.stubMap = new Map(
+      stubs?.map((s) => [s.entryLabel, s.exitLabel]) ?? [],
+    );
+  }
 
   // ── Output helpers ──────────────────────────────────────────────────────────
 
@@ -366,6 +373,16 @@ class AstConverter {
     if (this.depth > 0) {
       this.depth--;
       this.emit(this.pad() + "}");
+    }
+
+    // Minigame stub: emit a pass-through label and skip the entire body.
+    const stubExit = this.stubMap.get(name);
+    if (stubExit !== undefined) {
+      this.emit(`label ${name} {`);
+      this.emit(`  jump ${stubExit};`);
+      this.emit(`}`);
+      // depth stays at 0 — no block is processed
+      return;
     }
 
     this.emit(`label ${name} {`);
@@ -1127,8 +1144,13 @@ function classifyAndMergeAst(
   // Merge screen jump targets into the labels that call those screens.
   // Walk each label's block to find which screens it calls, then add those
   // screens' Jump targets into the label's jumpsTo / externalJumps.
+  // IMPORTANT: only merge into minigame-candidate labels (callsScreen &&
+  // !hasDialogue).  Merging into ordinary dialogue labels would cause large
+  // script files to be falsely flagged as minigames when they happen to
+  // contain a screen with a Jump() widget.
   for (const [, info] of labelInfos) {
     if (!info.callsScreen) continue;
+    if (info.hasDialogue) continue;
     for (const [, targets] of screenJumps) {
       for (const t of targets) {
         if (localLabels.has(t)) {
@@ -1142,6 +1164,25 @@ function classifyAndMergeAst(
 }
 
 /** Phase 3: find unreferenced entry-label candidates. */
+/**
+ * Ren'Py built-in / game-entry reserved label names.
+ *
+ * These labels are called directly by the Ren'Py engine itself (not by any
+ * other label in the game files), so they will always appear as "unreferenced"
+ * entry points.  They must never be treated as minigame candidates even when
+ * they contain `show screen` / `renpy.pause()` and no dialogue — that is
+ * perfectly normal for a splash-screen or game-start initialisation label.
+ */
+const RENPY_RESERVED_LABELS_AST = new Set([
+  "start",
+  "splashscreen",
+  "main_menu",
+  "after_load",
+  "quit",
+  "after_warp",
+  "hide_windows",
+]);
+
 function findEntryCandidatesAst(
   localLabels: Set<string>,
   labelInfos: Map<string, AstLabelInfo>,
@@ -1156,8 +1197,11 @@ function findEntryCandidatesAst(
       if (localLabels.has(t)) referenced.add(t);
     }
   }
+  // Entry label candidates: not referenced by anyone, callsScreen, no dialogue,
+  // and not a Ren'Py engine-reserved label name.
   return [...localLabels].filter((name) => {
     if (referenced.has(name)) return false;
+    if (RENPY_RESERVED_LABELS_AST.has(name)) return false;
     const info = labelInfos.get(name);
     return info != null && info.callsScreen && !info.hasDialogue;
   });
@@ -1205,6 +1249,13 @@ export function detectMinigameFromAst(
 
   // Phase 2: classify
   classifyAndMergeAst(localLabels, labelInfos, screenJumps);
+
+  // Early-out: if ANY label in the file has dialogue, this is a normal script
+  // file (e.g. script.rpy / definitions.rpy).  Minigame files are pure
+  // screen-interaction sequences with no character dialogue at all.
+  for (const [, info] of labelInfos) {
+    if (info.hasDialogue) return { stubs: [], warnings };
+  }
 
   // Phase 3: find candidates
   const candidates = findEntryCandidatesAst(
@@ -1298,8 +1349,9 @@ export function convertRpyc(
   astPickle: PickleValue,
   filename: string,
   translationMap?: Map<string, string>,
+  stubs?: Array<{ entryLabel: string; exitLabel: string }>,
 ): string {
   const rootNodes = unwrapAstNodes(astPickle);
-  const converter = new AstConverter(filename, translationMap);
+  const converter = new AstConverter(filename, translationMap, stubs);
   return converter.convert(rootNodes);
 }

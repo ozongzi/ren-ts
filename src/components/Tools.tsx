@@ -23,10 +23,7 @@ import {
   unwrapAstNodes,
 } from "../../rpy-rrs-bridge/rpyc2rrs-core";
 import { readRpyc } from "../rpycReader";
-import {
-  detectMinigame,
-  renderMinigameStubs,
-} from "../../rpy-rrs-bridge/minigame-detect";
+import { detectMinigame } from "../../rpy-rrs-bridge/minigame-detect";
 import { parseTranslationBlocks } from "../../rpy-rrs-bridge/translation-extractor";
 import { parseGalleryRpy } from "../../rpy-rrs-bridge/parse-gallery-core";
 import {
@@ -545,9 +542,12 @@ export const Tools: React.FC = () => {
       }
 
       // ── Collect script files: .rpy (primary) + .rpyc (fallback) ──────────
-      const rpyFiles = await fs.walkDir("", (n) =>
-        n.toLowerCase().endsWith(".rpy"),
-      );
+      // tl/* files are Ren'Py translation sources — never convert or pack them.
+      const isTlPath = (p: string) => p.startsWith("tl/");
+
+      const rpyFiles = (
+        await fs.walkDir("", (n) => n.toLowerCase().endsWith(".rpy"))
+      ).filter((p) => !isTlPath(p));
 
       // Build a set of base paths that already have a .rpy source file so we
       // can skip the corresponding .rpyc (rpy always wins, matching Ren'Py).
@@ -555,9 +555,9 @@ export const Tools: React.FC = () => {
         rpyFiles.map((p) => p.replace(/\.rpy$/i, "").toLowerCase()),
       );
 
-      const rpycFiles = await fs.walkDir("", (n) =>
-        n.toLowerCase().endsWith(".rpyc"),
-      );
+      const rpycFiles = (
+        await fs.walkDir("", (n) => n.toLowerCase().endsWith(".rpyc"))
+      ).filter((p) => !isTlPath(p));
 
       // Only keep .rpyc files that have NO matching .rpy companion.
       const rpycOnly = rpycFiles.filter(
@@ -598,9 +598,16 @@ export const Tools: React.FC = () => {
 
             let rrs: string;
             if (mgResult.stubs.length > 0) {
-              rrs = renderMinigameStubs(mgResult.stubs, rrsName);
               const labels = mgResult.stubs.map((s) => s.entryLabel).join(", ");
-              log(`跳过 minigame：${rrsName} → stub [${labels}]`);
+              log(
+                `检测到 minigame：${rrsName} → stub [${labels}]，保留顶层定义`,
+              );
+              rrs = convertRpy(
+                content,
+                rrsName,
+                translationMap,
+                mgResult.stubs,
+              );
             } else {
               rrs = convertRpy(content, rrsName, translationMap);
               log(`转换：${rrsName}`);
@@ -635,11 +642,18 @@ export const Tools: React.FC = () => {
               for (const w of mgResult.warnings) log(`⚠ ${w}`);
 
               if (mgResult.stubs.length > 0) {
-                rrs = renderMinigameStubs(mgResult.stubs, rrsName);
                 const labels = mgResult.stubs
                   .map((s) => s.entryLabel)
                   .join(", ");
-                log(`跳过 minigame（rpyc AST）：${rrsName} → stub [${labels}]`);
+                log(
+                  `检测到 minigame（rpyc AST）：${rrsName} → stub [${labels}]，保留顶层定义`,
+                );
+                rrs = convertRpyc(
+                  rpycFile.astPickle,
+                  rrsName,
+                  translationMap,
+                  mgResult.stubs,
+                );
               } else {
                 rrs = convertRpyc(rpycFile.astPickle, rrsName, translationMap);
                 log(`转换（rpyc AST）：${rrsName}`);
@@ -713,11 +727,13 @@ export const Tools: React.FC = () => {
         log("开始 LLM 翻译…");
 
         // Collect all texts from every generated .rrs entry.
+        // Exclude tl/* entries — they are translation source files, not game scripts.
         const allTexts: string[] = [];
         for (const entry of virtualEntries) {
           if (
             entry.zipPath.startsWith("data/") &&
-            entry.zipPath.endsWith(".rrs")
+            entry.zipPath.endsWith(".rrs") &&
+            !entry.zipPath.startsWith("data/tl/")
           ) {
             allTexts.push(...extractTexts(entry.content));
           }
@@ -776,8 +792,13 @@ export const Tools: React.FC = () => {
         } else {
           log(`✓ 翻译完成，共 ${map.size} 条。`);
         }
+      }
 
-        // Apply the translation map to all generated .rrs entries.
+      // ── Apply LLM translation cache to generated files ────────────────────
+      // Run whenever LLM is enabled, regardless of whether the API key is set —
+      // the cache may already be fully populated from a previous session.
+      if (enableLlm) {
+        const map = llmMapRef.current;
         if (map.size > 0) {
           for (let i = 0; i < virtualEntries.length; i++) {
             const entry = virtualEntries[i];
@@ -792,8 +813,10 @@ export const Tools: React.FC = () => {
             }
           }
           log(
-            `已将翻译应用到 ${virtualEntries.filter((e) => e.zipPath.endsWith(".rrs")).length} 个脚本文件。`,
+            `已将翻译应用到 ${virtualEntries.filter((e) => e.zipPath.endsWith(".rrs")).length} 个脚本文件（缓存 ${map.size} 条）。`,
           );
+        } else {
+          log(`⚠ LLM 翻译已启用但缓存为空，输出为原文。`);
         }
       }
 

@@ -41,7 +41,9 @@ position.left = 0.25;
     expect(d).toHaveProperty("NUM_A", 1.5);
     expect(d).toHaveProperty("HEX", "#ff00ff");
     // position.* expected to be parsed as number (collectDefines attempts numeric)
-    expect(d).toHaveProperty("position.left");
+    // Note: toHaveProperty("position.left") would treat the dot as a nested path,
+    // so we access the key directly via bracket notation instead.
+    expect("position.left" in d).toBe(true);
     expect(typeof d["position.left"]).toBe("number");
     expect(d["position.left"] as number).toBeCloseTo(0.25);
   });
