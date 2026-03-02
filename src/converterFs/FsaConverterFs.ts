@@ -170,6 +170,37 @@ export class FsaConverterFs implements IConverterFs {
     }
   }
 
+  async readBinary(relPath: string): Promise<Uint8Array | null> {
+    // Prefer on-disk file — read raw bytes without any encoding conversion.
+    try {
+      const fh = await fsaResolveFile(this.root, relPath, false);
+      if (fh) {
+        const file = await fh.getFile();
+        const buf = await file.arrayBuffer();
+        return new Uint8Array(buf);
+      }
+    } catch {
+      // Fall through to RPA.
+    }
+
+    // Fall back to RPA.
+    const rpaIndex = await this._getRpaIndex();
+    const vf = rpaIndex.get(relPath.replace(/\\/g, "/"));
+    if (!vf) return null;
+
+    try {
+      const bytes = await vf.reader.read(vf.entry);
+      if (!bytes) return null;
+      return bytes;
+    } catch (err) {
+      console.warn(
+        `[FsaConverterFs] readBinary from RPA failed for ${relPath}:`,
+        err,
+      );
+      return null;
+    }
+  }
+
   async writeText(relPath: string, content: string): Promise<void> {
     const fh = await fsaResolveFile(this.root, relPath, true);
     if (!fh) throw new Error(`Cannot create file: ${relPath}`);

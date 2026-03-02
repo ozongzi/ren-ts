@@ -59,6 +59,15 @@ export interface IConverterFs {
   readText(relPath: string): Promise<string | null>;
 
   /**
+   * Read a binary file at the given relative path as raw bytes.
+   * Returns null if the file cannot be read.
+   *
+   * Unlike readText, this method does NOT attempt any character-encoding
+   * conversion, so it is safe for binary formats such as .rpyc.
+   */
+  readBinary(relPath: string): Promise<Uint8Array | null>;
+
+  /**
    * Write a text file at the given relative path, creating parent
    * directories as needed.  Overwrites existing files silently.
    */

@@ -18,6 +18,12 @@ import {
 } from "../converterFs";
 import { convertRpy } from "../../rpy-rrs-bridge/rpy2rrs-core";
 import {
+  convertRpyc,
+  detectMinigameFromAst,
+  unwrapAstNodes,
+} from "../../rpy-rrs-bridge/rpyc2rrs-core";
+import { readRpyc } from "../rpycReader";
+import {
   detectMinigame,
   renderMinigameStubs,
 } from "../../rpy-rrs-bridge/minigame-detect";
@@ -426,45 +432,118 @@ export const Tools: React.FC = () => {
         log(`未找到 images 目录，跳过资源扫描`);
       }
 
-      // ── Convert .rpy → .rrs (in memory only, no disk write) ──────────────
+      // ── Collect script files: .rpy (primary) + .rpyc (fallback) ──────────
       const rpyFiles = await fs.walkDir("", (n) =>
         n.toLowerCase().endsWith(".rpy"),
       );
-      log(`发现 ${rpyFiles.length} 个 .rpy 文件`);
-      setTotalFiles(rpyFiles.length);
+
+      // Build a set of base paths that already have a .rpy source file so we
+      // can skip the corresponding .rpyc (rpy always wins, matching Ren'Py).
+      const rpyBaseNames = new Set(
+        rpyFiles.map((p) => p.replace(/\.rpy$/i, "").toLowerCase()),
+      );
+
+      const rpycFiles = await fs.walkDir("", (n) =>
+        n.toLowerCase().endsWith(".rpyc"),
+      );
+
+      // Only keep .rpyc files that have NO matching .rpy companion.
+      const rpycOnly = rpycFiles.filter(
+        (p) => !rpyBaseNames.has(p.replace(/\.rpyc$/i, "").toLowerCase()),
+      );
+
+      const allScriptFiles: Array<{ relPath: string; kind: "rpy" | "rpyc" }> = [
+        ...rpyFiles.map((p) => ({ relPath: p, kind: "rpy" as const })),
+        ...rpycOnly.map((p) => ({ relPath: p, kind: "rpyc" as const })),
+      ];
+
+      log(
+        `发现 ${rpyFiles.length} 个 .rpy 文件` +
+          (rpycOnly.length > 0 ? `，${rpycOnly.length} 个纯 .rpyc 文件` : ""),
+      );
+      setTotalFiles(allScriptFiles.length);
 
       // Collect generated .rrs content as virtual entries (never written to disk)
       const virtualEntries: VirtualZipEntry[] = [];
       const writtenFiles: string[] = [];
 
-      for (const relPath of rpyFiles) {
+      for (const { relPath, kind } of allScriptFiles) {
         setCurrentFile(relPath);
         try {
-          const content = await fs.readText(relPath);
-          if (content === null) {
-            log(`读取失败：${relPath}`);
-            setProcessedFiles((n) => n + 1);
-            continue;
-          }
-          const rrsName = relPath.replace(/\.rpy$/i, ".rrs");
+          if (kind === "rpy") {
+            // ── .rpy path (existing logic) ──────────────────────────────────
+            const content = await fs.readText(relPath);
+            if (content === null) {
+              log(`读取失败：${relPath}`);
+              setProcessedFiles((n) => n + 1);
+              continue;
+            }
+            const rrsName = relPath.replace(/\.rpy$/i, ".rrs");
 
-          // Check for minigame before full conversion
-          const mgResult = detectMinigame(content);
-          for (const w of mgResult.warnings) log(`⚠ ${w}`);
+            // Check for minigame before full conversion
+            const mgResult = detectMinigame(content);
+            for (const w of mgResult.warnings) log(`⚠ ${w}`);
 
-          let rrs: string;
-          if (mgResult.stubs.length > 0) {
-            rrs = renderMinigameStubs(mgResult.stubs, rrsName);
-            const labels = mgResult.stubs.map((s) => s.entryLabel).join(", ");
-            log(`跳过 minigame：${rrsName} → stub [${labels}]`);
+            let rrs: string;
+            if (mgResult.stubs.length > 0) {
+              rrs = renderMinigameStubs(mgResult.stubs, rrsName);
+              const labels = mgResult.stubs.map((s) => s.entryLabel).join(", ");
+              log(`跳过 minigame：${rrsName} → stub [${labels}]`);
+            } else {
+              rrs = convertRpy(content, rrsName, translationMap);
+              log(`转换：${rrsName}`);
+            }
+
+            virtualEntries.push({ zipPath: `data/${rrsName}`, content: rrs });
+            writtenFiles.push(rrsName);
           } else {
-            rrs = convertRpy(content, rrsName, translationMap);
-            log(`转换：${rrsName}`);
+            // ── .rpyc path ──────────────────────────────────────────────────
+            const rrsName = relPath.replace(/\.rpyc$/i, ".rrs");
+
+            // Read as raw bytes — rpyc is binary and must not be UTF-8 decoded.
+            let rrs: string;
+            try {
+              const bytes = await fs.readBinary(relPath);
+              if (bytes === null) {
+                log(`读取失败（rpyc）：${relPath}`);
+                setProcessedFiles((n) => n + 1);
+                continue;
+              }
+
+              const rpycFile = await readRpyc(bytes);
+
+              // Always decode from the AST pickle (slot 1).
+              // slot 2, if present, is a canonical re-serialisation of the AST
+              // via get_code() — not the original .rpy source — and is absent
+              // in Ren'Py 8.1+. The AST is the most reliable information source.
+
+              const rootNodes = unwrapAstNodes(rpycFile.astPickle);
+
+              const mgResult = detectMinigameFromAst(rootNodes);
+              for (const w of mgResult.warnings) log(`⚠ ${w}`);
+
+              if (mgResult.stubs.length > 0) {
+                rrs = renderMinigameStubs(mgResult.stubs, rrsName);
+                const labels = mgResult.stubs
+                  .map((s) => s.entryLabel)
+                  .join(", ");
+                log(`跳过 minigame（rpyc AST）：${rrsName} → stub [${labels}]`);
+              } else {
+                rrs = convertRpyc(rpycFile.astPickle, rrsName, translationMap);
+                log(`转换（rpyc AST）：${rrsName}`);
+              }
+            } catch (rpycErr) {
+              log(
+                `rpyc 解析失败：${relPath} — ${rpycErr instanceof Error ? rpycErr.message : String(rpycErr)}`,
+              );
+              setProcessedFiles((n) => n + 1);
+              continue;
+            }
+
+            virtualEntries.push({ zipPath: `data/${rrsName}`, content: rrs });
+            writtenFiles.push(rrsName);
           }
 
-          // Store in memory — will be injected directly into the ZIP
-          virtualEntries.push({ zipPath: `data/${rrsName}`, content: rrs });
-          writtenFiles.push(rrsName);
           setProcessedFiles((n) => n + 1);
         } catch (err) {
           log(

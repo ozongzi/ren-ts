@@ -213,61 +213,61 @@ jobs:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
 
       # ── Android signing ───────────────────────────────────────────────────
-      # Decode the base64-encoded keystore from secrets and write
-      # keystore.properties so Gradle can locate it at build time.
       - name: Setup Android signing
         run: |
           cd src-tauri/gen/android
-          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}"       > keystore.properties
-          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}"   >> keystore.properties
-          echo "storeFile=$RUNNER_TEMP/keystore.jks"            >> keystore.properties
+          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}"     > keystore.properties
+          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}"  >> keystore.properties
+          echo "storeFile=$RUNNER_TEMP/keystore.jks"           >> keystore.properties
           base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
 
-      # Patch the generated build.gradle.kts to wire up the release signingConfig.
-      # tauri android init creates the file but does not add signing by default.
+      # Patch the generated build.gradle.kts to wire up release signing.
+      # Key fix: tauri android init does NOT emit `import java.io.FileInputStream`,
+      # so we avoid it entirely by using File.inputStream() (Kotlin stdlib, no import needed).
+      # We only need to inject `import java.util.Properties` unconditionally.
       - name: Patch build.gradle.kts for release signing
         run: |
-          GRADLE=src-tauri/gen/android/app/build.gradle.kts
-
-          # 1. Add the Properties import after the first existing import line.
-          sed -i 's/^import java\.io\.FileInputStream$/import java.io.FileInputStream\nimport java.util.Properties/' "$GRADLE"
-
-          # 2. Inject the signingConfigs block immediately before the buildTypes block.
-          python3 - "$GRADLE" <<'PYEOF'
+          python3 - "src-tauri/gen/android/app/build.gradle.kts" <<'PYEOF'
           import sys, re
 
           path = sys.argv[1]
           src  = open(path).read()
 
+          # 1. Inject `import java.util.Properties` if not already present.
+          #    Insert it at the very top (before any existing content / imports).
+          if "import java.util.Properties" not in src:
+              src = "import java.util.Properties\n" + src
+
+          # 2. Inject signingConfigs block before the buildTypes block.
           signing_block = '''
           signingConfigs {
               create("release") {
                   val keystorePropertiesFile = rootProject.file("keystore.properties")
                   val keystoreProperties = Properties()
                   if (keystorePropertiesFile.exists()) {
-                      keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+                      // inputStream() is a Kotlin stdlib extension — no FileInputStream import needed
+                      keystoreProperties.load(keystorePropertiesFile.inputStream())
                   }
-                  keyAlias     = keystoreProperties["keyAlias"]  as String
-                  keyPassword  = keystoreProperties["password"]  as String
-                  storeFile    = file(keystoreProperties["storeFile"] as String)
-                  storePassword = keystoreProperties["password"] as String
+                  keyAlias      = keystoreProperties["keyAlias"]   as String
+                  keyPassword   = keystoreProperties["password"]   as String
+                  storeFile     = file(keystoreProperties["storeFile"] as String)
+                  storePassword = keystoreProperties["password"]   as String
               }
           }
           '''
 
-          # Insert signingConfigs block only if not already present.
-          if 'signingConfigs' not in src:
+          if "signingConfigs" not in src:
               src = re.sub(r'(buildTypes\s*\{)', signing_block + r'\1', src, count=1)
 
-          # Wire the release signingConfig inside the existing release buildType.
-          if 'signingConfig = signingConfigs' not in src:
+          # 3. Wire the release signingConfig inside the release buildType.
+          if "signingConfig = signingConfigs" not in src:
               src = re.sub(
                   r'(getByName\("release"\)\s*\{)',
                   r'\1\n            signingConfig = signingConfigs.getByName("release")',
-                  src, count=1
+                  src, count=1,
               )
 
-          open(path, 'w').write(src)
+          open(path, "w").write(src)
           print("build.gradle.kts patched successfully.")
           PYEOF
 

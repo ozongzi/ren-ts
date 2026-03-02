@@ -14,6 +14,7 @@
 import {
   pickDirectory,
   readTextFileTauri,
+  readBinaryFileTauri,
   writeTextFileTauri,
   makeDirTauri,
   pathExists,
@@ -172,6 +173,29 @@ export class TauriConverterFs implements IConverterFs {
     }
   }
 
+  async readBinary(relPath: string): Promise<Uint8Array | null> {
+    // Prefer on-disk file — read raw bytes without any encoding conversion.
+    if (await pathExists(this.abs(relPath))) {
+      return readBinaryFileTauri(this.abs(relPath));
+    }
+
+    // Fall back to RPA.
+    const rpaIndex = await this._getRpaIndex();
+    const vf = rpaIndex.get(relPath.replace(/\\/g, "/"));
+    if (!vf) return null;
+
+    try {
+      const bytes = await readRpaEntry(vf.rpaAbs, vf.entry);
+      return bytes;
+    } catch (err) {
+      console.warn(
+        `[TauriConverterFs] readBinary from RPA failed for ${relPath}:`,
+        err,
+      );
+      return null;
+    }
+  }
+
   async writeText(relPath: string, content: string): Promise<void> {
     const absPath = this.abs(relPath);
     const parent = absPath.replace(/\/[^/]+$/, "");
@@ -241,7 +265,10 @@ export class TauriConverterFs implements IConverterFs {
     // Caller-supplied virtual (in-memory) entries.
     const allVirtual: TauriBridgeVirtualEntry[] =
       virtualEntries && virtualEntries.length > 0
-        ? virtualEntries.map((v) => ({ content: v.content, zipPath: v.zipPath }))
+        ? virtualEntries.map((v) => ({
+            content: v.content,
+            zipPath: v.zipPath,
+          }))
         : [];
 
     await streamingBuildZip(
