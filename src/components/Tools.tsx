@@ -17,6 +17,10 @@ import {
   CancelledError,
 } from "../converterFs";
 import { convertRpy } from "../../rpy-rrs-bridge/rpy2rrs-core";
+import {
+  detectMinigame,
+  renderMinigameStubs,
+} from "../../rpy-rrs-bridge/minigame-detect";
 import { parseTranslationBlocks } from "../../rpy-rrs-bridge/translation-extractor";
 import { parseGalleryRpy } from "../../rpy-rrs-bridge/parse-gallery-core";
 import {
@@ -443,12 +447,25 @@ export const Tools: React.FC = () => {
             continue;
           }
           const rrsName = relPath.replace(/\.rpy$/i, ".rrs");
-          const rrs = convertRpy(content, rrsName, translationMap);
+
+          // Check for minigame before full conversion
+          const mgResult = detectMinigame(content);
+          for (const w of mgResult.warnings) log(`⚠ ${w}`);
+
+          let rrs: string;
+          if (mgResult.stubs.length > 0) {
+            rrs = renderMinigameStubs(mgResult.stubs, rrsName);
+            const labels = mgResult.stubs.map((s) => s.entryLabel).join(", ");
+            log(`跳过 minigame：${rrsName} → stub [${labels}]`);
+          } else {
+            rrs = convertRpy(content, rrsName, translationMap);
+            log(`转换：${rrsName}`);
+          }
+
           // Store in memory — will be injected directly into the ZIP
           virtualEntries.push({ zipPath: `data/${rrsName}`, content: rrs });
           writtenFiles.push(rrsName);
           setProcessedFiles((n) => n + 1);
-          log(`转换：${rrsName}`);
         } catch (err) {
           log(
             `失败：${relPath} — ${err instanceof Error ? err.message : String(err)}`,
