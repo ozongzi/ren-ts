@@ -98,6 +98,178 @@ export function convertFileSrcSync(nativePath: string): string {
 
 const ASSETS_DIR_KEY = "cb_assets_dir";
 
+// ─── Zip path persistence (Tauri) ─────────────────────────────────────────────
+
+const ZIP_PATH_KEY = "cb_zip_path";
+
+export function getStoredZipPath(): string | null {
+  try {
+    return localStorage.getItem(ZIP_PATH_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function persistZipPath(p: string): void {
+  try {
+    localStorage.setItem(ZIP_PATH_KEY, p);
+  } catch {
+    // localStorage unavailable (private browsing?) — not fatal.
+  }
+}
+
+export function clearStoredZipPath(): void {
+  try {
+    localStorage.removeItem(ZIP_PATH_KEY);
+  } catch {
+    // Ignore localStorage errors — not fatal.
+  }
+}
+
+// ─── FSA handle persistence (Web, Chrome/Edge only) ──────────────────────────
+//
+// The File System Access API lets us hold a FileSystemFileHandle that points
+// at the user's zip without copying any bytes.  We persist the handle in
+// IndexedDB (the only storage that can hold non-serialisable objects like
+// FileSystemFileHandle).  On next launch we call requestPermission() to ask
+// the browser to re-grant read access — on Chrome this is a silent one-click
+// prompt, not a full re-pick.
+//
+// Firefox and Safari do not support showOpenFilePicker / persistent handles,
+// so on those browsers the user must re-pick every session.  We detect support
+// with `fsaSupported` and degrade gracefully.
+
+const FSA_DB_NAME = "cb_fsa_store";
+const FSA_DB_VERSION = 1;
+const FSA_STORE = "handles";
+const FSA_KEY = "zip_handle";
+
+/** True when the browser supports the File System Access API (Chrome/Edge). */
+export const fsaSupported: boolean =
+  !isTauri && typeof window !== "undefined" && "showOpenFilePicker" in window;
+
+function openFsaDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(FSA_DB_NAME, FSA_DB_VERSION);
+    req.onupgradeneeded = () => req.result.createObjectStore(FSA_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * Persist a FileSystemFileHandle in IndexedDB so we can restore it next
+ * launch without asking the user to re-pick the file.
+ */
+export async function saveFsaHandle(
+  handle: FileSystemFileHandle,
+): Promise<void> {
+  if (!fsaSupported) return;
+  try {
+    const db = await openFsaDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(FSA_STORE, "readwrite");
+      tx.objectStore(FSA_STORE).put(handle, FSA_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn("[tauri_bridge] saveFsaHandle failed:", err);
+  }
+}
+
+/**
+ * Try to restore a previously saved FileSystemFileHandle from IndexedDB and
+ * re-request read permission.
+ *
+ * Returns the File if permission is granted, or null if:
+ *   - No handle was stored
+ *   - The user denies permission
+ *   - The browser doesn't support FSA
+ */
+export async function loadFsaHandle(): Promise<File | null> {
+  if (!fsaSupported) return null;
+  try {
+    const db = await openFsaDb();
+    const handle = await new Promise<FileSystemFileHandle | undefined>(
+      (resolve, reject) => {
+        const tx = db.transaction(FSA_STORE, "readonly");
+        const req = tx.objectStore(FSA_STORE).get(FSA_KEY);
+        req.onsuccess = () =>
+          resolve(req.result as FileSystemFileHandle | undefined);
+        req.onerror = () => reject(req.error);
+      },
+    );
+    db.close();
+    if (!handle) return null;
+
+    // Check / request read permission.  On Chrome this is instant if the
+    // page was recently used; otherwise it shows a small permission prompt.
+    // queryPermission / requestPermission are not yet in lib.dom, so we cast.
+    type HandleWithPerm = FileSystemFileHandle & {
+      queryPermission: (d: { mode: string }) => Promise<PermissionState>;
+      requestPermission: (d: { mode: string }) => Promise<PermissionState>;
+    };
+    const h = handle as HandleWithPerm;
+    const perm = await h.queryPermission({ mode: "read" });
+    if (perm === "granted") return handle.getFile();
+
+    const requested = await h.requestPermission({ mode: "read" });
+    if (requested === "granted") return handle.getFile();
+
+    return null;
+  } catch (err) {
+    console.warn("[tauri_bridge] loadFsaHandle failed:", err);
+    return null;
+  }
+}
+
+/**
+ * Remove the stored FileSystemFileHandle from IndexedDB (e.g. on unmount).
+ */
+export async function clearFsaHandle(): Promise<void> {
+  if (!fsaSupported) return;
+  try {
+    const db = await openFsaDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(FSA_STORE, "readwrite");
+      tx.objectStore(FSA_STORE).delete(FSA_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch {
+    // Not fatal.
+  }
+}
+
+/**
+ * Open a native file picker for a zip (web only, FSA).
+ * Returns the chosen FileSystemFileHandle, or null if cancelled / unsupported.
+ */
+export async function pickZipFileWeb(): Promise<FileSystemFileHandle | null> {
+  if (!fsaSupported) return null;
+  try {
+    type ShowOpenFilePicker = (
+      opts?: Record<string, unknown>,
+    ) => Promise<FileSystemFileHandle[]>;
+    const picker = (
+      window as unknown as { showOpenFilePicker: ShowOpenFilePicker }
+    ).showOpenFilePicker;
+    const [handle] = await picker({
+      types: [
+        { description: "ZIP Archive", accept: { "application/zip": [".zip"] } },
+      ],
+      multiple: false,
+    });
+    return handle;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return null;
+    throw err;
+  }
+}
+
 /** Return the stored assets directory path, or null if none has been chosen. */
 export function getStoredAssetsDir(): string | null {
   try {
@@ -224,6 +396,32 @@ export async function getAppDocumentsDir(): Promise<string | null> {
   }
 }
 
+/**
+ * Open a native file picker restricted to .zip files (Tauri) and return the
+ * chosen absolute path, or null if cancelled.
+ */
+export async function pickZipFileTauri(): Promise<string | null> {
+  if (!isTauri) return null;
+  try {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const result = await open({
+      directory: false,
+      multiple: false,
+      title: "选择 assets.zip",
+      filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
+    });
+    if (typeof result === "string") {
+      return result.startsWith("file://")
+        ? decodeURIComponent(result.slice(7))
+        : result;
+    }
+    return null;
+  } catch (err) {
+    console.warn("[tauri_bridge] pickZipFileTauri failed:", err);
+    return null;
+  }
+}
+
 /** Open a native directory picker and return the chosen path, or null. */
 export async function pickDirectory(): Promise<string | null> {
   if (!isTauri) return null;
@@ -281,6 +479,35 @@ export async function pickAndReadTextFile(opts?: {
  * Open a native "save file" picker and write text to the chosen path.
  * Returns the chosen path, or null if cancelled.
  */
+/**
+ * Open a native "Save" dialog and return the chosen file path.
+ * Does NOT write anything — the caller is responsible for writing.
+ * Returns null if the user cancels or if not running in Tauri.
+ */
+export async function pickSavePath(opts?: {
+  title?: string;
+  defaultPath?: string;
+  filters?: { name: string; extensions: string[] }[];
+}): Promise<string | null> {
+  if (!isTauri) return null;
+  try {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    let filePath = await save({
+      title: opts?.title,
+      defaultPath: opts?.defaultPath,
+      filters: opts?.filters,
+    });
+    if (typeof filePath !== "string") return null;
+    if (filePath.startsWith("file://")) {
+      filePath = decodeURIComponent(filePath.slice(7));
+    }
+    return filePath;
+  } catch (err) {
+    console.warn("[tauri_bridge] pickSavePath failed:", err);
+    return null;
+  }
+}
+
 export async function pickAndWriteTextFile(
   text: string,
   opts?: {

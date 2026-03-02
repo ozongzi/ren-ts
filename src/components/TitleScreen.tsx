@@ -1,7 +1,5 @@
 import React, { useState } from "react";
 import { useGameStore } from "../store";
-import { fsaAvailable } from "../save";
-import { isTauri } from "../tauri_bridge";
 
 /**
  * Title screen shown when phase === 'title'.
@@ -12,7 +10,6 @@ import { isTauri } from "../tauri_bridge";
  */
 export const TitleScreen: React.FC = () => {
   const newGame = useGameStore((s) => s.newGame);
-  const saveImport = useGameStore((s) => s.saveImport);
   const openSaveSelector = useGameStore((s) => s.openSaveSelector);
   const loading = useGameStore((s) => s.loading);
   const error = useGameStore((s) => s.error);
@@ -20,7 +17,6 @@ export const TitleScreen: React.FC = () => {
 
   const gameTitle = useGameStore((s) => s.gameTitle);
   const displayTitle = gameTitle ?? "Ren'Ts";
-  const [importing, setImporting] = useState(false);
   const [newGamePending, setNewGamePending] = useState(false);
 
   const handleNewGame = async () => {
@@ -35,20 +31,9 @@ export const TitleScreen: React.FC = () => {
     }
   };
 
-  const handleContinue = async () => {
-    if (!manifestLoaded || importing) return;
-    if (isTauri) {
-      openSaveSelector();
-      return;
-    }
-    setImporting(true);
-    try {
-      await saveImport();
-    } catch {
-      // errors surface via saveError toast in App
-    } finally {
-      setImporting(false);
-    }
+  const handleContinue = () => {
+    if (!manifestLoaded || newGamePending) return;
+    openSaveSelector();
   };
 
   // ── Loading state ─────────────────────────────────────────────────────────
@@ -114,7 +99,7 @@ export const TitleScreen: React.FC = () => {
           <button
             className="title-btn"
             onClick={handleNewGame}
-            disabled={!manifestLoaded || newGamePending || importing}
+            disabled={!manifestLoaded || newGamePending}
             aria-label="开始新游戏"
           >
             {newGamePending ? "选择保存位置…" : "▶ 新游戏"}
@@ -123,15 +108,15 @@ export const TitleScreen: React.FC = () => {
           <button
             className="title-btn"
             onClick={handleContinue}
-            disabled={!manifestLoaded || importing || newGamePending}
-            aria-label="从文件读取存档以继续游戏"
+            disabled={!manifestLoaded || newGamePending}
+            aria-label="继续游戏"
             style={{ borderColor: "rgba(255,230,128,0.4)", color: "#ffe680" }}
           >
-            {importing ? "读取中…" : "📂 继续游戏"}
+            📂 继续游戏
           </button>
         </nav>
 
-        {/* Auto-save capability hint */}
+        {/* Save capability hint */}
         <p
           style={{
             fontSize: "0.72rem",
@@ -142,11 +127,7 @@ export const TitleScreen: React.FC = () => {
             maxWidth: "280px",
           }}
         >
-          {isTauri
-            ? "💾 桌面版 · 支持自动保存到本地文件"
-            : fsaAvailable
-              ? "💾 支持自动保存到本地文件"
-              : "⚠️ 当前浏览器不支持自动保存（请使用 Chrome / Edge）"}
+          💾 支持自动保存
         </p>
 
         {/* Version note */}

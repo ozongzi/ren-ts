@@ -10,7 +10,6 @@ import { SaveLoadedScreen } from "./components/SaveLoadedScreen";
 import { EndScreen } from "./components/EndScreen";
 import { AssetsDirScreen } from "./components/AssetsDirScreen";
 import { SaveSelector } from "./components/SaveSelector";
-import { isTauri } from "./tauri_bridge";
 
 /**
  * Root application component.
@@ -58,7 +57,7 @@ export const App: React.FC = () => {
       }}
     >
       {/* Block all game UI until a zip is mounted and scripts are loaded. */}
-      {isTauri && !manifestLoaded ? (
+      {!manifestLoaded ? (
         <AssetsDirScreen />
       ) : (
         <>

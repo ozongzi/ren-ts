@@ -5,6 +5,7 @@ import {
   isTauri,
   pickDirectory,
   pickAndReadTextFile,
+  pickSavePath,
   readTextFileTauri,
   writeTextFileTauri,
   makeDirTauri,
@@ -21,484 +22,78 @@ import {
   renderDefinesBlock,
 } from "../../rpy-rrs-bridge/scan-assets-core";
 
-/* ─── Inline Styles ───────────────────────────────────────────────────────── */
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-const CSS = `
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@400;600;700;800&display=swap');
+type PathStatus = "ok" | "no" | "checking" | null;
 
-  .tools-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.72);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 9999;
-    font-family: 'JetBrains Mono', monospace;
-  }
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-  .tools-panel {
-    width: min(780px, calc(100vw - 2rem));
-    max-height: calc(100vh - 3rem);
-    overflow-y: auto;
-    background: #0d0f10;
-    border: 1px solid rgba(255,255,255,0.06);
-    border-radius: 14px;
-    box-shadow:
-      0 0 0 1px rgba(255,255,255,0.04) inset,
-      0 40px 80px rgba(0,0,0,0.7),
-      0 0 60px rgba(110,231,183,0.03);
-    position: relative;
-    display: flex;
-    flex-direction: column;
+/** Debounced path existence check. Returns a cleanup fn. */
+function checkPath(
+  value: string | null,
+  setStatus: (s: PathStatus) => void,
+  timerRef: React.MutableRefObject<number | null>,
+  enabled = true,
+) {
+  if (!value || !enabled) {
+    setStatus(null);
+    return;
   }
-
-  .tools-panel::-webkit-scrollbar { width: 4px; }
-  .tools-panel::-webkit-scrollbar-track { background: transparent; }
-  .tools-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
-
-  /* ── Header ── */
-  .tools-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1.1rem 1.4rem;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
-    position: sticky;
-    top: 0;
-    background: #0d0f10;
-    z-index: 10;
-    border-radius: 14px 14px 0 0;
-  }
-
-  .tools-title-wrap {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-  }
-
-  .tools-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    background: rgba(110,231,183,0.08);
-    border: 1px solid rgba(110,231,183,0.18);
-    border-radius: 6px;
-    padding: 0.2rem 0.5rem;
-    font-size: 0.65rem;
-    color: #6ee7b7;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    font-weight: 600;
-  }
-
-  .tools-title {
-    font-family: 'Syne', sans-serif;
-    font-size: 1.05rem;
-    font-weight: 700;
-    color: #f0f0f0;
-    margin: 0;
-    letter-spacing: -0.01em;
-  }
-
-  .tools-close {
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    border: 1px solid rgba(255,255,255,0.07);
-    background: rgba(255,255,255,0.03);
-    color: rgba(255,255,255,0.4);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.75rem;
-    transition: all 180ms ease;
-  }
-  .tools-close:hover:not(:disabled) {
-    background: rgba(255,100,100,0.1);
-    border-color: rgba(255,100,100,0.25);
-    color: #ff8a8a;
-  }
-  .tools-close:disabled { opacity: 0.3; cursor: not-allowed; }
-
-  /* ── Body ── */
-  .tools-body {
-    padding: 1.2rem 1.4rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-
-  /* ── Section ── */
-  .tools-section {
-    padding: 1rem 0;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-  }
-  .tools-section:last-child { border-bottom: none; }
-
-  .section-label {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.65rem;
-  }
-
-  .section-num {
-    font-size: 0.6rem;
-    font-weight: 700;
-    color: #6ee7b7;
-    letter-spacing: 0.1em;
-    background: rgba(110,231,183,0.08);
-    border: 1px solid rgba(110,231,183,0.15);
-    border-radius: 4px;
-    padding: 0.15rem 0.38rem;
-    font-family: 'JetBrains Mono', monospace;
-  }
-
-  .section-title {
-    font-family: 'Syne', sans-serif;
-    font-size: 0.82rem;
-    font-weight: 700;
-    color: rgba(255,255,255,0.75);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-
-  .section-hint {
-    font-size: 0.72rem;
-    color: rgba(255,255,255,0.28);
-    line-height: 1.5;
-    margin-top: 0.45rem;
-    padding-left: 0.05rem;
-  }
-
-  /* ── Path Row ── */
-  .path-row {
-    display: flex;
-    gap: 0.45rem;
-    align-items: center;
-  }
-
-  .path-input {
-    flex: 1;
-    padding: 0.5rem 0.7rem;
-    border-radius: 8px;
-    border: 1px solid rgba(255,255,255,0.07);
-    background: rgba(255,255,255,0.025);
-    color: rgba(255,255,255,0.82);
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.78rem;
-    outline: none;
-    transition: border-color 180ms ease, background 180ms ease;
-    min-width: 0;
-  }
-  .path-input::placeholder { color: rgba(255,255,255,0.2); }
-  .path-input:focus {
-    border-color: rgba(110,231,183,0.3);
-    background: rgba(255,255,255,0.04);
-  }
-  .path-input:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  /* ── Status dot ── */
-  .status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    transition: background 250ms ease, box-shadow 250ms ease;
-  }
-  .status-dot.ok {
-    background: #6ee7b7;
-    box-shadow: 0 0 6px rgba(110,231,183,0.5);
-  }
-  .status-dot.no {
-    background: #f87171;
-    box-shadow: 0 0 6px rgba(248,113,113,0.4);
-  }
-  .status-dot.checking {
-    background: #fbbf24;
-    box-shadow: 0 0 6px rgba(251,191,36,0.4);
-    animation: pulse-dot 0.8s ease-in-out infinite;
-  }
-  .status-dot.idle { background: rgba(255,255,255,0.12); }
-
-  @keyframes pulse-dot {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-
-  /* ── Buttons ── */
-  .btn {
-    padding: 0.45rem 0.8rem;
-    border-radius: 7px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.74rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 160ms ease;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-
-  .btn-ghost {
-    border: 1px solid rgba(255,255,255,0.07);
-    background: rgba(255,255,255,0.035);
-    color: rgba(255,255,255,0.55);
-  }
-  .btn-ghost:hover:not(:disabled) {
-    background: rgba(255,255,255,0.07);
-    color: rgba(255,255,255,0.8);
-    border-color: rgba(255,255,255,0.13);
-  }
-
-  .btn-ghost-sm {
-    padding: 0.32rem 0.55rem;
-    font-size: 0.68rem;
-    border: 1px solid rgba(255,255,255,0.05);
-    background: transparent;
-    color: rgba(255,255,255,0.28);
-  }
-  .btn-ghost-sm:hover:not(:disabled) {
-    background: rgba(255,80,80,0.08);
-    border-color: rgba(255,80,80,0.2);
-    color: #f87171;
-  }
-
-  .btn-primary {
-    border: 1px solid rgba(59,130,246,0.4);
-    background: linear-gradient(160deg, rgba(59,130,246,0.25), rgba(37,99,235,0.3));
-    color: #93c5fd;
-    letter-spacing: 0.03em;
-    box-shadow: 0 0 16px rgba(59,130,246,0.08), 0 1px 2px rgba(0,0,0,0.3);
-  }
-  .btn-primary:hover:not(:disabled) {
-    background: linear-gradient(160deg, rgba(59,130,246,0.38), rgba(37,99,235,0.45));
-    border-color: rgba(59,130,246,0.6);
-    color: #bfdbfe;
-    box-shadow: 0 0 22px rgba(59,130,246,0.18);
-  }
-  .btn-primary.running {
-    background: linear-gradient(160deg, rgba(59,130,246,0.14), rgba(37,99,235,0.18));
-    color: rgba(147,197,253,0.5);
-    animation: shimmer 1.8s ease-in-out infinite;
-  }
-
-  @keyframes shimmer {
-    0%, 100% { box-shadow: 0 0 12px rgba(59,130,246,0.06); }
-    50% { box-shadow: 0 0 22px rgba(59,130,246,0.18); }
-  }
-
-  /* ── Toggle Option ── */
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    margin-bottom: 0.6rem;
-    cursor: pointer;
-    width: fit-content;
-    user-select: none;
-  }
-
-  .toggle-checkbox {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    border: 1px solid rgba(255,255,255,0.18);
-    border-radius: 4px;
-    background: rgba(255,255,255,0.04);
-    cursor: pointer;
-    position: relative;
-    flex-shrink: 0;
-    transition: all 160ms ease;
-  }
-  .toggle-checkbox:checked {
-    background: rgba(110,231,183,0.2);
-    border-color: rgba(110,231,183,0.5);
-  }
-  .toggle-checkbox:checked::after {
-    content: '';
-    position: absolute;
-    left: 3px;
-    top: 1px;
-    width: 5px;
-    height: 8px;
-    border: 1.5px solid #6ee7b7;
-    border-top: none;
-    border-left: none;
-    transform: rotate(42deg);
-    display: block;
-  }
-  .toggle-checkbox:disabled { opacity: 0.3; cursor: not-allowed; }
-
-  .toggle-label {
-    font-size: 0.76rem;
-    color: rgba(255,255,255,0.5);
-    letter-spacing: 0.01em;
-  }
-  .toggle-row:hover .toggle-label { color: rgba(255,255,255,0.7); }
-
-  /* ── Progress Area ── */
-  .progress-section {
-    padding: 1rem 0 0.5rem;
-  }
-
-  .progress-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 0.55rem;
-  }
-
-  .progress-status {
-    font-family: 'Syne', sans-serif;
-    font-size: 0.78rem;
-    font-weight: 700;
-    color: rgba(255,255,255,0.6);
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-  }
-  .progress-status.running { color: #6ee7b7; }
-
-  .progress-count {
-    font-size: 0.72rem;
-    color: rgba(255,255,255,0.25);
-    font-family: 'JetBrains Mono', monospace;
-  }
-
-  .progress-bar-bg {
-    height: 4px;
-    background: rgba(255,255,255,0.05);
-    border-radius: 99px;
-    overflow: hidden;
-    margin-bottom: 0.5rem;
-  }
-
-  .progress-bar-fill {
-    height: 100%;
-    background: linear-gradient(90deg, #6ee7b7, #3b82f6);
-    border-radius: 99px;
-    transition: width 280ms ease;
-    position: relative;
-  }
-  .progress-bar-fill::after {
-    content: '';
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 20px;
-    background: rgba(255,255,255,0.35);
-    filter: blur(4px);
-    animation: progress-glow 1.5s ease-in-out infinite;
-  }
-
-  @keyframes progress-glow {
-    0%, 100% { opacity: 0; }
-    50% { opacity: 1; }
-  }
-
-  .current-file-tag {
-    font-size: 0.7rem;
-    color: rgba(255,255,255,0.22);
-    font-family: 'JetBrains Mono', monospace;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    padding: 0.3rem 0;
-  }
-  .current-file-tag span { color: rgba(110,231,183,0.5); margin-right: 0.4rem; }
-
-  .action-row {
-    display: flex;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
-  }
-
-  /* ── Log ── */
-  .log-section {
-    padding-top: 1rem;
-  }
-
-  .log-title {
-    font-family: 'Syne', sans-serif;
-    font-size: 0.72rem;
-    font-weight: 700;
-    color: rgba(255,255,255,0.3);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    margin-bottom: 0.5rem;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .log-title::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: rgba(255,255,255,0.05);
-  }
-
-  .log-container {
-    height: 180px;
-    overflow-y: auto;
-    background: rgba(0,0,0,0.4);
-    border: 1px solid rgba(255,255,255,0.04);
-    border-radius: 8px;
-    padding: 0.65rem 0.75rem;
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .log-container::-webkit-scrollbar { width: 3px; }
-  .log-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
-
-  .log-empty {
-    color: rgba(255,255,255,0.15);
-    font-size: 0.74rem;
-  }
-
-  .log-line {
-    font-size: 0.72rem;
-    line-height: 1.6;
-    color: rgba(255,255,255,0.45);
-  }
-  .log-line:last-child { color: rgba(255,255,255,0.7); }
-
-  .log-line::before {
-    content: '›  ';
-    color: rgba(110,231,183,0.35);
-  }
-
-  .log-line.err { color: rgba(248,113,113,0.7); }
-  .log-line.err::before { color: rgba(248,113,113,0.4); }
-`;
-
-/* ─── StatusDot ─────────────────────────────────────────────────────────── */
-
-function StatusDot({ status }: { status: "ok" | "no" | "checking" | null }) {
-  const cls =
-    status === "ok"
-      ? "ok"
-      : status === "no"
-        ? "no"
-        : status === "checking"
-          ? "checking"
-          : "idle";
-  const tip =
-    status === "ok"
-      ? "路径存在"
-      : status === "no"
-        ? "路径不存在"
-        : status === "checking"
-          ? "检查中…"
-          : "未检查";
-  return <div className={`status-dot ${cls}`} title={tip} aria-hidden />;
+  if (timerRef.current) window.clearTimeout(timerRef.current);
+  setStatus("checking");
+  timerRef.current = window.setTimeout(async () => {
+    try {
+      setStatus(!isTauri ? null : (await pathExists(value)) ? "ok" : "no");
+    } catch {
+      setStatus("no");
+    }
+    timerRef.current = null;
+  }, 350);
 }
 
-/* ─── PathRow ────────────────────────────────────────────────────────────── */
+// ─── StatusDot ────────────────────────────────────────────────────────────────
+
+function StatusDot({ status }: { status: PathStatus }) {
+  if (!status || status === "checking") {
+    return (
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background:
+            status === "checking"
+              ? "rgba(255,255,255,0.25)"
+              : "rgba(255,255,255,0.1)",
+          flexShrink: 0,
+          display: "inline-block",
+        }}
+        title={status === "checking" ? "检查中…" : "未检查"}
+        aria-hidden
+      />
+    );
+  }
+  return (
+    <span
+      style={{
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        background: status === "ok" ? "#4ade80" : "#f87171",
+        flexShrink: 0,
+        display: "inline-block",
+        boxShadow:
+          status === "ok"
+            ? "0 0 6px rgba(74,222,128,0.5)"
+            : "0 0 6px rgba(248,113,113,0.5)",
+      }}
+      title={status === "ok" ? "路径存在" : "路径不存在"}
+      aria-hidden
+    />
+  );
+}
+
+// ─── PathRow ──────────────────────────────────────────────────────────────────
 
 function PathRow({
   value,
@@ -513,154 +108,155 @@ function PathRow({
   value: string;
   onChange: (v: string) => void;
   placeholder: string;
-  status: "ok" | "no" | "checking" | null;
+  status: PathStatus;
   onBrowse: () => void;
   onClear: () => void;
   disabled: boolean;
   browseLabel?: string;
 }) {
   return (
-    <div className="path-row">
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "0.5rem",
+        background: "rgba(255,255,255,0.04)",
+        border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: 8,
+        padding: "0.35rem 0.6rem",
+      }}
+    >
+      <StatusDot status={status} />
       <input
-        className="path-input"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         disabled={disabled}
+        style={{
+          flex: 1,
+          background: "transparent",
+          border: "none",
+          outline: "none",
+          color: "var(--color-text)",
+          fontFamily: "var(--font-mono)",
+          fontSize: "0.82rem",
+          opacity: disabled ? 0.45 : 1,
+        }}
       />
-      <StatusDot status={status} />
+      {value && (
+        <button
+          onClick={onClear}
+          disabled={disabled}
+          aria-label="清除"
+          style={{
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--color-text-dim)",
+            fontSize: "0.85rem",
+            padding: "0 0.2rem",
+            lineHeight: 1,
+            opacity: disabled ? 0.4 : 1,
+          }}
+        >
+          ✕
+        </button>
+      )}
       <button
-        className="btn btn-ghost"
+        className="btn"
         onClick={onBrowse}
         disabled={!isTauri || disabled}
+        style={{ padding: "0.3rem 0.7rem", fontSize: "0.8rem" }}
       >
         {browseLabel}
-      </button>
-      <button
-        className="btn btn-ghost-sm"
-        onClick={onClear}
-        disabled={disabled || !value}
-        aria-label="清除"
-      >
-        ✕
       </button>
     </div>
   );
 }
 
-/* ─── Main Component ─────────────────────────────────────────────────────── */
+// ─── SectionLabel ─────────────────────────────────────────────────────────────
 
-// ── ZIP builder (browser-side, mirrors rpy2rrs.ts logic) ─────────────────────
+function SectionLabel({
+  children,
+  optional,
+}: {
+  children: React.ReactNode;
+  optional?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "0.4rem",
+        marginBottom: "0.6rem",
+      }}
+    >
+      <span className="settings-label" style={{ marginBottom: 0 }}>
+        {children}
+      </span>
+      {optional && (
+        <span
+          style={{
+            fontSize: "0.7rem",
+            color: "rgba(255,255,255,0.22)",
+            fontWeight: 400,
+          }}
+        >
+          可选
+        </span>
+      )}
+    </div>
+  );
+}
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 export const Tools: React.FC = () => {
   const closeTools = useGameStore((s) => s.closeTools);
 
+  // ── Required ──────────────────────────────────────────────────────────────
   const [gameDir, setGameDir] = useState<string | null>(null);
-  const [gameDirStatus, setGameDirStatus] = useState<
-    "ok" | "no" | "checking" | null
-  >(null);
-  const [outputDir, setOutputDir] = useState<string | null>(null);
-  const [outputDirStatus, setOutputDirStatus] = useState<
-    "ok" | "no" | "checking" | null
-  >(null);
+  const [gameDirStatus, setGameDirStatus] = useState<PathStatus>(null);
+
+  // ── Optional features ─────────────────────────────────────────────────────
   const [enableTranslation, setEnableTranslation] = useState(false);
   const [translationDir, setTranslationDir] = useState<string | null>(null);
-  const [translationDirStatus, setTranslationDirStatus] = useState<
-    "ok" | "no" | "checking" | null
-  >(null);
+  const [translationDirStatus, setTranslationDirStatus] =
+    useState<PathStatus>(null);
+
   const [enableGallery, setEnableGallery] = useState(false);
   const [galleryPath, setGalleryPath] = useState<string | null>(null);
-  const [galleryPathStatus, setGalleryPathStatus] = useState<
-    "ok" | "no" | "checking" | null
-  >(null);
-  const [enableAssetScan, setEnableAssetScan] = useState(false);
-  const [assetScanDir, setAssetScanDir] = useState<string | null>(null);
-  const [assetScanDirStatus, setAssetScanDirStatus] = useState<
-    "ok" | "no" | "checking" | null
-  >(null);
-  const [assetScanCount, setAssetScanCount] = useState<number | null>(null);
-  const [enableZip, setEnableZip] = useState(false);
-  const [zipOutputPath, setZipOutputPath] = useState<string | null>(null);
-  const [zipOutputPathStatus, setZipOutputPathStatus] = useState<
-    "ok" | "no" | "checking" | null
-  >(null);
-  // Extra asset dirs to include in the zip (images/, Audio/, videos/, …)
-  const [zipAssetDirs, setZipAssetDirs] = useState<string[]>([]);
-  const [zipAssetDirStatuses, setZipAssetDirStatuses] = useState<
-    ("ok" | "no" | "checking" | null)[]
-  >([]);
+  const [galleryPathStatus, setGalleryPathStatus] = useState<PathStatus>(null);
 
+  // ── Run state ─────────────────────────────────────────────────────────────
   const [running, setRunning] = useState(false);
-  const [zipPhase, setZipPhase] = useState<"idle" | "packing" | "done">("idle");
-  const [zipProgress, setZipProgress] = useState(0); // 0–100
-  const [logs, setLogs] = useState<string[]>([]);
-  const [totalFiles, setTotalFiles] = useState<number>(0);
-  const [processedFiles, setProcessedFiles] = useState<number>(0);
+  const [phase, setPhase] = useState<
+    "idle" | "converting" | "packing" | "done"
+  >("idle");
+  const [totalFiles, setTotalFiles] = useState(0);
+  const [processedFiles, setProcessedFiles] = useState(0);
+  const [zipProgress, setZipProgress] = useState(0);
   const [currentFile, setCurrentFile] = useState<string | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [assetScanCount, setAssetScanCount] = useState<number | null>(null);
 
   const logRef = useRef<HTMLDivElement>(null);
+  const gameDirTimer = useRef<number | null>(null);
+  const translationDirTimer = useRef<number | null>(null);
+  const galleryPathTimer = useRef<number | null>(null);
+
   const percent =
     totalFiles > 0 ? Math.round((processedFiles / totalFiles) * 100) : 0;
 
-  const gameDirTimer = useRef<number | null>(null);
-  const outputDirTimer = useRef<number | null>(null);
-  const translationDirTimer = useRef<number | null>(null);
-  const galleryPathTimer = useRef<number | null>(null);
-  const assetScanDirTimer = useRef<number | null>(null);
-  const zipOutputPathTimer = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      [
-        gameDirTimer,
-        outputDirTimer,
-        translationDirTimer,
-        galleryPathTimer,
-        assetScanDirTimer,
-        zipOutputPathTimer,
-      ].forEach((r) => {
-        if (r.current) window.clearTimeout(r.current);
-      });
-    };
-  }, []);
-
-  function makePathEffect(
-    value: string | null,
-    setStatus: (s: "ok" | "no" | "checking" | null) => void,
-    timerRef: React.MutableRefObject<number | null>,
-    enabled = true,
-  ) {
-    if (!value || !enabled) {
-      setStatus(null);
-      return;
-    }
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    setStatus("checking");
-    timerRef.current = window.setTimeout(async () => {
-      try {
-        setStatus(!isTauri ? null : (await pathExists(value)) ? "ok" : "no");
-      } catch {
-        setStatus("no");
-      }
-      timerRef.current = null;
-    }, 350);
-  }
-
+  // ── Path watchers ─────────────────────────────────────────────────────────
   useEffect(
-    () => makePathEffect(gameDir, setGameDirStatus, gameDirTimer),
+    () => checkPath(gameDir, setGameDirStatus, gameDirTimer),
     [gameDir],
   );
-
-  useEffect(
-    () => makePathEffect(outputDir, setOutputDirStatus, outputDirTimer),
-    [outputDir],
-  );
-
   useEffect(
     () =>
-      makePathEffect(
+      checkPath(
         translationDir,
         setTranslationDirStatus,
         translationDirTimer,
@@ -668,10 +264,9 @@ export const Tools: React.FC = () => {
       ),
     [translationDir, enableTranslation],
   );
-
   useEffect(
     () =>
-      makePathEffect(
+      checkPath(
         galleryPath,
         setGalleryPathStatus,
         galleryPathTimer,
@@ -680,33 +275,17 @@ export const Tools: React.FC = () => {
     [galleryPath, enableGallery],
   );
 
-  useEffect(
-    () =>
-      makePathEffect(
-        assetScanDir,
-        setAssetScanDirStatus,
-        assetScanDirTimer,
-        enableAssetScan,
-      ),
-    [assetScanDir, enableAssetScan],
-  );
-
-  useEffect(
-    () =>
-      makePathEffect(
-        zipOutputPath,
-        setZipOutputPathStatus,
-        zipOutputPathTimer,
-        enableZip,
-      ),
-    [zipOutputPath, enableZip],
-  );
+  useEffect(() => {
+    return () => {
+      [gameDirTimer, translationDirTimer, galleryPathTimer].forEach((r) => {
+        if (r.current) window.clearTimeout(r.current);
+      });
+    };
+  }, []);
 
   // Auto-scroll log
   useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logs]);
 
   const log = (s: string) => setLogs((l) => [...l, s]);
@@ -715,15 +294,22 @@ export const Tools: React.FC = () => {
     if (e.target === e.currentTarget && !running) closeTools();
   };
 
+  // ── Auto-fill helpers from gameDir ────────────────────────────────────────
+  function applyGameDir(dir: string) {
+    setGameDir(dir);
+    if (!translationDir) setTranslationDir(`${dir}/tl/chinese`);
+    if (!galleryPath) setGalleryPath(`${dir}/gallery_images.rpy`);
+  }
+
+  // ── Business logic ────────────────────────────────────────────────────────
+
   async function buildTranslationMap(
     dir: string,
   ): Promise<Map<string, string>> {
     const map = new Map<string, string>();
     if (!isTauri) return map;
     try {
-      const files = await walkDir(dir, (name) =>
-        name.toLowerCase().endsWith(".rpy"),
-      );
+      const files = await walkDir(dir, (n) => n.toLowerCase().endsWith(".rpy"));
       for (const f of files) {
         const content = await readTextFileTauri(f);
         if (!content) continue;
@@ -747,16 +333,10 @@ export const Tools: React.FC = () => {
     return map;
   }
 
-  /**
-   * Walk `dir`, collect all image file paths relative to `dir`, run
-   * `generateImageDefines`, and return the rendered RRS block string.
-   * Returns null on error (errors are logged via `log`).
-   */
   async function buildAssetDefinesBlock(dir: string): Promise<string | null> {
     if (!isTauri) return null;
     try {
       const allFiles = await walkDir(dir, () => true);
-      // Make paths relative to dir and normalise separators
       const relativePaths = allFiles.map((f) => {
         const rel = f.startsWith(dir)
           ? f.slice(dir.length).replace(/^\/+/, "")
@@ -765,12 +345,10 @@ export const Tools: React.FC = () => {
       });
       const result = generateImageDefines(relativePaths);
       setAssetScanCount(result.defines.length);
-      if (result.conflicts.length > 0) {
-        for (const c of result.conflicts) {
-          log(
-            `  [资源扫描] key冲突 '${c.key}'：'${c.winner}' 优先于 '${c.loser}'`,
-          );
-        }
+      for (const c of result.conflicts) {
+        log(
+          `  [资源扫描] key冲突 '${c.key}'：'${c.winner}' 优先于 '${c.loser}'`,
+        );
       }
       log(
         `资源扫描：发现 ${result.defines.length} 个图片定义（跳过 ${result.skipped.length} 个非图片文件）`,
@@ -785,7 +363,9 @@ export const Tools: React.FC = () => {
     }
   }
 
-  async function buildGalleryEntries(path: string) {
+  async function buildGalleryEntries(
+    path: string,
+  ): Promise<GalleryEntry[] | null> {
     if (!isTauri) return null;
     try {
       const content = await readTextFileTauri(path);
@@ -803,24 +383,29 @@ export const Tools: React.FC = () => {
   }
 
   async function runConversion() {
-    if (running) return;
+    if (running || !gameDir) return;
     if (!isTauri) {
       log("仅在 Tauri 环境下支持文件系统操作。");
       return;
     }
-    if (!gameDir) {
-      log("请先选择 Ren'Py game 目录。");
-      return;
-    }
-    const outDir = outputDir || `${gameDir}/data`;
+
+    const outDir = `${gameDir}/data`;
+    // Images dir for asset defines
+    const imagesDir = `${gameDir}/images`;
+
     setRunning(true);
+    setPhase("converting");
     setLogs([]);
     setTotalFiles(0);
     setProcessedFiles(0);
     setCurrentFile(null);
     setAssetScanCount(null);
+    setZipProgress(0);
+
     log(`开始扫描：${gameDir}`);
+
     try {
+      // ── Translation ──────────────────────────────────────────────────────
       let translationMap: Map<string, string> | undefined;
       if (enableTranslation && translationDir) {
         log(`加载翻译目录：${translationDir}`);
@@ -828,31 +413,36 @@ export const Tools: React.FC = () => {
         log(`翻译映射大小：${translationMap.size}`);
       }
 
+      // ── Gallery ───────────────────────────────────────────────────────────
       let galleryEntries: GalleryEntry[] | null = null;
       if (enableGallery && galleryPath) {
         log(`解析图鉴文件：${galleryPath}`);
         galleryEntries = await buildGalleryEntries(galleryPath);
       }
 
-      // ── Asset scan: generate image defines block ──
+      // ── Asset scan (always from game/images) ──────────────────────────────
       let assetDefinesBlock: string | null = null;
-      if (enableAssetScan && assetScanDir) {
-        log(`扫描资源目录：${assetScanDir}`);
-        assetDefinesBlock = await buildAssetDefinesBlock(assetScanDir);
+      const imagesExists = await pathExists(imagesDir);
+      if (imagesExists) {
+        log(`扫描资源目录：${imagesDir}`);
+        assetDefinesBlock = await buildAssetDefinesBlock(imagesDir);
+      } else {
+        log(`未找到 images 目录，跳过资源扫描：${imagesDir}`);
       }
 
-      const rpyFiles = await walkDir(gameDir, (name) =>
-        name.toLowerCase().endsWith(".rpy"),
+      // ── Convert .rpy → .rrs ───────────────────────────────────────────────
+      const rpyFiles = await walkDir(gameDir, (n) =>
+        n.toLowerCase().endsWith(".rpy"),
       );
       log(`发现 ${rpyFiles.length} 个 .rpy 文件`);
       setTotalFiles(rpyFiles.length);
+
       const writtenFiles: string[] = [];
-      setProcessedFiles(0);
 
       for (const fullPath of rpyFiles) {
         const relPreview = fullPath.startsWith(gameDir)
-          ? fullPath.slice(gameDir.length).replace(new RegExp("^/+", "g"), "")
-          : fullPath.split("/").pop() || fullPath;
+          ? fullPath.slice(gameDir.length).replace(/^\/+/, "")
+          : (fullPath.split("/").pop() ?? fullPath);
         setCurrentFile(relPreview);
         try {
           const content = await readTextFileTauri(fullPath);
@@ -862,11 +452,11 @@ export const Tools: React.FC = () => {
             continue;
           }
           const rel = fullPath.startsWith(gameDir)
-            ? fullPath.slice(gameDir.length).replace(new RegExp("^/+", "g"), "")
-            : fullPath.split("/").pop() || fullPath;
+            ? fullPath.slice(gameDir.length).replace(/^\/+/, "")
+            : (fullPath.split("/").pop() ?? fullPath);
           const rrsName = rel.replace(/\.rpy$/i, ".rrs");
           const outPath = `${outDir}/${rrsName}`;
-          const outParent = outPath.replace(new RegExp("/[^/]+$"), "");
+          const outParent = outPath.replace(/\/[^/]+$/, "");
           if (!(await pathExists(outParent))) await makeDirTauri(outParent);
           const rrs = convertRpy(content, rrsName, translationMap);
           await writeTextFileTauri(outPath, rrs);
@@ -881,8 +471,8 @@ export const Tools: React.FC = () => {
         }
       }
 
-      // ── Write standalone asset defines file ──
-      if (enableAssetScan && assetDefinesBlock) {
+      // ── Write image_defines.rrs ───────────────────────────────────────────
+      if (assetDefinesBlock) {
         const definesPath = `${outDir}/image_defines.rrs`;
         try {
           await writeTextFileTauri(
@@ -897,6 +487,7 @@ export const Tools: React.FC = () => {
         }
       }
 
+      // ── Write manifest.json ───────────────────────────────────────────────
       setCurrentFile(null);
       try {
         const manifestPath = `${outDir}/manifest.json`;
@@ -912,8 +503,7 @@ export const Tools: React.FC = () => {
         manifest["files"] = writtenFiles;
         if (enableGallery && galleryEntries)
           manifest["gallery"] = galleryEntries;
-        // Add image_defines.rrs to manifest if scan produced it
-        if (enableAssetScan && assetDefinesBlock) {
+        if (assetDefinesBlock) {
           const existing = Array.isArray(manifest["files"])
             ? (manifest["files"] as string[])
             : [];
@@ -935,80 +525,84 @@ export const Tools: React.FC = () => {
       setProcessedFiles((prev) => (totalFiles > prev ? totalFiles : prev));
       log("✓ 转换完成。");
 
-      // ── Optional ZIP packing ──────────────────────────────────────────────
-      if (enableZip) {
-        log("──────────────────────────────");
-        log("开始打包 ZIP…");
-        setZipPhase("packing");
-        setZipProgress(0);
+      // ── Pack ZIP ──────────────────────────────────────────────────────────
+      log("──────────────────────────");
+      log("请选择 ZIP 输出位置…");
 
-        const resolvedZipPath =
-          zipOutputPath ||
-          (() => {
-            const base = outDir.replace(/\/data\/?$/, "");
-            return `${base}/assets.zip`;
-          })();
+      const zipOutputPath = await pickSavePath({
+        title: "保存 assets.zip",
+        defaultPath: `assets.zip`,
+        filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
+      });
 
-        try {
-          // 1. Collect data/ files
-          const dataFiles = await walkDir(outDir, () => true);
-          // 2. Collect extra asset dirs
-          type FileToPack = { absPath: string; zipPath: string };
-          const filesToPack: FileToPack[] = [];
+      if (!zipOutputPath) {
+        log("已取消打包。");
+        setPhase("idle");
+        setRunning(false);
+        return;
+      }
 
-          for (const abs of dataFiles) {
-            const rel = abs.startsWith(outDir)
-              ? abs.slice(outDir.length).replace(/^\/+/, "")
-              : abs.split("/").pop()!;
-            filesToPack.push({ absPath: abs, zipPath: `data/${rel}` });
-          }
+      log("开始打包 ZIP…");
+      setPhase("packing");
+      setZipProgress(0);
 
-          for (const assetDir of zipAssetDirs) {
-            const dirBase = assetDir.replace(/\/$/, "").split("/").pop()!;
-            const assetFiles = await walkDir(assetDir, () => true);
-            for (const abs of assetFiles) {
-              const rel = abs.startsWith(assetDir)
-                ? abs.slice(assetDir.length).replace(/^\/+/, "")
-                : abs.split("/").pop()!;
-              filesToPack.push({
-                absPath: abs,
-                zipPath: `${dirBase}/${rel}`,
-              });
-            }
-          }
+      try {
+        // Collect data/ files
+        const dataFiles = await walkDir(outDir, () => true);
+        type FileToPack = { absPath: string; zipPath: string };
+        const filesToPack: FileToPack[] = [];
 
-          log(`共 ${filesToPack.length} 个文件待打包…`);
-
-          // 3. Ensure output directory exists
-          const zipDir = resolvedZipPath.replace(/\/[^/]+$/, "");
-          if (!(await pathExists(zipDir))) await makeDirTauri(zipDir);
-
-          // 4. Stream-write the ZIP — one file at a time, no giant in-memory buffer
-          log("正在流式写入 ZIP…");
-          const zipFilesToPack: ZipFileEntry[] = filesToPack;
-          let skippedCount = 0;
-          const writtenCount = await streamingBuildZip(
-            resolvedZipPath,
-            zipFilesToPack,
-            ({ index, total: tot, zipPath: zp }) => {
-              setZipProgress(Math.round(((index + 1) / tot) * 95));
-              setCurrentFile(zp);
-            },
-            (absPath, zipPath) => {
-              log(`  跳过（读取失败）：${zipPath} (${absPath})`);
-              skippedCount++;
-            },
-          );
-          setZipProgress(100);
-
-          log(
-            `✓ 打包完成：${resolvedZipPath}  (${writtenCount} 文件写入${skippedCount > 0 ? `，${skippedCount} 个跳过` : ""})`,
-          );
-          setZipPhase("done");
-        } catch (err) {
-          log(`打包失败：${err instanceof Error ? err.message : String(err)}`);
-          setZipPhase("idle");
+        for (const abs of dataFiles) {
+          const rel = abs.startsWith(outDir)
+            ? abs.slice(outDir.length).replace(/^\/+/, "")
+            : (abs.split("/").pop() ?? abs);
+          filesToPack.push({ absPath: abs, zipPath: `data/${rel}` });
         }
+
+        // Collect all top-level subdirectories of gameDir as asset dirs
+        // (images/, Audio/, videos/, BGM/, SE/, …)
+        const IMAGE_EXT = /\.(png|jpg|jpeg|webp|gif|bmp|avif)$/i;
+        const AUDIO_EXT = /\.(mp3|ogg|wav|flac|opus|m4a)$/i;
+        const VIDEO_EXT = /\.(mp4|webm|ogv|mov)$/i;
+        const isAsset = (name: string) =>
+          IMAGE_EXT.test(name) || AUDIO_EXT.test(name) || VIDEO_EXT.test(name);
+
+        const assetFiles = await walkDir(gameDir, isAsset);
+        for (const abs of assetFiles) {
+          const rel = abs.startsWith(gameDir)
+            ? abs.slice(gameDir.length).replace(/^\/+/, "")
+            : (abs.split("/").pop() ?? abs);
+          filesToPack.push({ absPath: abs, zipPath: rel });
+        }
+
+        log(`共 ${filesToPack.length} 个文件待打包…`);
+
+        const zipDir = zipOutputPath.replace(/\/[^/]+$/, "");
+        if (!(await pathExists(zipDir))) await makeDirTauri(zipDir);
+
+        log("正在流式写入 ZIP…");
+        const zipFilesToPack: ZipFileEntry[] = filesToPack;
+        let skippedCount = 0;
+        const writtenCount = await streamingBuildZip(
+          zipOutputPath,
+          zipFilesToPack,
+          ({ index, total: tot, zipPath: zp }) => {
+            setZipProgress(Math.round(((index + 1) / tot) * 95));
+            setCurrentFile(zp);
+          },
+          (absPath, zipPath) => {
+            log(`  跳过（读取失败）：${zipPath} (${absPath})`);
+            skippedCount++;
+          },
+        );
+        setZipProgress(100);
+        log(
+          `✓ 打包完成：${zipOutputPath}  (${writtenCount} 文件写入${skippedCount > 0 ? `，${skippedCount} 个跳过` : ""})`,
+        );
+        setPhase("done");
+      } catch (err) {
+        log(`打包失败：${err instanceof Error ? err.message : String(err)}`);
+        setPhase("idle");
       }
     } catch (err) {
       log(`运行出错：${err instanceof Error ? err.message : String(err)}`);
@@ -1017,526 +611,387 @@ export const Tools: React.FC = () => {
     }
   }
 
+  // ── Derived display ───────────────────────────────────────────────────────
+  const statusLabel =
+    phase === "converting"
+      ? "转换中…"
+      : phase === "packing"
+        ? "打包中…"
+        : phase === "done"
+          ? "✓ 完成"
+          : "就绪";
+
+  const btnLabel = running
+    ? phase === "packing"
+      ? "◌  打包中…"
+      : "◌  转换中…"
+    : "▶  转换并打包";
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <>
-      <style>{CSS}</style>
+    <div
+      className="modal-overlay"
+      onClick={handleBackdrop}
+      role="dialog"
+      aria-modal="true"
+      aria-label="工具"
+    >
       <div
-        className="tools-overlay"
-        onClick={handleBackdrop}
-        role="dialog"
-        aria-modal="true"
-        aria-label="工具"
+        className="modal-panel"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: "min(640px, 94vw)" }}
       >
-        <div className="tools-panel" onClick={(e) => e.stopPropagation()}>
-          {/* Header */}
-          <div className="tools-header">
-            <div className="tools-title-wrap">
-              <div className="tools-badge">
-                <span>⚙</span> TOOL
-              </div>
-              <h2 className="tools-title">Ren'Py → RRS 转换器</h2>
-            </div>
-            <button
-              className="tools-close"
-              onClick={closeTools}
-              aria-label="关闭"
+        {/* ── Header ── */}
+        <div className="modal-header">
+          <h2 className="modal-title">⚙️ Ren'Py → RRS 转换器</h2>
+          <button
+            className="modal-close-btn"
+            onClick={closeTools}
+            disabled={running}
+            aria-label="关闭"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* ── Section 1: Game 目录 ── */}
+        <div className="settings-group">
+          <SectionLabel>Game 目录</SectionLabel>
+          <PathRow
+            value={gameDir ?? ""}
+            onChange={(v) => applyGameDir(v || "")}
+            placeholder="选择包含 .rpy 文件的 game 目录"
+            status={gameDirStatus}
+            onBrowse={async () => {
+              if (!isTauri) return;
+              const dir = await pickDirectory();
+              if (dir) applyGameDir(dir);
+            }}
+            onClear={() => {
+              setGameDir(null);
+              setGameDirStatus(null);
+            }}
+            disabled={running}
+          />
+          <p
+            style={{
+              marginTop: "0.45rem",
+              fontSize: "0.78rem",
+              color: "var(--color-text-dim)",
+              lineHeight: 1.6,
+            }}
+          >
+            选择后自动推断输出目录（
+            <code style={{ fontFamily: "var(--font-mono)" }}>game/data/</code>
+            ）、 资源目录（
+            <code style={{ fontFamily: "var(--font-mono)" }}>game/images/</code>
+            ）。
+            {assetScanCount !== null && (
+              <span
+                style={{
+                  color: "#4ade80",
+                  marginLeft: "0.4rem",
+                  fontWeight: 600,
+                }}
+              >
+                上次扫描：{assetScanCount} 个图片定义
+              </span>
+            )}
+          </p>
+        </div>
+
+        <div className="divider" />
+
+        {/* ── Section 2: 翻译 ── */}
+        <div className="settings-group">
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              cursor: "pointer",
+              marginBottom: "0.6rem",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={enableTranslation}
+              onChange={(e) => setEnableTranslation(e.target.checked)}
               disabled={running}
+              style={{
+                accentColor: "var(--color-accent)",
+                width: 14,
+                height: 14,
+              }}
+            />
+            <span className="settings-label" style={{ marginBottom: 0 }}>
+              翻译目录
+            </span>
+            <span
+              style={{
+                fontSize: "0.7rem",
+                color: "rgba(255,255,255,0.22)",
+                fontWeight: 400,
+              }}
             >
-              ✕
-            </button>
+              可选
+            </span>
+          </label>
+          <PathRow
+            value={translationDir ?? ""}
+            onChange={(v) => setTranslationDir(v || null)}
+            placeholder="game/tl/chinese"
+            status={translationDirStatus}
+            onBrowse={async () => {
+              if (!isTauri) return;
+              const dir = await pickDirectory();
+              if (dir) setTranslationDir(dir);
+            }}
+            onClear={() => {
+              setTranslationDir(null);
+              setTranslationDirStatus(null);
+            }}
+            disabled={running || !enableTranslation}
+            browseLabel="浏览"
+          />
+        </div>
+
+        <div className="divider" />
+
+        {/* ── Section 3: 图鉴 ── */}
+        <div className="settings-group">
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              cursor: "pointer",
+              marginBottom: "0.6rem",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={enableGallery}
+              onChange={(e) => setEnableGallery(e.target.checked)}
+              disabled={running}
+              style={{
+                accentColor: "var(--color-accent)",
+                width: 14,
+                height: 14,
+              }}
+            />
+            <span className="settings-label" style={{ marginBottom: 0 }}>
+              图鉴文件
+            </span>
+            <span
+              style={{
+                fontSize: "0.7rem",
+                color: "rgba(255,255,255,0.22)",
+                fontWeight: 400,
+              }}
+            >
+              可选
+            </span>
+          </label>
+          <PathRow
+            value={galleryPath ?? ""}
+            onChange={(v) => setGalleryPath(v || null)}
+            placeholder="gallery_images.rpy 路径"
+            status={galleryPathStatus}
+            onBrowse={async () => {
+              if (!isTauri) return;
+              const res = await pickAndReadTextFile({
+                title: "选择 gallery_images.rpy",
+                filters: [
+                  { name: "Ren'Py Script", extensions: ["rpy", "rpym"] },
+                ],
+              });
+              if (res) {
+                setGalleryPath(res.path);
+                log(`选择图鉴文件：${res.path}`);
+              }
+            }}
+            onClear={() => {
+              setGalleryPath(null);
+              setGalleryPathStatus(null);
+            }}
+            disabled={running || !enableGallery}
+            browseLabel="浏览"
+          />
+        </div>
+
+        <div className="divider" />
+
+        {/* ── Progress ── */}
+        <div className="settings-group" style={{ marginBottom: "0.75rem" }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "0.4rem",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "0.8rem",
+                fontWeight: 600,
+                color:
+                  phase === "done"
+                    ? "#4ade80"
+                    : running
+                      ? "var(--color-text)"
+                      : "var(--color-text-dim)",
+                letterSpacing: "0.04em",
+              }}
+            >
+              {statusLabel}
+            </span>
+            <span
+              style={{ fontSize: "0.78rem", color: "var(--color-text-dim)" }}
+            >
+              {phase === "packing"
+                ? `${zipProgress}%`
+                : totalFiles > 0
+                  ? `${processedFiles} / ${totalFiles} — ${percent}%`
+                  : null}
+            </span>
           </div>
 
-          {/* Body */}
-          <div className="tools-body">
-            {/* Section 1 — Game Dir */}
-            <div className="tools-section">
-              <div className="section-label">
-                <span className="section-num">01</span>
-                <span className="section-title">Game 目录</span>
-              </div>
-              <PathRow
-                value={gameDir ?? ""}
-                onChange={(v) => setGameDir(v || null)}
-                placeholder="选择或输入 Ren'Py game 目录路径"
-                status={gameDirStatus}
-                onBrowse={async () => {
-                  if (!isTauri) return;
-                  const dir = await pickDirectory();
-                  if (dir) {
-                    setGameDir(dir);
-                    if (!outputDir) setOutputDir(`${dir}/data`);
-                    if (!translationDir) setTranslationDir(`${dir}/tl/chinese`);
-                    if (!galleryPath)
-                      setGalleryPath(`${dir}/gallery_images.rpy`);
-                    if (!assetScanDir) setAssetScanDir(`${dir}/images`);
-                  }
+          {/* Conversion progress bar */}
+          {totalFiles > 0 && phase !== "packing" && (
+            <div
+              style={{
+                height: 3,
+                background: "rgba(255,255,255,0.08)",
+                borderRadius: 4,
+                overflow: "hidden",
+                marginBottom: "0.35rem",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${percent}%`,
+                  background:
+                    phase === "done" ? "#4ade80" : "var(--color-accent)",
+                  borderRadius: 4,
+                  transition: "width 0.2s ease",
                 }}
-                onClear={() => {
-                  setGameDir(null);
-                  setGameDirStatus(null);
-                }}
-                disabled={running}
-              />
-              <div className="section-hint">
-                包含 .rpy 文件的目录，如{" "}
-                <code style={{ opacity: 0.6 }}>script.rpy</code>。非 Tauri
-                环境下可手动粘贴路径。
-              </div>
-            </div>
-
-            {/* Section 2 — Output Dir */}
-            <div className="tools-section">
-              <div className="section-label">
-                <span className="section-num">02</span>
-                <span className="section-title">输出目录</span>
-                <span
-                  style={{
-                    fontSize: "0.67rem",
-                    color: "rgba(255,255,255,0.2)",
-                    marginLeft: "0.25rem",
-                  }}
-                >
-                  可选
-                </span>
-              </div>
-              <PathRow
-                value={outputDir ?? ""}
-                onChange={(v) => setOutputDir(v || null)}
-                placeholder="默认为 game 目录/data"
-                status={outputDirStatus}
-                onBrowse={async () => {
-                  if (!isTauri) return;
-                  const dir = await pickDirectory();
-                  if (dir) setOutputDir(dir);
-                }}
-                onClear={() => {
-                  setOutputDir(null);
-                  setOutputDirStatus(null);
-                }}
-                disabled={running}
               />
             </div>
+          )}
 
-            {/* Section 3 — Translation */}
-            <div className="tools-section">
-              <div className="section-label">
-                <span className="section-num">03</span>
-                <span className="section-title">翻译</span>
-                <span
-                  style={{
-                    fontSize: "0.67rem",
-                    color: "rgba(255,255,255,0.2)",
-                    marginLeft: "0.25rem",
-                  }}
-                >
-                  可选
-                </span>
-              </div>
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  className="toggle-checkbox"
-                  checked={enableTranslation}
-                  onChange={(e) => setEnableTranslation(e.target.checked)}
-                  disabled={running}
-                />
-                <span className="toggle-label">
-                  启用翻译（从 tl/chinese 目录导入）
-                </span>
-              </label>
-              <PathRow
-                value={translationDir ?? ""}
-                onChange={(v) => setTranslationDir(v || null)}
-                placeholder="game/tl/chinese"
-                status={translationDirStatus}
-                onBrowse={async () => {
-                  if (!isTauri) return;
-                  const dir = await pickDirectory();
-                  if (dir) setTranslationDir(dir);
+          {/* ZIP progress bar */}
+          {phase === "packing" || (phase === "done" && zipProgress === 100) ? (
+            <div
+              style={{
+                height: 3,
+                background: "rgba(255,255,255,0.08)",
+                borderRadius: 4,
+                overflow: "hidden",
+                marginBottom: "0.35rem",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${zipProgress}%`,
+                  background: zipProgress === 100 ? "#4ade80" : "#60a5fa",
+                  borderRadius: 4,
+                  transition: "width 0.2s ease",
                 }}
-                onClear={() => {
-                  setTranslationDir(null);
-                  setTranslationDirStatus(null);
-                }}
-                disabled={running || !enableTranslation}
-                browseLabel="浏览"
               />
             </div>
+          ) : null}
 
-            {/* Section 4 — Gallery */}
-            <div className="tools-section">
-              <div className="section-label">
-                <span className="section-num">04</span>
-                <span className="section-title">图鉴解析</span>
-                <span
-                  style={{
-                    fontSize: "0.67rem",
-                    color: "rgba(255,255,255,0.2)",
-                    marginLeft: "0.25rem",
-                  }}
-                >
-                  可选
-                </span>
-              </div>
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  className="toggle-checkbox"
-                  checked={enableGallery}
-                  onChange={(e) => setEnableGallery(e.target.checked)}
-                  disabled={running}
-                />
-                <span className="toggle-label">
-                  从 gallery_images.rpy 提取图鉴条目
-                </span>
-              </label>
-              <PathRow
-                value={galleryPath ?? ""}
-                onChange={(v) => setGalleryPath(v || null)}
-                placeholder="gallery_images.rpy 路径"
-                status={galleryPathStatus}
-                onBrowse={async () => {
-                  if (!isTauri) return;
-                  const res = await pickAndReadTextFile({
-                    title: "选择 gallery_images.rpy",
-                    filters: [
-                      { name: "Ren'Py Script", extensions: ["rpy", "rpym"] },
-                    ],
-                  });
-                  if (res) {
-                    setGalleryPath(res.path);
-                    log(`选择图鉴文件：${res.path}`);
-                  }
-                }}
-                onClear={() => {
-                  setGalleryPath(null);
-                  setGalleryPathStatus(null);
-                }}
-                disabled={running || !enableGallery}
-                browseLabel="浏览"
-              />
-            </div>
+          {currentFile && running && (
+            <p
+              style={{
+                fontSize: "0.72rem",
+                color: "var(--color-text-dim)",
+                fontFamily: "var(--font-mono)",
+                marginTop: "0.2rem",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              › {currentFile}
+            </p>
+          )}
+        </div>
 
-            {/* Section 5 — Asset Scan */}
-            <div className="tools-section">
-              <div className="section-label">
-                <span className="section-num">05</span>
-                <span className="section-title">资源扫描</span>
-                <span
-                  style={{
-                    fontSize: "0.67rem",
-                    color: "rgba(255,255,255,0.2)",
-                    marginLeft: "0.25rem",
-                  }}
-                >
-                  可选
-                </span>
-              </div>
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  className="toggle-checkbox"
-                  checked={enableAssetScan}
-                  onChange={(e) => {
-                    setEnableAssetScan(e.target.checked);
-                    if (!e.target.checked) setAssetScanCount(null);
-                  }}
-                  disabled={running}
-                />
-                <span className="toggle-label">
-                  自动扫描资源目录，生成 image.XX 定义
-                </span>
-              </label>
-              <PathRow
-                value={assetScanDir ?? ""}
-                onChange={(v) => setAssetScanDir(v || null)}
-                placeholder="默认为 game 目录/images"
-                status={assetScanDirStatus}
-                onBrowse={async () => {
-                  if (!isTauri) return;
-                  const dir = await pickDirectory();
-                  if (dir) setAssetScanDir(dir);
-                }}
-                onClear={() => {
-                  setAssetScanDir(null);
-                  setAssetScanDirStatus(null);
-                  setAssetScanCount(null);
-                }}
-                disabled={running || !enableAssetScan}
-                browseLabel="浏览"
-              />
-              {enableAssetScan && (
-                <div className="section-hint">
-                  扫描所选目录中的所有图片文件（.jpg/.png/.webp/.webm 等），
-                  为每个文件生成{" "}
-                  <code style={{ opacity: 0.7 }}>image.文件名 = "路径";</code>{" "}
-                  定义，并写出至{" "}
-                  <code style={{ opacity: 0.7 }}>image_defines.rrs</code>。
-                  {assetScanCount !== null && (
-                    <span
-                      style={{
-                        display: "inline-block",
-                        marginLeft: "0.5rem",
-                        color: "#6ee7b7",
-                        fontWeight: 600,
-                      }}
-                    >
-                      上次扫描：{assetScanCount} 个定义
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
+        {/* ── Actions ── */}
+        <div style={{ display: "flex", gap: "0.6rem", marginBottom: "1rem" }}>
+          <button
+            className="btn primary"
+            style={{ flex: 1, fontWeight: 700, padding: "0.6rem 1rem" }}
+            onClick={() => {
+              setPhase("idle");
+              setZipProgress(0);
+              runConversion();
+            }}
+            disabled={running || !gameDir || !isTauri}
+          >
+            {btnLabel}
+          </button>
+          <button
+            className="btn"
+            onClick={() => {
+              setLogs([]);
+              setPhase("idle");
+              setZipProgress(0);
+              setTotalFiles(0);
+              setProcessedFiles(0);
+              setCurrentFile(null);
+              setAssetScanCount(null);
+            }}
+            disabled={running}
+          >
+            清空
+          </button>
+        </div>
 
-            {/* Section 6 — Pack ZIP */}
-            <div className="tools-section">
-              <div className="section-label">
-                <span className="section-num">06</span>
-                <span className="section-title">打包 ZIP</span>
-                <span
-                  style={{
-                    fontSize: "0.67rem",
-                    color: "rgba(255,255,255,0.2)",
-                    marginLeft: "0.25rem",
-                  }}
-                >
-                  可选
-                </span>
-              </div>
-
-              <label className="toggle-row">
-                <input
-                  type="checkbox"
-                  className="toggle-checkbox"
-                  checked={enableZip}
-                  onChange={(e) => {
-                    setEnableZip(e.target.checked);
-                    if (!e.target.checked) setZipPhase("idle");
-                  }}
-                  disabled={running}
-                />
-                <span className="toggle-label">
-                  转换完成后自动打包为 assets.zip
-                </span>
-              </label>
-
-              {enableZip && (
-                <>
-                  {/* ZIP output path */}
-                  <PathRow
-                    value={zipOutputPath ?? ""}
-                    onChange={(v) => setZipOutputPath(v || null)}
-                    placeholder="默认：输出目录/../assets.zip"
-                    status={zipOutputPathStatus}
-                    onBrowse={async () => {
-                      if (!isTauri) return;
-                      const dir = await pickDirectory();
-                      if (dir) setZipOutputPath(`${dir}/assets.zip`);
-                    }}
-                    onClear={() => {
-                      setZipOutputPath(null);
-                      setZipOutputPathStatus(null);
-                    }}
-                    disabled={running}
-                    browseLabel="目录"
-                  />
-
-                  {/* Extra asset dirs */}
-                  <div
-                    style={{
-                      marginTop: "0.75rem",
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: "0.4rem",
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: "0.72rem",
-                        color: "rgba(255,255,255,0.35)",
-                        letterSpacing: "0.06em",
-                        textTransform: "uppercase",
-                        marginBottom: "0.1rem",
-                      }}
-                    >
-                      额外资源目录（images/、Audio/ 等）
-                    </div>
-
-                    {zipAssetDirs.map((dir, idx) => (
-                      <div
-                        key={idx}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "0.4rem",
-                        }}
-                      >
-                        <PathRow
-                          value={dir}
-                          onChange={(v) => {
-                            const next = [...zipAssetDirs];
-                            next[idx] = v;
-                            setZipAssetDirs(next);
-                          }}
-                          placeholder="资源目录路径"
-                          status={zipAssetDirStatuses[idx] ?? null}
-                          onBrowse={async () => {
-                            if (!isTauri) return;
-                            const picked = await pickDirectory();
-                            if (picked) {
-                              const next = [...zipAssetDirs];
-                              next[idx] = picked;
-                              setZipAssetDirs(next);
-                            }
-                          }}
-                          onClear={() => {
-                            setZipAssetDirs((prev) =>
-                              prev.filter((_, i) => i !== idx),
-                            );
-                            setZipAssetDirStatuses((prev) =>
-                              prev.filter((_, i) => i !== idx),
-                            );
-                          }}
-                          disabled={running}
-                          browseLabel="浏览"
-                        />
-                      </div>
-                    ))}
-
-                    <button
-                      className="btn btn-ghost"
-                      style={{ alignSelf: "flex-start", marginTop: "0.2rem" }}
-                      onClick={() => {
-                        setZipAssetDirs((prev) => [...prev, ""]);
-                        setZipAssetDirStatuses((prev) => [...prev, null]);
-                        // Auto-populate first two dirs from gameDir
-                        if (zipAssetDirs.length === 0 && gameDir) {
-                          setZipAssetDirs([
-                            `${gameDir}/images`,
-                            `${gameDir}/Audio`,
-                          ]);
-                          setZipAssetDirStatuses([null, null]);
-                        }
-                      }}
-                      disabled={running}
-                    >
-                      + 添加目录
-                    </button>
-                  </div>
-
-                  {/* ZIP pack progress bar */}
-                  {zipPhase !== "idle" && (
-                    <div style={{ marginTop: "0.75rem" }}>
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          fontSize: "0.72rem",
-                          color:
-                            zipPhase === "done"
-                              ? "#6ee7b7"
-                              : "rgba(255,255,255,0.45)",
-                          marginBottom: "0.3rem",
-                        }}
-                      >
-                        <span>
-                          {zipPhase === "done" ? "✓ 打包完成" : "▶ 打包中…"}
-                        </span>
-                        <span>{zipProgress}%</span>
-                      </div>
-                      <div className="progress-bar-bg">
-                        <div
-                          className="progress-bar-fill"
-                          style={{
-                            width: `${zipProgress}%`,
-                            background:
-                              zipPhase === "done" ? "#6ee7b7" : undefined,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="section-hint">
-                    打包内容：<code style={{ opacity: 0.7 }}>data/</code>
-                    （脚本）+ 所有额外资源目录。文本文件用 DEFLATE
-                    压缩，图片/音频用 STORE
-                    直存（不二次压缩）。打包完成后可直接用作 assets.zip。
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Progress + Actions */}
-            <div className="progress-section">
-              <div className="progress-header">
-                <span className={`progress-status ${running ? "running" : ""}`}>
-                  {running ? "▶ 转换中" : "就绪"}
-                </span>
-                <span className="progress-count">
-                  {processedFiles}/{totalFiles} — {percent}%
-                </span>
-              </div>
-              <div className="progress-bar-bg">
+        {/* ── Log ── */}
+        <div>
+          <div className="settings-label">输出日志</div>
+          <div
+            ref={logRef}
+            style={{
+              background: "rgba(0,0,0,0.35)",
+              border: "1px solid rgba(255,255,255,0.07)",
+              borderRadius: 8,
+              padding: "0.6rem 0.75rem",
+              height: 180,
+              overflowY: "auto",
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.75rem",
+              lineHeight: 1.7,
+            }}
+          >
+            {logs.length === 0 ? (
+              <span style={{ color: "rgba(255,255,255,0.2)" }}>暂无输出</span>
+            ) : (
+              logs.map((l, i) => (
                 <div
-                  className="progress-bar-fill"
-                  style={{ width: `${percent}%` }}
-                />
-              </div>
-              <div className="current-file-tag">
-                <span>›</span>
-                {currentFile ?? (running ? "初始化..." : "尚未开始")}
-              </div>
-              <div className="action-row">
-                <button
-                  className={`btn btn-primary ${running ? "running" : ""}`}
-                  onClick={() => {
-                    setZipPhase("idle");
-                    setZipProgress(0);
-                    runConversion();
+                  key={i}
+                  style={{
+                    color:
+                      l.startsWith("失败") || l.includes("失败")
+                        ? "#f87171"
+                        : l.startsWith("✓")
+                          ? "#4ade80"
+                          : "var(--color-text-dim)",
                   }}
-                  disabled={running || !isTauri}
-                  aria-label="开始转换"
                 >
-                  {running
-                    ? zipPhase === "packing"
-                      ? "◌  打包中…"
-                      : "◌  转换中…"
-                    : enableZip
-                      ? "▶  转换并打包"
-                      : "▶  开始转换"}
-                </button>
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => setLogs([])}
-                  disabled={running}
-                >
-                  清空日志
-                </button>
-              </div>
-            </div>
-
-            {/* Log */}
-            <div className="log-section">
-              <div className="log-title">输出日志</div>
-              <div className="log-container" ref={logRef}>
-                {logs.length === 0 ? (
-                  <div className="log-empty">暂无输出</div>
-                ) : (
-                  logs.map((l, i) => (
-                    <div
-                      key={i}
-                      className={`log-line${l.startsWith("失败") || (l.startsWith("解析") && l.includes("失败")) ? " err" : ""}`}
-                    >
-                      {l}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
+                  {l}
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 };

@@ -6,24 +6,27 @@
 //   gameTitle      — display name from manifest.json (undefined when absent)
 //   manifestLoaded — true once loadAll() has completed successfully
 //
-// Lifecycle:
-//   init()       — called once on app mount; in Web mode auto-mounts
-//                  WebFetchFS so self-hosted deployments work without any
-//                  user interaction.  In Tauri mode waits for the user to
-//                  pick a zip (no stored path to rehydrate).
+// Lifecycle (all platforms):
+//   init()       — tries to auto-restore a previously used zip:
+//                    Tauri:  reads stored path from localStorage, loads via readBinaryFileTauri
+//                    Web:    reads cached zip bytes from OPFS
+//                  Falls through to unloaded state if nothing is cached / path is gone.
 //   mountZip()   — called when the user selects an assets.zip file; mounts
-//                  ZipFS and kicks off loadAll().
-//   unmountZip() — resets to unset state (returns to ZipPickerScreen).
+//                  ZipFS, persists the source for next launch, kicks off loadAll().
+//   unmountZip() — resets to unset state (returns to AssetsDirScreen).
 
 import type { StateCreator } from "zustand";
 import { loadAll, getManifestGame, defaultGameData } from "../loader";
+import { mountFilesystem, unmountFilesystem, ZipFS } from "../filesystem";
 import {
-  mountFilesystem,
-  unmountFilesystem,
-  ZipFS,
-  WebFetchFS,
-} from "../filesystem";
-import { isTauri } from "../tauri_bridge";
+  isTauri,
+  readBinaryFileTauri,
+  getStoredZipPath,
+  clearStoredZipPath,
+  saveFsaHandle,
+  loadFsaHandle,
+  clearFsaHandle,
+} from "../tauri_bridge";
 
 // ─── Slice interface ──────────────────────────────────────────────────────────
 
@@ -35,14 +38,29 @@ export interface AssetsSlice {
   /** True once all .rrs files have been parsed and registered. */
   manifestLoaded: boolean;
 
-  /** Bootstrap: auto-mount WebFetchFS on web, or wait for user zip selection in Tauri. */
-  init: () => Promise<void>;
   /**
-   * Mount the given File as a ZipFS, parse the Central Directory index, then
-   * run loadAll().  Called when the user selects a file via the picker.
+   * Bootstrap: attempt to auto-restore the last used zip.
+   * - Tauri: re-reads the file from the stored native path.
+   * - Web:   re-reads the file from the OPFS cache.
+   * Silently falls through to the picker screen if nothing is available.
+   */
+  init: () => Promise<void>;
+
+  /**
+   * Mount the given File as a ZipFS and run loadAll().
+   * Called when the user selects a file via the plain <input type="file"> picker
+   * (Firefox/Safari) where no FSA handle is available.
    */
   mountZip: (file: File) => Promise<void>;
-  /** Unmount the current filesystem and return to the ZipPickerScreen. */
+
+  /**
+   * Mount a zip selected via the File System Access API.
+   * Persists the handle to IndexedDB so the next launch can restore it without
+   * re-picking.  Chrome/Edge only — falls back to mountZip on other browsers.
+   */
+  mountZipFromHandle: (handle: FileSystemFileHandle) => Promise<void>;
+
+  /** Unmount the current filesystem and return to the picker screen. */
   unmountZip: () => void;
 }
 
@@ -55,7 +73,6 @@ type SetFn = (
 async function runLoadAll(set: SetFn): Promise<void> {
   set({ loading: true, error: null });
   try {
-    // Reset any previously loaded game data so stale labels/defines don't bleed in.
     defaultGameData.reset();
     await loadAll();
     set({
@@ -73,6 +90,29 @@ async function runLoadAll(set: SetFn): Promise<void> {
       manifestLoaded: false,
     });
   }
+}
+
+/**
+ * Try to mount a File as ZipFS. Returns false and sets an error on failure.
+ */
+async function mountZipFile(file: File, set: SetFn): Promise<boolean> {
+  unmountFilesystem();
+  let zipFs: ZipFS;
+  try {
+    zipFs = await ZipFS.mount(file);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    set({
+      loading: false,
+      error: `ZIP 文件无法解析：${msg}`,
+      zipFileName: null,
+      manifestLoaded: false,
+    });
+    return false;
+  }
+  mountFilesystem(zipFs);
+  set({ zipFileName: file.name });
+  return true;
 }
 
 // ─── Slice factory ────────────────────────────────────────────────────────────
@@ -93,53 +133,90 @@ export const createAssetsSlice: StateCreator<
 
   // ── init ───────────────────────────────────────────────────────────────────
   init: async () => {
-    set({ loading: true, error: null } as Partial<
-      AssetsSlice & { loading: boolean; error: string | null }
-    >);
+    set({ loading: true, error: null });
 
-    if (!isTauri) {
-      // Web mode: auto-mount WebFetchFS so self-hosted deployments work
-      // without the user having to pick any file.
-      mountFilesystem(new WebFetchFS("/assets"));
-      await runLoadAll(set as SetFn);
+    if (isTauri) {
+      // ── Tauri: try to reload from stored native path ──────────────────────
+      const storedPath = getStoredZipPath();
+      if (storedPath) {
+        const bytes = await readBinaryFileTauri(storedPath);
+        if (bytes) {
+          const fileName = storedPath.split(/[/\\]/).pop() ?? "assets.zip";
+          const file = new File([bytes.buffer as ArrayBuffer], fileName, {
+            type: "application/zip",
+          });
+          const ok = await mountZipFile(file, set as SetFn);
+          if (ok) {
+            await runLoadAll(set as SetFn);
+            return;
+          }
+          // File was gone or corrupt — clear the stale path.
+          clearStoredZipPath();
+        } else {
+          // Path recorded but file no longer readable (moved/deleted).
+          clearStoredZipPath();
+        }
+      }
+      // Nothing to restore — show picker.
+      set({ loading: false });
       return;
     }
 
-    // Tauri mode: wait for the user to pick a zip — nothing to auto-load.
-    set({ loading: false } as Partial<
-      AssetsSlice & { loading: boolean; error: string | null }
-    >);
+    // ── Web: try to restore from FSA handle (Chrome/Edge only) ───────────
+    // loadFsaHandle() re-requests permission and returns the File directly —
+    // no bytes are copied.  On Firefox/Safari it returns null immediately.
+    const restoredFile = await loadFsaHandle();
+    if (restoredFile) {
+      const ok = await mountZipFile(restoredFile, set as SetFn);
+      if (ok) {
+        await runLoadAll(set as SetFn);
+        return;
+      }
+      // Handle was stale or file unreadable — clear it.
+      await clearFsaHandle();
+    }
+
+    // Nothing to restore (or unsupported browser) — show picker.
+    set({ loading: false });
   },
 
   // ── mountZip ───────────────────────────────────────────────────────────────
   mountZip: async (file: File) => {
-    set({ loading: true, error: null } as Partial<
-      AssetsSlice & { loading: boolean; error: string | null }
-    >);
+    set({ loading: true, error: null });
 
-    // Tear down any previously mounted filesystem (revokes old Blob URLs).
-    unmountFilesystem();
+    const ok = await mountZipFile(file, set as SetFn);
+    if (!ok) return;
 
-    let zipFs: ZipFS;
+    // Persist for next launch (fire-and-forget, non-blocking).
+    // Tauri: path is persisted by AssetsDirScreen before calling mountZip.
+    // Web FSA: the caller passes an optional handle via mountZipWithHandle.
+    // Nothing extra to do here for plain File objects.
+
+    await runLoadAll(set as SetFn);
+  },
+
+  // ── mountZipFromHandle ─────────────────────────────────────────────────────
+  mountZipFromHandle: async (handle: FileSystemFileHandle) => {
+    set({ loading: true, error: null });
+    let file: File;
     try {
-      zipFs = await ZipFS.mount(file);
+      file = await handle.getFile();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       set({
         loading: false,
-        error: `ZIP 文件无法解析：${msg}`,
+        error: `无法读取文件：${msg}`,
         zipFileName: null,
         manifestLoaded: false,
-      } as Partial<AssetsSlice & { loading: boolean; error: string | null }>);
+      });
       return;
     }
-
-    mountFilesystem(zipFs);
-
-    set({ zipFileName: file.name } as Partial<
-      AssetsSlice & { loading: boolean; error: string | null }
-    >);
-
+    const ok = await mountZipFile(file, set as SetFn);
+    if (!ok) return;
+    // Persist handle for next launch (fire-and-forget).
+    saveFsaHandle(handle).catch((e) =>
+      console.warn("[assetsSlice] saveFsaHandle failed:", e),
+    );
     await runLoadAll(set as SetFn);
   },
 
@@ -147,11 +224,17 @@ export const createAssetsSlice: StateCreator<
   unmountZip: () => {
     unmountFilesystem();
     defaultGameData.reset();
+    // Clear persisted state so next launch starts at the picker too.
+    if (isTauri) {
+      clearStoredZipPath();
+    } else {
+      clearFsaHandle().catch(() => {});
+    }
     set({
       zipFileName: null,
       manifestLoaded: false,
       gameTitle: undefined,
       error: null,
-    } as Partial<AssetsSlice & { loading: boolean; error: string | null }>);
+    });
   },
 });

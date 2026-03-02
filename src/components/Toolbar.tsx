@@ -4,12 +4,14 @@ import { useGameStore } from "../store";
 /**
  * Top-right HUD toolbar shown during gameplay.
  *
- * When a FileSystemFileHandle is active (saveFileName !== null), progress is
- * auto-saved to that file on every dialogue step. The toolbar shows the file
- * name as a passive indicator.
+ * When a save entry is active (saveFileName !== null), progress is
+ * auto-saved on every blocking dialogue step via saveSlice.autoSave(),
+ * which delegates to the platform-appropriate SaveStore
+ * (Tauri → Documents/Saves, Web → OPFS, Legacy → no-op).
+ * The toolbar shows the save file name as a passive indicator.
  *
- * "另存为" always produces an independent download backup regardless of
- * whether auto-save is running.
+ * "另存为" triggers a portable .json export regardless of whether
+ * auto-save is running — useful as an out-of-band backup.
  *
  * "返回" pauses the game and returns to the SaveLoadedScreen lobby so the
  * player can access CG gallery, settings, or re-select a save without

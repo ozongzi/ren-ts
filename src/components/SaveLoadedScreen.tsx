@@ -1,7 +1,6 @@
 import React from "react";
 import { useGameStore } from "../store";
-import { formatLabel, autoSaveAvailable } from "../save";
-import { isTauri } from "../tauri_bridge";
+import { formatLabel } from "../save";
 
 /**
  * "Lobby" screen shown when phase === 'save_loaded'.
@@ -26,8 +25,8 @@ export const SaveLoadedScreen: React.FC = () => {
   // Read the snapshot info for the "save info" badge
   const currentLabel = useGameStore((s) => s.currentLabel);
   const dialogue = useGameStore((s) => s.dialogue);
+  const saveId = useGameStore((s) => s.saveId);
   const saveFileName = useGameStore((s) => s.saveFileName);
-  const saveFilePath = useGameStore((s) => s.saveFilePath);
 
   // Build a short human-readable description of where we are in the story.
   const locationLabel = formatLabel(currentLabel);
@@ -35,8 +34,8 @@ export const SaveLoadedScreen: React.FC = () => {
     ? dialogue.text.slice(0, 60) + (dialogue.text.length > 60 ? "…" : "")
     : null;
 
-  // Whether auto-save is active for this session
-  const autoSaveActive = autoSaveAvailable && saveFileName !== null;
+  // Auto-save is active whenever we have a persisted save entry.
+  const autoSaveActive = saveId !== null && saveFileName !== null;
 
   return (
     <div className="title-screen">
@@ -95,7 +94,7 @@ export const SaveLoadedScreen: React.FC = () => {
                 marginBottom: "0.4rem",
               }}
             >
-              {isTauri ? "💾 桌面存档" : "💾 自动保存"} · {saveFileName}
+              💾 自动保存 · {saveFileName}
             </p>
           ) : (
             <p
@@ -105,29 +104,10 @@ export const SaveLoadedScreen: React.FC = () => {
                 marginBottom: "0.4rem",
               }}
             >
-              {isTauri
-                ? "⚠️ 无自动保存（未选择文件）"
-                : autoSaveAvailable
-                  ? "⚠️ 无自动保存（未选择文件）"
-                  : "⚠️ 浏览器不支持自动保存"}
+              ⚠️ 无自动保存
             </p>
           )}
 
-          {/* Tauri: show full native path in a smaller hint */}
-          {isTauri && saveFilePath && (
-            <p
-              style={{
-                fontSize: "0.68rem",
-                color: "rgba(255,255,255,0.25)",
-                fontFamily: "monospace",
-                wordBreak: "break-all",
-                marginBottom: "0.2rem",
-                maxWidth: "300px",
-              }}
-            >
-              {saveFilePath}
-            </p>
-          )}
           <p
             style={{
               fontSize: "0.95rem",

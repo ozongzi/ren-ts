@@ -1,25 +1,27 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useGameStore } from "../store";
+import {
+  isTauri,
+  fsaSupported,
+  pickZipFileTauri,
+  pickZipFileWeb,
+  readBinaryFileTauri,
+  persistZipPath,
+  getStoredZipPath,
+} from "../tauri_bridge";
 
 /**
- * Shown on first launch (Tauri) or whenever the zip fails to load.
+ * Full-screen zip picker shown whenever no assets.zip is mounted.
  *
- * The user selects a single assets.zip file via a native file picker.
- * This works on all platforms:
- *   - macOS / Windows / Linux (Tauri)
- *   - iOS Safari (File picker supports single-file selection)
- *   - Android (same)
- *   - Web / Chrome / Firefox / Safari
- *
- * Expected zip layout:
- *   assets.zip
- *     data/            ← manifest.json + .rrs script files
- *     images/          ← BGs, CGs, Sprites, UI, FX, …
- *     Audio/           ← Audio/BGM, Audio/SFX, Audio/Voice
- *     videos/          ← *.webm animated CGs (optional)
+ * All platforms use the same UI. The difference is under the hood:
+ *   - Tauri:  native file-open dialog → read bytes via plugin-fs →
+ *             persist path to localStorage for auto-restore on next launch.
+ *   - Web:    <input type="file"> → bytes come from the File object →
+ *             assetsSlice.mountZip() copies them into OPFS automatically.
  */
 export const AssetsDirScreen: React.FC = () => {
   const mountZip = useGameStore((s) => s.mountZip);
+  const mountZipFromHandle = useGameStore((s) => s.mountZipFromHandle);
   const storeLoading = useGameStore((s) => s.loading);
   const storeError = useGameStore((s) => s.error);
 
@@ -27,14 +29,19 @@ export const AssetsDirScreen: React.FC = () => {
   const [picking, setPicking] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
+  // Show the previously remembered path/name as a hint.
+  const [rememberedPath, setRememberedPath] = useState<string | null>(null);
+  useEffect(() => {
+    if (isTauri) setRememberedPath(getStoredZipPath());
+  }, []);
+
   const isLoading = storeLoading || picking;
 
   // ── File handling ─────────────────────────────────────────────────────────
 
   const handleFile = async (file: File | undefined | null) => {
-    if (!file) return;
+    if (!file || isLoading) return;
     if (!file.name.toLowerCase().endsWith(".zip")) {
-      // surface a friendly error without going through the store
       alert("请选择 .zip 格式的文件");
       return;
     }
@@ -46,20 +53,67 @@ export const AssetsDirScreen: React.FC = () => {
     }
   };
 
+  // Web fallback: driven by <input type="file"> (Firefox/Safari)
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     handleFile(e.target.files?.[0]);
-    // Reset so re-selecting the same file still fires onChange
     e.target.value = "";
   };
 
-  const handleButtonClick = () => {
+  // Tauri: native dialog, then read bytes and persist path
+  const handleTauriPick = async () => {
     if (isLoading) return;
-    inputRef.current?.click();
+    setPicking(true);
+    try {
+      const path = await pickZipFileTauri();
+      if (!path) return;
+      const bytes = await readBinaryFileTauri(path);
+      if (!bytes) {
+        alert("无法读取所选文件，请重试。");
+        return;
+      }
+      const fileName = path.split(/[/\\]/).pop() ?? "assets.zip";
+      const file = new File([bytes.buffer as ArrayBuffer], fileName, {
+        type: "application/zip",
+      });
+      // Persist the path BEFORE mounting so init() can restore it next launch.
+      persistZipPath(path);
+      setRememberedPath(path);
+      await mountZip(file);
+    } finally {
+      setPicking(false);
+    }
   };
 
-  // ── Drag-and-drop ─────────────────────────────────────────────────────────
+  // Web FSA: showOpenFilePicker → FileSystemFileHandle (Chrome/Edge)
+  // No bytes are copied — the handle is persisted in IndexedDB.
+  const handleFsaPick = async () => {
+    if (isLoading) return;
+    setPicking(true);
+    try {
+      const handle = await pickZipFileWeb();
+      if (!handle) return;
+      setRememberedPath(handle.name);
+      await mountZipFromHandle(handle);
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const handlePick = () => {
+    if (isLoading) return;
+    if (isTauri) {
+      handleTauriPick();
+    } else if (fsaSupported) {
+      handleFsaPick();
+    } else {
+      inputRef.current?.click();
+    }
+  };
+
+  // ── Drag-and-drop (non-FSA web only) ────────────────────────────────────────
 
   const handleDragOver = (e: React.DragEvent) => {
+    if (isTauri || fsaSupported) return;
     e.preventDefault();
     e.stopPropagation();
     setDragOver(true);
@@ -75,100 +129,75 @@ export const AssetsDirScreen: React.FC = () => {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(false);
-    if (isLoading) return;
-    const file = e.dataTransfer.files?.[0];
-    handleFile(file);
+    if (isTauri || fsaSupported || isLoading) return;
+    handleFile(e.dataTransfer.files?.[0]);
   };
 
-  // ── Styles ────────────────────────────────────────────────────────────────
-
-  const dropZoneBorder = dragOver
-    ? "2px dashed rgba(233,69,96,0.9)"
-    : "2px dashed rgba(255,255,255,0.15)";
-
-  const dropZoneBg = dragOver
-    ? "rgba(233,69,96,0.08)"
-    : "rgba(255,255,255,0.03)";
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div
+      className="modal-overlay"
       style={{
         position: "fixed",
-        inset: 0,
-        display: "flex",
         flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "linear-gradient(135deg, #0a0a1a 0%, #1a0a0a 100%)",
-        color: "#fff",
-        fontFamily: "system-ui, sans-serif",
+        gap: "1.25rem",
         padding: "2rem",
-        gap: "1.5rem",
         overflowY: "auto",
+        // Not a modal — covers the whole screen before any game UI exists.
+        background: "var(--color-bg)",
+        animation: "none",
       }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* ── Hidden file input ── */}
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".zip"
-        style={{ display: "none" }}
-        onChange={handleInputChange}
-      />
+      {/* Hidden file input — only needed as fallback on Firefox/Safari */}
+      {!isTauri && !fsaSupported && (
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".zip"
+          style={{ display: "none" }}
+          onChange={handleInputChange}
+        />
+      )}
 
-      {/* ── Icon ── */}
-      <div style={{ fontSize: "4rem", lineHeight: 1 }}>📦</div>
+      {/* ── Icon + title ── */}
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: "3rem", marginBottom: "0.5rem" }}>📦</div>
+        <h1 className="modal-title" style={{ fontSize: "1.4rem" }}>
+          载入游戏包
+        </h1>
+      </div>
 
-      {/* ── Title ── */}
-      <h1
-        style={{
-          fontSize: "1.6rem",
-          fontWeight: 700,
-          letterSpacing: "0.06em",
-          margin: 0,
-          textAlign: "center",
-          color: "rgba(255,230,128,0.95)",
-        }}
-      >
-        载入游戏包
-      </h1>
-
-      {/* ── Load error banner ── */}
+      {/* ── Error banner ── */}
       {storeError && (
         <div
           role="alert"
           style={{
-            background: "rgba(200,40,40,0.12)",
-            border: "1px solid rgba(255,80,80,0.35)",
-            borderRadius: "10px",
-            padding: "1rem 1.4rem",
-            maxWidth: "500px",
+            background: "rgba(180,30,30,0.15)",
+            border: "1px solid rgba(220,60,60,0.35)",
+            borderRadius: 10,
+            padding: "0.9rem 1.2rem",
+            maxWidth: 480,
             width: "100%",
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.5rem",
           }}
         >
-          <div
+          <p
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.5rem",
-              fontSize: "0.95rem",
               fontWeight: 700,
-              color: "rgba(255,150,130,0.95)",
+              color: "rgba(255,140,120,0.95)",
+              marginBottom: "0.35rem",
+              fontSize: "0.9rem",
             }}
           >
             ⚠️ 加载失败
-          </div>
+          </p>
           <p
             style={{
-              margin: 0,
-              fontSize: "0.85rem",
-              color: "rgba(255,160,140,0.85)",
+              fontSize: "0.82rem",
+              color: "rgba(255,160,140,0.8)",
               lineHeight: 1.6,
               wordBreak: "break-word",
             }}
@@ -177,34 +206,18 @@ export const AssetsDirScreen: React.FC = () => {
           </p>
           <p
             style={{
-              margin: "0.25rem 0 0",
-              fontSize: "0.78rem",
-              color: "rgba(255,255,255,0.35)",
+              marginTop: "0.4rem",
+              fontSize: "0.76rem",
+              color: "var(--color-text-dim)",
               lineHeight: 1.5,
             }}
           >
             请确认 zip 根目录下包含{" "}
-            <code
-              style={{
-                background: "rgba(255,255,255,0.08)",
-                borderRadius: "3px",
-                padding: "0 4px",
-                fontFamily: "monospace",
-                color: "rgba(180,220,255,0.7)",
-              }}
-            >
+            <code style={{ fontFamily: "var(--font-mono)", opacity: 0.8 }}>
               data/manifest.json
             </code>{" "}
-            以及对应的{" "}
-            <code
-              style={{
-                background: "rgba(255,255,255,0.08)",
-                borderRadius: "3px",
-                padding: "0 4px",
-                fontFamily: "monospace",
-                color: "rgba(180,220,255,0.7)",
-              }}
-            >
+            及对应的{" "}
+            <code style={{ fontFamily: "var(--font-mono)", opacity: 0.8 }}>
               .rrs
             </code>{" "}
             脚本文件。
@@ -212,26 +225,33 @@ export const AssetsDirScreen: React.FC = () => {
         </div>
       )}
 
-      {/* ── Drag-and-drop zone / explanation ── */}
+      {/* ── Pick zone ── */}
       <div
-        style={{
-          background: dropZoneBg,
-          border: dropZoneBorder,
-          borderRadius: "12px",
-          padding: "1.6rem 2rem",
-          maxWidth: "480px",
-          width: "100%",
-          lineHeight: 1.7,
-          textAlign: "center",
-          transition: "background 0.15s, border-color 0.15s",
-          cursor: isLoading ? "default" : "pointer",
-        }}
-        onClick={handleButtonClick}
         role="button"
-        aria-label="点击或拖拽 zip 文件到此处"
-        tabIndex={0}
+        tabIndex={isLoading ? -1 : 0}
+        aria-label={
+          isTauri || fsaSupported
+            ? "点击选择 assets.zip"
+            : "点击或拖拽 zip 文件"
+        }
+        onClick={handlePick}
         onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") handleButtonClick();
+          if (e.key === "Enter" || e.key === " ") handlePick();
+        }}
+        style={{
+          maxWidth: 460,
+          width: "100%",
+          border: dragOver
+            ? "2px dashed var(--color-accent)"
+            : "2px dashed rgba(255,255,255,0.15)",
+          borderRadius: 12,
+          background: dragOver
+            ? "rgba(233,69,96,0.07)"
+            : "rgba(255,255,255,0.03)",
+          padding: "2rem 1.5rem",
+          textAlign: "center",
+          cursor: isLoading ? "default" : "pointer",
+          transition: "border-color 0.15s, background 0.15s",
         }}
       >
         {isLoading ? (
@@ -241,82 +261,83 @@ export const AssetsDirScreen: React.FC = () => {
               flexDirection: "column",
               alignItems: "center",
               gap: "0.75rem",
-              color: "rgba(255,230,128,0.75)",
             }}
           >
-            <span
-              style={{
-                display: "inline-block",
-                width: "2rem",
-                height: "2rem",
-                border: "3px solid rgba(255,230,128,0.2)",
-                borderTopColor: "rgba(255,230,128,0.85)",
-                borderRadius: "50%",
-                animation: "spin 0.8s linear infinite",
-              }}
+            <div
+              className="loading-spinner"
+              style={{ width: 36, height: 36 }}
             />
-            <span style={{ fontSize: "0.95rem" }}>
+            <span
+              style={{ fontSize: "0.9rem", color: "var(--color-text-dim)" }}
+            >
               {picking ? "正在解析 ZIP 索引…" : "正在加载剧本数据…"}
             </span>
           </div>
         ) : (
           <>
-            <div style={{ fontSize: "2.5rem", marginBottom: "0.6rem" }}>
+            <div style={{ fontSize: "2.2rem", marginBottom: "0.5rem" }}>
               {dragOver ? "🎯" : "📂"}
             </div>
             <p
               style={{
-                margin: "0 0 0.5rem",
-                fontSize: "1rem",
+                fontSize: "0.95rem",
                 fontWeight: 600,
-                color: "rgba(255,255,255,0.85)",
+                color: "var(--color-text)",
+                marginBottom: "0.3rem",
               }}
             >
-              {dragOver ? "松开以载入" : "点击选择 或 拖拽文件到这里"}
+              {dragOver
+                ? "松开以载入"
+                : isTauri || fsaSupported
+                  ? "点击选择 assets.zip"
+                  : "点击选择  或  拖拽文件到这里"}
             </p>
-            <p
-              style={{
-                margin: 0,
-                fontSize: "0.82rem",
-                color: "rgba(255,255,255,0.35)",
-              }}
-            >
-              接受 <code style={{ fontFamily: "monospace" }}>.zip</code> 格式
+            <p style={{ fontSize: "0.8rem", color: "var(--color-text-dim)" }}>
+              接受 <code style={{ fontFamily: "var(--font-mono)" }}>.zip</code>{" "}
+              格式
             </p>
           </>
         )}
       </div>
 
+      {/* ── Remembered path/name hint ── */}
+      {rememberedPath && !isLoading && (
+        <p
+          style={{
+            fontSize: "0.73rem",
+            color: "rgba(255,255,255,0.25)",
+            fontFamily: "var(--font-mono)",
+            maxWidth: 460,
+            wordBreak: "break-all",
+            textAlign: "center",
+            lineHeight: 1.6,
+          }}
+        >
+          上次使用：{rememberedPath}
+        </p>
+      )}
+
       {/* ── Zip structure hint ── */}
       {!isLoading && (
         <div
           style={{
-            background: "rgba(255,255,255,0.04)",
-            border: "1px solid rgba(255,255,255,0.08)",
-            borderRadius: "10px",
-            padding: "1rem 1.4rem",
-            maxWidth: "480px",
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.07)",
+            borderRadius: 10,
+            padding: "0.9rem 1.2rem",
+            maxWidth: 460,
             width: "100%",
           }}
         >
-          <p
-            style={{
-              margin: "0 0 0.6rem",
-              fontSize: "0.82rem",
-              fontWeight: 600,
-              color: "rgba(255,255,255,0.45)",
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-            }}
-          >
+          <p className="settings-label" style={{ marginBottom: "0.5rem" }}>
             zip 内部结构
           </p>
           <ul
             style={{
               margin: 0,
-              paddingLeft: "1.2rem",
-              fontSize: "0.82rem",
-              color: "rgba(255,255,255,0.38)",
+              paddingLeft: "1.1rem",
+              fontSize: "0.8rem",
+              color: "var(--color-text-dim)",
               lineHeight: 2,
             }}
           >
@@ -329,12 +350,12 @@ export const AssetsDirScreen: React.FC = () => {
               <li key={dir}>
                 <code
                   style={{
-                    background: "rgba(255,255,255,0.08)",
-                    borderRadius: "3px",
+                    fontFamily: "var(--font-mono)",
+                    background: "rgba(255,255,255,0.07)",
+                    borderRadius: 3,
                     padding: "0 4px",
-                    fontFamily: "monospace",
                     color: "rgba(180,220,255,0.75)",
-                    marginRight: "0.5em",
+                    marginRight: "0.45em",
                   }}
                 >
                   {dir}
@@ -346,24 +367,24 @@ export const AssetsDirScreen: React.FC = () => {
         </div>
       )}
 
-      {/* ── Footer ── */}
+      {/* ── Footer note ── */}
       {!isLoading && (
         <p
           style={{
-            fontSize: "0.7rem",
-            color: "rgba(255,255,255,0.18)",
-            letterSpacing: "0.04em",
+            fontSize: "0.68rem",
+            color: "rgba(255,255,255,0.15)",
             textAlign: "center",
-            maxWidth: "360px",
-            margin: 0,
+            maxWidth: 360,
+            lineHeight: 1.6,
           }}
         >
-          zip 文件只在本设备本地读取，不会上传到任何服务器。
+          {isTauri
+            ? "文件路径将保存在本地，下次启动自动加载。"
+            : fsaSupported
+              ? "文件句柄将保存在本地，下次启动只需点击确认授权即可自动加载。"
+              : "zip 文件仅在本设备本地读取，当前浏览器不支持记住文件位置，每次需重新选择。"}
         </p>
       )}
-
-      {/* ── Spinner keyframes ── */}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 };

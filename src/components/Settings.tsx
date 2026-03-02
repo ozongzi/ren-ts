@@ -1,6 +1,11 @@
 import React, { useRef, useState } from "react";
 import { useGameStore } from "../store";
-import { isTauri } from "../tauri_bridge";
+import {
+  isTauri,
+  pickZipFileTauri,
+  readBinaryFileTauri,
+  persistZipPath,
+} from "../tauri_bridge";
 
 /**
  * Settings modal panel.
@@ -158,6 +163,33 @@ const ZipRow: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // On Tauri: use the native dialog so the path is persisted for auto-restore.
+  const handleTauriPick = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const path = await pickZipFileTauri();
+      if (!path) return;
+      const bytes = await readBinaryFileTauri(path);
+      if (!bytes) {
+        setError("无法读取所选文件，请重试。");
+        return;
+      }
+      const fileName = path.split(/[/\\]/).pop() ?? "assets.zip";
+      const file = new File([bytes.buffer as ArrayBuffer], fileName, {
+        type: "application/zip",
+      });
+      // Persist path BEFORE mounting so init() can restore it next launch.
+      persistZipPath(path);
+      await mountZip(file);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "未知错误");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fallback for non-Tauri (should not normally be shown, but kept for safety).
   const handleFile = async (file: File | undefined | null) => {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".zip")) {
@@ -178,6 +210,15 @@ const ZipRow: React.FC = () => {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     handleFile(e.target.files?.[0]);
     e.target.value = "";
+  };
+
+  const handlePick = () => {
+    if (loading) return;
+    if (isTauri) {
+      handleTauriPick();
+    } else {
+      inputRef.current?.click();
+    }
   };
 
   return (
@@ -219,7 +260,7 @@ const ZipRow: React.FC = () => {
 
       <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
         <button
-          onClick={() => inputRef.current?.click()}
+          onClick={handlePick}
           disabled={loading}
           style={{
             padding: "0.4rem 1rem",
@@ -238,7 +279,6 @@ const ZipRow: React.FC = () => {
         >
           {loading ? "加载中…" : "📦 更换 zip"}
         </button>
-
         {zipFileName && (
           <button
             onClick={unmountZip}
@@ -260,6 +300,17 @@ const ZipRow: React.FC = () => {
           </button>
         )}
       </div>
+
+      <p
+        style={{
+          fontSize: "0.72rem",
+          color: "rgba(255,255,255,0.2)",
+          marginTop: "0.4rem",
+          lineHeight: 1.5,
+        }}
+      >
+        更换后路径将自动保存，下次启动直接加载。
+      </p>
 
       {error && (
         <p

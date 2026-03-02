@@ -16,7 +16,6 @@ import type { StateCreator } from "zustand";
 import type { GameState } from "../types";
 import { createInitialState, advance, type AdvanceAction } from "../engine";
 import { audioManager } from "../audio";
-import { autoSaveToHandle } from "../save";
 import { resolveAssetAsync } from "../assets";
 
 // ─── Slice interface ──────────────────────────────────────────────────────────
@@ -37,9 +36,9 @@ type GameSliceDeps = GameSlice & {
   gameTitle: string | undefined;
   manifestLoaded: boolean;
   // from saveSlice
-  saveFileHandle: FileSystemFileHandle | null;
-  saveFilePath: string | null;
+  saveId: string | null;
   saveFileName: string | null;
+  autoSave: () => void;
   // from uiSlice
   showTools: boolean;
 };
@@ -100,12 +99,7 @@ export function makeApplyGameState(
 
     // Auto-save on every blocking dialogue step (fire-and-forget).
     if (next.waitingForInput && next.phase === "playing") {
-      const { saveFileHandle, saveFilePath } = get();
-      if (saveFileHandle || saveFilePath) {
-        autoSaveToHandle(saveFileHandle, next, saveFilePath).catch((err) => {
-          console.warn("[save] Auto-save to file failed:", err);
-        });
-      }
+      get().autoSave();
     }
   };
 }
@@ -154,8 +148,7 @@ export const createGameSlice: StateCreator<GameSliceDeps, [], [], GameSlice> = (
       set({
         ...createInitialState(),
         manifestLoaded: true,
-        saveFileHandle: null,
-        saveFilePath: null,
+        saveId: null,
         saveFileName: null,
         zipFileName,
         gameTitle,
