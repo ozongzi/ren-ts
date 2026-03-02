@@ -3,7 +3,7 @@ import { useGameStore } from "../store";
 import {
   isTauri,
   pickZipFileTauri,
-  readBinaryFileTauri,
+  openTauriFileShim,
   persistZipPath,
 } from "../tauri_bridge";
 
@@ -164,24 +164,22 @@ const ZipRow: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   // On Tauri: use the native dialog so the path is persisted for auto-restore.
+  // openTauriFileShim returns a File-API-compatible shim backed by seek+read,
+  // so the full ZIP is never copied into JS heap regardless of archive size.
   const handleTauriPick = async () => {
     setError(null);
     setLoading(true);
     try {
       const path = await pickZipFileTauri();
       if (!path) return;
-      const bytes = await readBinaryFileTauri(path);
-      if (!bytes) {
+      const shim = await openTauriFileShim(path);
+      if (!shim) {
         setError("无法读取所选文件，请重试。");
         return;
       }
-      const fileName = path.split(/[/\\]/).pop() ?? "assets.zip";
-      const file = new File([bytes.buffer as ArrayBuffer], fileName, {
-        type: "application/zip",
-      });
       // Persist path BEFORE mounting so init() can restore it next launch.
       persistZipPath(path);
-      await mountZip(file);
+      await mountZip(shim as unknown as File);
     } catch (err) {
       setError(err instanceof Error ? err.message : "未知错误");
     } finally {

@@ -52,11 +52,14 @@ import {
   makeDirTauri,
   pathExists,
   walkDir as tauriWalkDir,
+  listRpa,
+  readRpaEntry,
   streamingBuildZip,
   pickSavePath,
   type ZipFileEntry,
   type StreamingZipProgress,
   type VirtualZipEntry as TauriBridgeVirtualEntry,
+  type RpaFileEntry as TauriBridgeRpaEntry,
 } from "./tauri_bridge";
 
 // ─── CancelledError ───────────────────────────────────────────────────────────
@@ -176,6 +179,21 @@ export interface IConverterFs {
 
 // ─── TauriConverterFs ────────────────────────────────────────────────────────
 
+// ─── RPA virtual entry ────────────────────────────────────────────────────────
+
+/**
+ * Describes a single file that lives inside an RPA archive, expressed as a
+ * path relative to the game root (same coordinate space as all other
+ * IConverterFs paths).
+ *
+ * rpaAbs  – absolute path to the .rpa file on disk
+ * entry   – in-archive path exactly as Ren'Py wrote it (forward-slash)
+ */
+interface RpaVirtualFile {
+  rpaAbs: string;
+  entry: string;
+}
+
 class TauriConverterFs implements IConverterFs {
   constructor(private readonly rootPath: string) {}
 
@@ -187,21 +205,123 @@ class TauriConverterFs implements IConverterFs {
     return rel === "" ? this.rootPath : `${this.rootPath}/${rel}`;
   }
 
+  // ── RPA index cache ─────────────────────────────────────────────────────────
+  //
+  // We build the virtual-file map lazily on the first walkDir call and cache
+  // it for the lifetime of this ConverterFs instance.  The cache maps each
+  // relative path (game-root-relative) to the RPA source it lives in.
+  //
+  // A path that exists both on disk AND inside an RPA always prefers the
+  // on-disk copy (real file wins, same as Ren'Py itself).
+
+  private _rpaCache: Map<string, RpaVirtualFile> | null = null;
+
+  /**
+   * Scan the root directory for *.rpa files, build their indices, and return
+   * a map of  relPath → RpaVirtualFile  for every entry found.
+   *
+   * Results are cached after the first call.
+   */
+  private async _getRpaIndex(): Promise<Map<string, RpaVirtualFile>> {
+    if (this._rpaCache !== null) return this._rpaCache;
+
+    const cache = new Map<string, RpaVirtualFile>();
+
+    // Find all .rpa files anywhere under the root.
+    let rpaAbsPaths: string[];
+    try {
+      rpaAbsPaths = await tauriWalkDir(this.rootPath, (name) =>
+        name.toLowerCase().endsWith(".rpa"),
+      );
+    } catch {
+      // If the walk fails (permissions, etc.) just return an empty index.
+      this._rpaCache = cache;
+      return cache;
+    }
+
+    // Build the index for each archive in parallel.
+    await Promise.all(
+      rpaAbsPaths.map(async (rpaAbs) => {
+        try {
+          const entries = await listRpa(rpaAbs);
+          for (const entry of entries) {
+            // Normalise to forward slashes.
+            const normEntry = entry.replace(/\\/g, "/");
+            // Only register if no earlier RPA already claimed this path.
+            if (!cache.has(normEntry)) {
+              cache.set(normEntry, { rpaAbs, entry: normEntry });
+            }
+          }
+        } catch (err) {
+          console.warn(`[TauriConverterFs] Failed to index ${rpaAbs}:`, err);
+        }
+      }),
+    );
+
+    this._rpaCache = cache;
+    return cache;
+  }
+
+  // ── IConverterFs implementation ─────────────────────────────────────────────
+
   async walkDir(
     dir: string,
     predicate: (name: string) => boolean,
   ): Promise<string[]> {
-    const absPaths = await tauriWalkDir(this.abs(dir), predicate);
     const prefix = this.rootPath.endsWith("/")
       ? this.rootPath
       : this.rootPath + "/";
-    return absPaths.map((p) =>
-      p.startsWith(prefix) ? p.slice(prefix.length) : p,
+
+    // 1. Regular disk files under the requested sub-directory.
+    const absPaths = await tauriWalkDir(this.abs(dir), predicate);
+    const diskFiles = new Set(
+      absPaths.map((p) => (p.startsWith(prefix) ? p.slice(prefix.length) : p)),
     );
+
+    // 2. Virtual files from RPA archives.
+    const rpaIndex = await this._getRpaIndex();
+
+    const dirPrefix = dir === "" ? "" : dir.endsWith("/") ? dir : dir + "/";
+
+    const rpaFiles: string[] = [];
+    for (const [relPath] of rpaIndex) {
+      // Skip if the path does not live under the requested sub-directory.
+      if (dirPrefix !== "" && !relPath.startsWith(dirPrefix)) continue;
+      // Skip if a real disk file already covers this path.
+      if (diskFiles.has(relPath)) continue;
+      // Apply the caller's predicate against just the filename part.
+      const name = relPath.slice(relPath.lastIndexOf("/") + 1);
+      if (predicate(name)) {
+        rpaFiles.push(relPath);
+      }
+    }
+
+    // Merge: disk files first, then virtual RPA files (sorted for stability).
+    rpaFiles.sort();
+    return [...diskFiles, ...rpaFiles];
   }
 
   async readText(relPath: string): Promise<string | null> {
-    return readTextFileTauri(this.abs(relPath));
+    // Prefer disk file.
+    if (await pathExists(this.abs(relPath))) {
+      return readTextFileTauri(this.abs(relPath));
+    }
+
+    // Fall back to RPA.
+    const rpaIndex = await this._getRpaIndex();
+    const vf = rpaIndex.get(relPath.replace(/\\/g, "/"));
+    if (!vf) return null;
+
+    try {
+      const bytes = await readRpaEntry(vf.rpaAbs, vf.entry);
+      return new TextDecoder().decode(bytes);
+    } catch (err) {
+      console.warn(
+        `[TauriConverterFs] readText from RPA failed for ${relPath}:`,
+        err,
+      );
+      return null;
+    }
   }
 
   async writeText(relPath: string, content: string): Promise<void> {
@@ -214,7 +334,12 @@ class TauriConverterFs implements IConverterFs {
   }
 
   async exists(relPath: string): Promise<boolean> {
-    return pathExists(this.abs(relPath));
+    // Check disk first (fast path).
+    if (await pathExists(this.abs(relPath))) return true;
+
+    // Check RPA index.
+    const rpaIndex = await this._getRpaIndex();
+    return rpaIndex.has(relPath.replace(/\\/g, "/"));
   }
 
   async pickZipSaveTarget(): Promise<unknown | null> {
@@ -243,38 +368,60 @@ class TauriConverterFs implements IConverterFs {
           });
     if (!outputPath) throw new CancelledError();
 
-    const entries: ZipFileEntry[] = include.map((rel) => ({
-      absPath: this.abs(rel),
-      zipPath: rel,
-    }));
+    // Separate the include list into real disk files and RPA virtual files.
+    const rpaIndex = await this._getRpaIndex();
+    const prefix = this.rootPath.endsWith("/")
+      ? this.rootPath
+      : this.rootPath + "/";
 
-    const tauriVirtual: TauriBridgeVirtualEntry[] | undefined =
+    const diskEntries: ZipFileEntry[] = [];
+    const rpaEntries: TauriBridgeRpaEntry[] = [];
+
+    for (const rel of include) {
+      const normRel = rel.replace(/\\/g, "/");
+      const vf = rpaIndex.get(normRel);
+
+      if (vf && !(await pathExists(this.abs(normRel)))) {
+        // File lives only inside an RPA archive.  Hand it to the Rust side as
+        // an RpaZipEntry so Rust reads the bytes directly — nothing crosses
+        // the IPC boundary and binary assets (images, audio) are handled
+        // correctly without any UTF-8 encoding step.
+        rpaEntries.push({
+          rpaPath: vf.rpaAbs,
+          entryPath: vf.entry,
+          zipPath: normRel,
+        });
+      } else {
+        diskEntries.push({ absPath: this.abs(normRel), zipPath: normRel });
+      }
+    }
+
+    // Caller-supplied virtual entries (generated .rrs / manifest.json).
+    const allVirtual: TauriBridgeVirtualEntry[] =
       virtualEntries && virtualEntries.length > 0
         ? virtualEntries.map((v) => ({
             content: v.content,
             zipPath: v.zipPath,
           }))
-        : undefined;
+        : [];
 
     await streamingBuildZip(
       outputPath,
-      entries,
+      diskEntries,
       onProgress
         ? (p: StreamingZipProgress) =>
             onProgress({ index: p.index, total: p.total, zipPath: p.zipPath })
         : undefined,
       onSkip
         ? (absPath: string, zipPath: string) => {
-            const prefix = this.rootPath.endsWith("/")
-              ? this.rootPath
-              : this.rootPath + "/";
             const rel = absPath.startsWith(prefix)
               ? absPath.slice(prefix.length)
               : zipPath;
             onSkip(rel);
           }
         : undefined,
-      tauriVirtual,
+      allVirtual.length > 0 ? allVirtual : undefined,
+      rpaEntries.length > 0 ? rpaEntries : undefined,
     );
   }
 }
