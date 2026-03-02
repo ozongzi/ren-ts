@@ -609,21 +609,6 @@ export const Tools: React.FC = () => {
           </button>
         </div>
 
-        {/* ── FSA mode notice ── */}
-        {!isTauri && fsaSupported && (
-          <div
-            className="tools-platform-banner tools-platform-banner--warn"
-            role="note"
-          >
-            <span className="tools-platform-banner__icon">ℹ️</span>
-            <span>
-              当前为 Chrome / Edge 浏览器环境。 点击「选择 Game
-              目录」授权访问游戏文件夹，转换完成后 ZIP 将直接下载到本地。
-              <strong>无需安装桌面端</strong>，完整流程均在浏览器内执行。
-            </span>
-          </div>
-        )}
-
         {/* ── Section 1: Game 目录 ── */}
         <div className="settings-group">
           <SectionLabel>Game 目录</SectionLabel>
