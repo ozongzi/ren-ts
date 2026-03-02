@@ -837,6 +837,13 @@ export interface ZipFileEntry {
   zipPath: string;
 }
 
+export interface VirtualZipEntry {
+  /** UTF-8 text content to write directly into the archive (no disk read). */
+  content: string;
+  /** Path stored inside the ZIP archive (forward-slash, no leading slash). */
+  zipPath: string;
+}
+
 export interface StreamingZipProgress {
   /** 0-based index of the file just processed. */
   index: number;
@@ -852,17 +859,23 @@ export interface StreamingZipProgress {
  * The Rust side reads each source file in 128 KiB chunks and writes directly
  * to the output file — no full-file or full-archive buffers anywhere.
  *
- * @param outputPath  Absolute path where the ZIP will be written.
- * @param files       Ordered list of {absPath, zipPath} entries.
- * @param onProgress  Optional callback invoked after each file is written.
- * @param onSkip      Optional callback when a file could not be read.
- * @returns           Total number of entries successfully written.
+ * Virtual entries (`virtualFiles`) are in-memory text entries passed directly
+ * to Rust via IPC. They are written into the archive without ever being saved
+ * to disk, so no write-path permission is required for them.
+ *
+ * @param outputPath    Absolute path where the ZIP will be written.
+ * @param files         Ordered list of {absPath, zipPath} disk entries.
+ * @param onProgress    Optional callback invoked after each entry is written.
+ * @param onSkip        Optional callback when a disk file could not be read.
+ * @param virtualFiles  Optional list of in-memory text entries to append.
+ * @returns             Total number of entries successfully written.
  */
 export async function streamingBuildZip(
   outputPath: string,
   files: ZipFileEntry[],
   onProgress?: (p: StreamingZipProgress) => void,
   onSkip?: (absPath: string, zipPath: string) => void,
+  virtualFiles?: VirtualZipEntry[],
 ): Promise<number> {
   if (!isTauri) throw new Error("streamingBuildZip requires a Tauri context");
 
@@ -911,6 +924,13 @@ export async function streamingBuildZip(
     const written = await invoke<number>("build_zip", {
       outputPath,
       entries: normalisedFiles,
+      virtualEntries:
+        virtualFiles && virtualFiles.length > 0
+          ? virtualFiles.map((v) => ({
+              content: v.content,
+              zip_path: v.zipPath,
+            }))
+          : null,
     });
     return written;
   } finally {

@@ -13,6 +13,7 @@ import {
   tauriConverterFsFromPath,
   type IConverterFs,
   type ConverterId,
+  type VirtualZipEntry,
   CancelledError,
 } from "../converterFs";
 import { convertRpy } from "../../rpy-rrs-bridge/rpy2rrs-core";
@@ -382,7 +383,6 @@ export const Tools: React.FC = () => {
     const fs = gameFsRef.current;
     if (running || !fs) return;
 
-    const outDir = "data";
     const imagesDir = "images";
 
     setRunning(true);
@@ -422,13 +422,15 @@ export const Tools: React.FC = () => {
         log(`未找到 images 目录，跳过资源扫描`);
       }
 
-      // ── Convert .rpy → .rrs ───────────────────────────────────────────────
+      // ── Convert .rpy → .rrs (in memory only, no disk write) ──────────────
       const rpyFiles = await fs.walkDir("", (n) =>
         n.toLowerCase().endsWith(".rpy"),
       );
       log(`发现 ${rpyFiles.length} 个 .rpy 文件`);
       setTotalFiles(rpyFiles.length);
 
+      // Collect generated .rrs content as virtual entries (never written to disk)
+      const virtualEntries: VirtualZipEntry[] = [];
       const writtenFiles: string[] = [];
 
       for (const relPath of rpyFiles) {
@@ -441,9 +443,9 @@ export const Tools: React.FC = () => {
             continue;
           }
           const rrsName = relPath.replace(/\.rpy$/i, ".rrs");
-          const outPath = `${outDir}/${rrsName}`;
           const rrs = convertRpy(content, rrsName, translationMap);
-          await fs.writeText(outPath, rrs);
+          // Store in memory — will be injected directly into the ZIP
+          virtualEntries.push({ zipPath: `data/${rrsName}`, content: rrs });
           writtenFiles.push(rrsName);
           setProcessedFiles((n) => n + 1);
           log(`转换：${rrsName}`);
@@ -455,34 +457,21 @@ export const Tools: React.FC = () => {
         }
       }
 
-      // ── Write image_defines.rrs ───────────────────────────────────────────
+      // ── Build image_defines.rrs virtual entry ─────────────────────────────
       if (assetDefinesBlock) {
-        try {
-          await fs.writeText(
-            `${outDir}/image_defines.rrs`,
-            `// Source: image_defines.rrs\n\n` + assetDefinesBlock,
-          );
-          log(`已生成资源定义文件：image_defines.rrs`);
-        } catch (err) {
-          log(
-            `写入 image_defines.rrs 失败：${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        const definesContent =
+          `// Source: image_defines.rrs\n\n` + assetDefinesBlock;
+        virtualEntries.push({
+          zipPath: `data/image_defines.rrs`,
+          content: definesContent,
+        });
+        log(`已生成资源定义文件：image_defines.rrs`);
       }
 
-      // ── Write manifest.json ───────────────────────────────────────────────
+      // ── Build manifest.json virtual entry ─────────────────────────────────
       setCurrentFile(null);
       try {
-        const manifestPath = `${outDir}/manifest.json`;
-        let manifest: Record<string, unknown> = {};
-        const existingText = await fs.readText(manifestPath);
-        if (existingText) {
-          try {
-            manifest = JSON.parse(existingText);
-          } catch {
-            manifest = {};
-          }
-        }
+        const manifest: Record<string, unknown> = {};
         manifest["files"] = writtenFiles;
         if (enableGallery && galleryEntries)
           manifest["gallery"] = galleryEntries;
@@ -494,11 +483,15 @@ export const Tools: React.FC = () => {
             manifest["files"] = ["image_defines.rrs", ...existing];
           }
         }
-        await fs.writeText(manifestPath, JSON.stringify(manifest, null, 2));
-        log(`已更新 manifest.json（${writtenFiles.length} 个文件）`);
+        const manifestContent = JSON.stringify(manifest, null, 2);
+        virtualEntries.push({
+          zipPath: `data/manifest.json`,
+          content: manifestContent,
+        });
+        log(`已生成 manifest.json（${writtenFiles.length} 个文件）`);
       } catch (err) {
         log(
-          `写入 manifest.json 失败：${err instanceof Error ? err.message : String(err)}`,
+          `生成 manifest.json 失败：${err instanceof Error ? err.message : String(err)}`,
         );
       }
 
@@ -512,11 +505,7 @@ export const Tools: React.FC = () => {
       setZipProgress(0);
 
       try {
-        // Collect data/ files to pack
-        const dataFiles = await fs.walkDir(outDir, () => true);
-        const filesToPack: string[] = dataFiles.map((f) => f);
-
-        // Also collect game assets (images, audio, video) for the zip
+        // Collect game assets (images, audio, video) from disk
         const IMAGE_EXT = /\.(png|jpg|jpeg|webp|gif|bmp|avif)$/i;
         const AUDIO_EXT = /\.(mp3|ogg|wav|flac|opus|m4a)$/i;
         const VIDEO_EXT = /\.(mp4|webm|ogv|mov)$/i;
@@ -524,15 +513,14 @@ export const Tools: React.FC = () => {
           IMAGE_EXT.test(name) || AUDIO_EXT.test(name) || VIDEO_EXT.test(name);
 
         const assetFiles = await fs.walkDir("", isAsset);
-        for (const f of assetFiles) {
-          filesToPack.push(f);
-        }
 
-        log(`共 ${filesToPack.length} 个文件待打包…`);
+        log(
+          `共 ${assetFiles.length} 个资源文件 + ${virtualEntries.length} 个生成文件待打包…`,
+        );
 
         let skippedCount = 0;
         await fs.buildZip(
-          filesToPack,
+          assetFiles,
           ({ index, total: tot }) => {
             setZipProgress(Math.round(((index + 1) / tot) * 95));
           },
@@ -541,6 +529,7 @@ export const Tools: React.FC = () => {
             skippedCount++;
           },
           saveTarget,
+          virtualEntries,
         );
 
         setZipProgress(100);

@@ -56,6 +56,7 @@ import {
   pickSavePath,
   type ZipFileEntry,
   type StreamingZipProgress,
+  type VirtualZipEntry as TauriBridgeVirtualEntry,
 } from "./tauri_bridge";
 
 // ─── CancelledError ───────────────────────────────────────────────────────────
@@ -73,6 +74,19 @@ export class CancelledError extends Error {
 export interface ZipProgress {
   index: number;
   total: number;
+  zipPath: string;
+}
+
+// ─── Virtual ZIP entry ────────────────────────────────────────────────────────
+
+/**
+ * An in-memory text file that is written directly into the ZIP archive without
+ * ever being saved to disk. This means no write-path permission is required.
+ */
+export interface VirtualZipEntry {
+  /** UTF-8 text content. */
+  content: string;
+  /** Path stored inside the ZIP archive (forward-slash, no leading slash). */
   zipPath: string;
 }
 
@@ -128,7 +142,8 @@ export interface IConverterFs {
   pickZipSaveTarget(): Promise<unknown | null>;
 
   /**
-   * Build a ZIP archive from the files listed in `include`.
+   * Build a ZIP archive from the files listed in `include` plus any in-memory
+   * `virtualEntries`.
    *
    * On Tauri: invokes the native Rust command and saves to a user-chosen
    * path.  Returns null ("already on disk").
@@ -141,17 +156,21 @@ export interface IConverterFs {
    * In both cases the caller triggers no download — the file is written
    * directly by the implementation.
    *
-   * @param include      Relative paths (from game root) to pack into the ZIP.
-   * @param onProgress   Called after each file entry is written.
-   * @param onSkip       Called when a file could not be read (entry skipped).
-   * @param saveTarget   Pre-acquired target from pickZipSaveTarget(). When
-   *                     provided the implementation skips its own picker call.
+   * @param include         Relative paths (from game root) to pack into the ZIP.
+   * @param onProgress      Called after each file entry is written.
+   * @param onSkip          Called when a file could not be read (entry skipped).
+   * @param saveTarget      Pre-acquired target from pickZipSaveTarget(). When
+   *                        provided the implementation skips its own picker call.
+   * @param virtualEntries  In-memory text entries appended after all disk
+   *                        files. Never written to disk — no write permission
+   *                        required.
    */
   buildZip(
     include: string[],
     onProgress?: (p: ZipProgress) => void,
     onSkip?: (relPath: string) => void,
     saveTarget?: unknown,
+    virtualEntries?: VirtualZipEntry[],
   ): Promise<void>;
 }
 
@@ -212,6 +231,7 @@ class TauriConverterFs implements IConverterFs {
     onProgress?: (p: ZipProgress) => void,
     onSkip?: (relPath: string) => void,
     saveTarget?: unknown,
+    virtualEntries?: VirtualZipEntry[],
   ): Promise<void> {
     const outputPath =
       saveTarget != null
@@ -227,6 +247,14 @@ class TauriConverterFs implements IConverterFs {
       absPath: this.abs(rel),
       zipPath: rel,
     }));
+
+    const tauriVirtual: TauriBridgeVirtualEntry[] | undefined =
+      virtualEntries && virtualEntries.length > 0
+        ? virtualEntries.map((v) => ({
+            content: v.content,
+            zipPath: v.zipPath,
+          }))
+        : undefined;
 
     await streamingBuildZip(
       outputPath,
@@ -246,6 +274,7 @@ class TauriConverterFs implements IConverterFs {
             onSkip(rel);
           }
         : undefined,
+      tauriVirtual,
     );
   }
 }
@@ -741,6 +770,7 @@ class FsaConverterFs implements IConverterFs {
     onProgress?: (p: ZipProgress) => void,
     onSkip?: (relPath: string) => void,
     saveTarget?: unknown,
+    virtualEntries?: VirtualZipEntry[],
   ): Promise<void> {
     // If a pre-acquired handle was passed in (from pickZipSaveTarget called
     // inside the user-gesture handler), use it directly.  Otherwise fall back
@@ -775,7 +805,8 @@ class FsaConverterFs implements IConverterFs {
     }
 
     const writable = await saveHandle.createWritable();
-    const total = include.length;
+    const virt = virtualEntries ?? [];
+    const total = include.length + virt.length;
     const centralDir: CentralDirEntry[] = [];
     let archiveOffset = 0;
     const now = new Date();
@@ -909,6 +940,89 @@ class FsaConverterFs implements IConverterFs {
         onProgress?.({ index, total, zipPath: relPath });
       }
 
+      // ── Virtual (in-memory text) entries ──────────────────────────────────
+      const enc = new TextEncoder();
+      const diskCount = include.length;
+      for (let vi = 0; vi < virt.length; vi++) {
+        const ventry = virt[vi];
+        const index = diskCount + vi;
+        const nameBytes = encodeUtf8(ventry.zipPath);
+        const rawBytes = enc.encode(ventry.content);
+
+        const localHeaderOffset = archiveOffset;
+        const localHeader = buildLocalHeader(
+          nameBytes,
+          ZIP_METHOD_DEFLATE,
+          modTime,
+          modDate,
+        );
+        await writable.write(u8(localHeader));
+        archiveOffset += localHeader.length;
+
+        // Compress via CompressionStream
+        const rawStream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(rawBytes);
+            controller.close();
+          },
+        });
+
+        let crc = 0;
+        let uncompressedSize = 0;
+        let compressedSize = 0;
+
+        const [branchA, branchB] = rawStream.tee();
+
+        const crcPromise = crc32Stream(branchA, async () => {});
+
+        const compressedPromise = (async () => {
+          const compStream = new CompressionStream(
+            "deflate-raw",
+          ) as unknown as TransformStream<Uint8Array, Uint8Array>;
+          const compressed = branchB.pipeThrough(compStream);
+          const reader = compressed.getReader();
+          let compBytes = 0;
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              await writable.write(u8(value));
+              compBytes += value.length;
+              archiveOffset += value.length;
+            }
+          } finally {
+            reader.releaseLock();
+          }
+          return compBytes;
+        })();
+
+        [{ crc, size: uncompressedSize }, compressedSize] = await Promise.all([
+          crcPromise,
+          compressedPromise,
+        ]);
+
+        const dataDescriptor = buildDataDescriptor(
+          crc,
+          compressedSize,
+          uncompressedSize,
+        );
+        await writable.write(u8(dataDescriptor));
+        archiveOffset += dataDescriptor.length;
+
+        centralDir.push({
+          nameBytes,
+          method: ZIP_METHOD_DEFLATE,
+          modTime,
+          modDate,
+          crc,
+          compressedSize,
+          uncompressedSize,
+          localHeaderOffset,
+        });
+
+        onProgress?.({ index, total, zipPath: ventry.zipPath });
+      }
+
       // ── Write Central Directory ───────────────────────────────────────────
       const centralDirOffset = archiveOffset;
       let centralDirSize = 0;
@@ -975,7 +1089,7 @@ export async function pickConverterFs(): Promise<ConverterFsResult | null> {
     try {
       const handle = await (
         window as unknown as { showDirectoryPicker: ShowDirectoryPicker }
-      ).showDirectoryPicker({ mode: "readwrite" });
+      ).showDirectoryPicker({ mode: "read" });
       return { fs: new FsaConverterFs(handle), kind: "fsa" };
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return null;
