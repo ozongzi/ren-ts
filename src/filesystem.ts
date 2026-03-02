@@ -399,7 +399,18 @@ export class ZipFS implements IFileSystem {
 
     // ── Step 3: Read and walk the Central Directory ───────────────────────────
     const cdSlice = this.file.slice(cdOffset, cdOffset + cdSize);
-    const cdBuf = new DataView(await cdSlice.arrayBuffer());
+    const cdAb = await cdSlice.arrayBuffer();
+    // Sanity-check: some older browsers silently return a truncated or empty
+    // buffer when Blob.slice() is called with a start offset above 4 GB.
+    if (cdAb.byteLength !== cdSize) {
+      throw new Error(
+        `[ZipFS] Central Directory read returned ${cdAb.byteLength} bytes ` +
+          `(expected ${cdSize}). The ZIP archive may exceed your browser's ` +
+          `file-size limit — try a more recent version of Chrome or Edge, ` +
+          `or use the desktop (Tauri) build.`,
+      );
+    }
+    const cdBuf = new DataView(cdAb);
     let pos = 0;
 
     while (pos + 46 <= cdBuf.byteLength) {

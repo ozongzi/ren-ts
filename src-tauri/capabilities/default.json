@@ -8,6 +8,7 @@
 
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-message",
 
     {
       "identifier": "fs:allow-read-text-file",
@@ -40,6 +41,10 @@
     {
       "identifier": "fs:allow-exists",
       "allow": [{ "path": "**" }]
-    }
+    },
+    "fs:allow-stat",
+    "fs:allow-open",
+    "fs:allow-seek",
+    "fs:allow-read"
   ]
 }

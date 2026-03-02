@@ -148,6 +148,20 @@ const FSA_KEY = "zip_handle";
 export const fsaSupported: boolean =
   !isTauri && typeof window !== "undefined" && "showOpenFilePicker" in window;
 
+/**
+ * True when the current platform supports the conversion tools (rpy → rrs).
+ *
+ * Requirements:
+ *  - Tauri desktop: full filesystem access via plugin-fs / plugin-dialog.
+ *  - Web (Chrome/Edge): File System Access API available — allows the user to
+ *    pick a game directory handle and read/write files through it.
+ *
+ * Returns false on Firefox, Safari, iOS, and any other environment that lacks
+ * the necessary filesystem APIs.  In those cases the Tools button should be
+ * hidden or show an "unsupported" notice instead of silently doing nothing.
+ */
+export const supportsConversionTools: boolean = isTauri || fsaSupported;
+
 function openFsaDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(FSA_DB_NAME, FSA_DB_VERSION);
@@ -581,6 +595,94 @@ export async function readDirectory(dirPath: string): Promise<DirEntry[]> {
     }));
   } catch {
     return [];
+  }
+}
+
+// ─── TauriFileShim ────────────────────────────────────────────────────────────
+//
+// A minimal File-API-compatible shim that reads byte ranges from a native
+// filesystem path via plugin-fs open/seek/read, without ever loading the
+// whole file into JS heap.
+//
+// ZipFS only uses three members of the File interface:
+//   file.size          — total byte length (number)
+//   file.name          — display name (string)
+//   file.slice(s, e)   — returns a Blob-like whose arrayBuffer() reads [s, e)
+//
+// This shim satisfies all three with lazy range-reads, making it safe to use
+// with ZIP archives that exceed 4 GB.
+
+class TauriSliceBlob {
+  constructor(
+    private readonly filePath: string,
+    private readonly start: number,
+    private readonly end: number,
+  ) {}
+
+  get size(): number {
+    return this.end - this.start;
+  }
+
+  async arrayBuffer(): Promise<ArrayBuffer> {
+    const len = this.end - this.start;
+    if (len <= 0) return new ArrayBuffer(0);
+    const { open, SeekMode } = await import("@tauri-apps/plugin-fs");
+    const fh = await open(this.filePath, { read: true });
+    try {
+      await fh.seek(this.start, SeekMode.Start);
+      const buf = new Uint8Array(len);
+      let bytesRead = 0;
+      while (bytesRead < len) {
+        const chunk = new Uint8Array(len - bytesRead);
+        const n = await fh.read(chunk);
+        if (n === null || n === 0) break;
+        buf.set(chunk.subarray(0, n), bytesRead);
+        bytesRead += n;
+      }
+      return buf.buffer as ArrayBuffer;
+    } finally {
+      await fh.close();
+    }
+  }
+
+  // Required by ZipFS to create Blob URLs for binary assets
+  async blob(): Promise<Blob> {
+    return new Blob([await this.arrayBuffer()]);
+  }
+}
+
+/**
+ * A File-API-compatible shim that reads a native file by byte ranges.
+ * Use this instead of readBinaryFileTauri when dealing with large files
+ * (e.g. assets.zip > 4 GB) to avoid loading them entirely into JS heap.
+ *
+ * Returns null if the file cannot be stat'd (not found / no permission).
+ */
+export async function openTauriFileShim(filePath: string): Promise<{
+  size: number;
+  name: string;
+  slice: (s: number, e?: number) => TauriSliceBlob;
+} | null> {
+  if (!isTauri) return null;
+  if (filePath.startsWith("file://")) {
+    filePath = decodeURIComponent(filePath.slice(7));
+  }
+  try {
+    const { stat } = await import("@tauri-apps/plugin-fs");
+    const info = await stat(filePath);
+    const size = info.size;
+    const name = filePath.split(/[/\\]/).pop() ?? "assets.zip";
+    const path = filePath; // capture for closure
+    return {
+      size,
+      name,
+      slice(start: number, end?: number) {
+        // Mirror Blob.slice() semantics: omitted end means "to end of file"
+        return new TauriSliceBlob(path, start, end ?? size);
+      },
+    };
+  } catch {
+    return null;
   }
 }
 

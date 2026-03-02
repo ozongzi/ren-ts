@@ -20,7 +20,7 @@ import { loadAll, getManifestGame, defaultGameData } from "../loader";
 import { mountFilesystem, unmountFilesystem, ZipFS } from "../filesystem";
 import {
   isTauri,
-  readBinaryFileTauri,
+  openTauriFileShim,
   getStoredZipPath,
   clearStoredZipPath,
   saveFsaHandle,
@@ -137,23 +137,23 @@ export const createAssetsSlice: StateCreator<
 
     if (isTauri) {
       // ── Tauri: try to reload from stored native path ──────────────────────
+      // openTauriFileShim returns a File-API-compatible object that satisfies
+      // ZipFS (size, name, slice) using plugin-fs seek+read under the hood.
+      // Unlike readBinaryFileTauri it never copies the whole file into JS heap,
+      // which is essential for ZIP archives that can exceed 4 GB.
       const storedPath = getStoredZipPath();
       if (storedPath) {
-        const bytes = await readBinaryFileTauri(storedPath);
-        if (bytes) {
-          const fileName = storedPath.split(/[/\\]/).pop() ?? "assets.zip";
-          const file = new File([bytes.buffer as ArrayBuffer], fileName, {
-            type: "application/zip",
-          });
-          const ok = await mountZipFile(file, set as SetFn);
+        const shim = await openTauriFileShim(storedPath);
+        if (shim) {
+          const ok = await mountZipFile(shim as unknown as File, set as SetFn);
           if (ok) {
             await runLoadAll(set as SetFn);
             return;
           }
-          // File was gone or corrupt — clear the stale path.
+          // File was corrupt — clear the stale path.
           clearStoredZipPath();
         } else {
-          // Path recorded but file no longer readable (moved/deleted).
+          // File was gone or unreadable — clear the stale path.
           clearStoredZipPath();
         }
       }

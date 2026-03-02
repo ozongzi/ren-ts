@@ -5,7 +5,7 @@ import {
   fsaSupported,
   pickZipFileTauri,
   pickZipFileWeb,
-  readBinaryFileTauri,
+  openTauriFileShim,
   persistZipPath,
   getStoredZipPath,
 } from "../tauri_bridge";
@@ -66,19 +66,18 @@ export const AssetsDirScreen: React.FC = () => {
     try {
       const path = await pickZipFileTauri();
       if (!path) return;
-      const bytes = await readBinaryFileTauri(path);
-      if (!bytes) {
+      // openTauriFileShim returns a File-API-compatible shim that reads byte
+      // ranges on demand via plugin-fs seek+read — the full file is never
+      // copied into JS heap, which is essential for archives > 4 GB.
+      const shim = await openTauriFileShim(path);
+      if (!shim) {
         alert("无法读取所选文件，请重试。");
         return;
       }
-      const fileName = path.split(/[/\\]/).pop() ?? "assets.zip";
-      const file = new File([bytes.buffer as ArrayBuffer], fileName, {
-        type: "application/zip",
-      });
       // Persist the path BEFORE mounting so init() can restore it next launch.
       persistZipPath(path);
       setRememberedPath(path);
-      await mountZip(file);
+      await mountZip(shim as unknown as File);
     } finally {
       setPicking(false);
     }
