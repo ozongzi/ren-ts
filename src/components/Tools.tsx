@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useGameStore } from "../store";
 import type { GalleryEntry } from "../types";
 import {
@@ -33,10 +33,70 @@ import {
   generateImageDefines,
   renderDefinesBlock,
 } from "../../rpy-rrs-bridge/scan-assets-core";
+import {
+  extractTexts,
+  translateAll,
+  applyTranslation,
+  type TranslationMap,
+  type LlmConfig,
+  DEFAULT_LLM_CONFIG,
+} from "../llmTranslate";
+import {
+  loadCache,
+  saveCache,
+  clearCache,
+  exportMapAsJson,
+  importMapFromJson,
+  exportUntranslated,
+} from "../translationCache";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type PathStatus = "ok" | "no" | "checking" | null;
+
+// ─── LLM config persistence (localStorage, API key excluded) ─────────────────
+
+const LLM_CONFIG_KEY = "rents_llm_config";
+
+function loadLlmConfigFromStorage(): Omit<LlmConfig, "apiKey"> {
+  try {
+    const raw = localStorage.getItem(LLM_CONFIG_KEY);
+    if (!raw) return { ...DEFAULT_LLM_CONFIG };
+    const parsed = JSON.parse(raw);
+    return {
+      endpoint:
+        typeof parsed.endpoint === "string"
+          ? parsed.endpoint
+          : DEFAULT_LLM_CONFIG.endpoint,
+      model:
+        typeof parsed.model === "string"
+          ? parsed.model
+          : DEFAULT_LLM_CONFIG.model,
+      batchSize:
+        typeof parsed.batchSize === "number"
+          ? parsed.batchSize
+          : DEFAULT_LLM_CONFIG.batchSize,
+      concurrency:
+        typeof parsed.concurrency === "number"
+          ? parsed.concurrency
+          : DEFAULT_LLM_CONFIG.concurrency,
+      targetLang:
+        typeof parsed.targetLang === "string"
+          ? parsed.targetLang
+          : DEFAULT_LLM_CONFIG.targetLang,
+    };
+  } catch {
+    return { ...DEFAULT_LLM_CONFIG };
+  }
+}
+
+function saveLlmConfigToStorage(cfg: Omit<LlmConfig, "apiKey">): void {
+  try {
+    localStorage.setItem(LLM_CONFIG_KEY, JSON.stringify(cfg));
+  } catch {
+    // localStorage might be unavailable (private browsing, storage full, etc.)
+  }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -193,6 +253,24 @@ export const Tools: React.FC = () => {
   const [translationDirStatus, setTranslationDirStatus] =
     useState<PathStatus>(null);
 
+  // ── LLM translation state ─────────────────────────────────────────────────
+  const [enableLlm, setEnableLlm] = useState(false);
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmConfig, setLlmConfig] = useState<Omit<LlmConfig, "apiKey">>(() =>
+    loadLlmConfigFromStorage(),
+  );
+  // In-memory translation map; loaded from OPFS when game dir is picked.
+  const llmMapRef = useRef<TranslationMap>(new Map());
+  const [llmCachedCount, setLlmCachedCount] = useState(0);
+  // Running totals shown during the translating phase.
+  const [llmTranslatedTotal, setLlmTranslatedTotal] = useState(0);
+  const [llmGrandTotal, setLlmGrandTotal] = useState(0);
+  const [llmFailedBatches, setLlmFailedBatches] = useState(0);
+  // All texts extracted across all files (for exportUntranslated).
+  const allExtractedTextsRef = useRef<string[]>([]);
+  // AbortController for the translating phase.
+  const llmAbortRef = useRef<AbortController | null>(null);
+
   const [enableGallery, setEnableGallery] = useState(false);
   const [galleryPath, setGalleryPath] = useState<string | null>(null);
   const [galleryPathStatus, setGalleryPathStatus] = useState<PathStatus>(null);
@@ -200,7 +278,7 @@ export const Tools: React.FC = () => {
   // ── Run state ─────────────────────────────────────────────────────────────
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState<
-    "idle" | "converting" | "packing" | "done"
+    "idle" | "converting" | "translating" | "packing" | "done"
   >("idle");
   const [totalFiles, setTotalFiles] = useState(0);
   const [processedFiles, setProcessedFiles] = useState(0);
@@ -258,6 +336,28 @@ export const Tools: React.FC = () => {
 
   const log = (s: string) => setLogs((l) => [...l, s]);
 
+  // ── LLM config field updater ──────────────────────────────────────────────
+  const updateLlmConfig = useCallback(
+    (patch: Partial<Omit<LlmConfig, "apiKey">>) => {
+      setLlmConfig((prev) => {
+        const next = { ...prev, ...patch };
+        saveLlmConfigToStorage(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  // ── LLM mutual exclusivity ────────────────────────────────────────────────
+  const handleEnableTranslation = (checked: boolean) => {
+    setEnableTranslation(checked);
+    if (checked) setEnableLlm(false);
+  };
+  const handleEnableLlm = (checked: boolean) => {
+    setEnableLlm(checked);
+    if (checked) setEnableTranslation(false);
+  };
+
   const handleBackdrop = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget && !running) closeTools();
   };
@@ -266,7 +366,7 @@ export const Tools: React.FC = () => {
   /**
    * Called after the user picks a directory (either via Tauri dialog or FSA
    * picker).  `label` is the display string; `fs` is the ready IConverterFs.
-   * Also pre-fills the optional sub-path fields.
+   * Also pre-fills the optional sub-path fields and loads the LLM cache.
    */
   function applyGameFs(label: string, fs: IConverterFs, kind: ConverterId) {
     setGameDir(label);
@@ -275,6 +375,12 @@ export const Tools: React.FC = () => {
     // Pre-fill optional paths only when they are still empty
     if (!translationDir) setTranslationDir("tl/chinese");
     if (!galleryPath) setGalleryPath("gallery_images.rpy");
+    // Load the LLM translation cache for this game directory.
+    const cacheKey = label;
+    loadCache(cacheKey).then((map) => {
+      llmMapRef.current = map;
+      setLlmCachedCount(map.size);
+    });
   }
 
   /**
@@ -407,7 +513,7 @@ export const Tools: React.FC = () => {
     log(`开始扫描：${fs.label}`);
 
     try {
-      // ── Translation ──────────────────────────────────────────────────────
+      // ── Translation (file-based) ─────────────────────────────────────────
       let translationMap: Map<string, string> | undefined;
       if (enableTranslation && translationDir) {
         log(`加载翻译目录：${translationDir}`);
@@ -594,6 +700,97 @@ export const Tools: React.FC = () => {
       setProcessedFiles((prev) => (totalFiles > prev ? totalFiles : prev));
       log("✓ 转换完成。");
 
+      // ── LLM translation phase ─────────────────────────────────────────────
+      if (enableLlm && llmApiKey.trim() !== "") {
+        setPhase("translating");
+        log("──────────────────────────");
+        log("开始 LLM 翻译…");
+
+        // Collect all texts from every generated .rrs entry.
+        const allTexts: string[] = [];
+        for (const entry of virtualEntries) {
+          if (
+            entry.zipPath.startsWith("data/") &&
+            entry.zipPath.endsWith(".rrs")
+          ) {
+            allTexts.push(...extractTexts(entry.content));
+          }
+        }
+        // Deduplicate for display, keep full list for export.
+        const uniqueTexts = [...new Set(allTexts)];
+        allExtractedTextsRef.current = uniqueTexts;
+
+        const map = llmMapRef.current;
+        const alreadyCached = uniqueTexts.filter((t) => map.has(t)).length;
+        const needTranslation = uniqueTexts.length - alreadyCached;
+
+        log(
+          `共提取 ${uniqueTexts.length} 条文本，已缓存 ${alreadyCached} 条，` +
+            `待翻译 ${needTranslation} 条`,
+        );
+
+        setLlmGrandTotal(needTranslation);
+        setLlmTranslatedTotal(0);
+        setLlmFailedBatches(0);
+
+        const abortCtrl = new AbortController();
+        llmAbortRef.current = abortCtrl;
+
+        const fullConfig: LlmConfig = {
+          ...llmConfig,
+          apiKey: llmApiKey.trim(),
+        };
+
+        const cacheKey = fs.label;
+
+        await translateAll(
+          uniqueTexts,
+          map,
+          fullConfig,
+          async (batchResult, doneTotal, grandTotal) => {
+            setLlmTranslatedTotal(doneTotal);
+            setLlmGrandTotal(grandTotal);
+            if (batchResult.failed.length > 0) {
+              setLlmFailedBatches((n) => n + 1);
+              log(
+                `  ⚠ 批次失败 ${batchResult.failed.length} 条（已跳过，不写入翻译）`,
+              );
+            }
+            // Persist after every batch so progress is not lost on abort.
+            await saveCache(cacheKey, map);
+            setLlmCachedCount(map.size);
+          },
+          abortCtrl.signal,
+        );
+
+        llmAbortRef.current = null;
+
+        if (abortCtrl.signal.aborted) {
+          log("⚠ 翻译已取消，使用已翻译的部分继续打包。");
+        } else {
+          log(`✓ 翻译完成，共 ${map.size} 条。`);
+        }
+
+        // Apply the translation map to all generated .rrs entries.
+        if (map.size > 0) {
+          for (let i = 0; i < virtualEntries.length; i++) {
+            const entry = virtualEntries[i];
+            if (
+              entry.zipPath.startsWith("data/") &&
+              entry.zipPath.endsWith(".rrs")
+            ) {
+              virtualEntries[i] = {
+                ...entry,
+                content: applyTranslation(entry.content, map),
+              };
+            }
+          }
+          log(
+            `已将翻译应用到 ${virtualEntries.filter((e) => e.zipPath.endsWith(".rrs")).length} 个脚本文件。`,
+          );
+        }
+      }
+
       // ── Pack ZIP ──────────────────────────────────────────────────────────
       log("──────────────────────────");
       log("正在收集文件列表…");
@@ -653,16 +850,20 @@ export const Tools: React.FC = () => {
   const statusLabel =
     phase === "converting"
       ? "转换中…"
-      : phase === "packing"
-        ? "打包中…"
-        : phase === "done"
-          ? "✓ 完成"
-          : "就绪";
+      : phase === "translating"
+        ? "翻译中…"
+        : phase === "packing"
+          ? "打包中…"
+          : phase === "done"
+            ? "✓ 完成"
+            : "就绪";
 
   const btnLabel = running
     ? phase === "packing"
       ? "◌  打包中…"
-      : "◌  转换中…"
+      : phase === "translating"
+        ? "◌  翻译中…"
+        : "◌  转换中…"
     : "▶  转换并打包";
 
   const canRun = !running && !!gameFsRef.current;
@@ -801,7 +1002,7 @@ export const Tools: React.FC = () => {
               type="checkbox"
               className="tools-optional-checkbox"
               checked={enableTranslation}
-              onChange={(e) => setEnableTranslation(e.target.checked)}
+              onChange={(e) => handleEnableTranslation(e.target.checked)}
               disabled={running}
             />
             <span className="settings-label" style={{ marginBottom: 0 }}>
@@ -834,6 +1035,219 @@ export const Tools: React.FC = () => {
               <code style={{ fontFamily: "var(--font-mono)" }}>tl/chinese</code>
               。
             </p>
+          )}
+
+          {/* ── 或：LLM 自动翻译 ── */}
+          <div className="tools-llm-or-divider">── 或 ──</div>
+
+          <label className="tools-optional-row" style={{ marginTop: "0.5rem" }}>
+            <input
+              type="checkbox"
+              className="tools-optional-checkbox"
+              checked={enableLlm}
+              onChange={(e) => handleEnableLlm(e.target.checked)}
+              disabled={running}
+            />
+            <span className="settings-label" style={{ marginBottom: 0 }}>
+              LLM 自动翻译
+            </span>
+            <span className="tools-optional-tag">可选</span>
+          </label>
+
+          {enableLlm && (
+            <div className="tools-llm-config">
+              {/* API 地址 */}
+              <div className="tools-llm-row">
+                <span className="tools-llm-label">API 地址</span>
+                <input
+                  className="tools-llm-input tools-llm-input--wide"
+                  type="text"
+                  value={llmConfig.endpoint}
+                  onChange={(e) =>
+                    updateLlmConfig({ endpoint: e.target.value })
+                  }
+                  disabled={running}
+                  placeholder="https://api.openai.com/v1"
+                />
+              </div>
+
+              {/* API Key */}
+              <div className="tools-llm-row">
+                <span className="tools-llm-label">API Key</span>
+                <input
+                  className="tools-llm-input tools-llm-input--wide"
+                  type="password"
+                  value={llmApiKey}
+                  onChange={(e) => setLlmApiKey(e.target.value)}
+                  disabled={running}
+                  placeholder="sk-..."
+                  autoComplete="off"
+                />
+              </div>
+
+              {/* 模型 + 目标语言 */}
+              <div className="tools-llm-row">
+                <span className="tools-llm-label">模型</span>
+                <input
+                  className="tools-llm-input"
+                  type="text"
+                  value={llmConfig.model}
+                  onChange={(e) => updateLlmConfig({ model: e.target.value })}
+                  disabled={running}
+                  placeholder="gpt-4o-mini"
+                />
+                <span
+                  className="tools-llm-label"
+                  style={{ marginLeft: "0.75rem" }}
+                >
+                  目标语言
+                </span>
+                <input
+                  className="tools-llm-input"
+                  type="text"
+                  value={llmConfig.targetLang}
+                  onChange={(e) =>
+                    updateLlmConfig({ targetLang: e.target.value })
+                  }
+                  disabled={running}
+                  placeholder="中文"
+                />
+              </div>
+
+              {/* 每批条数 + 并发数 */}
+              <div className="tools-llm-row">
+                <span className="tools-llm-label">每批条数</span>
+                <input
+                  className="tools-llm-input tools-llm-input--num"
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={llmConfig.batchSize}
+                  onChange={(e) =>
+                    updateLlmConfig({
+                      batchSize: Math.max(1, parseInt(e.target.value) || 1),
+                    })
+                  }
+                  disabled={running}
+                />
+                <span
+                  className="tools-llm-label"
+                  style={{ marginLeft: "0.75rem" }}
+                >
+                  并发数
+                </span>
+                <input
+                  className="tools-llm-input tools-llm-input--num"
+                  type="number"
+                  min={1}
+                  max={128}
+                  value={llmConfig.concurrency}
+                  onChange={(e) =>
+                    updateLlmConfig({
+                      concurrency: Math.max(1, parseInt(e.target.value) || 1),
+                    })
+                  }
+                  disabled={running}
+                />
+              </div>
+
+              {/* 缓存状态 + 操作按钮 */}
+              <div className="tools-llm-cache-row">
+                <span className="tools-llm-cache-count">
+                  已缓存 {llmCachedCount} 条
+                </span>
+                <button
+                  className="btn tools-llm-cache-btn"
+                  disabled={running || llmCachedCount === 0}
+                  onClick={() => {
+                    exportMapAsJson(llmMapRef.current, gameDir ?? "game");
+                  }}
+                  title="导出完整翻译 JSON"
+                >
+                  导出 JSON
+                </button>
+                <button
+                  className="btn tools-llm-cache-btn"
+                  disabled={running}
+                  onClick={async () => {
+                    try {
+                      const n = await importMapFromJson(llmMapRef.current);
+                      if (n === null) return;
+                      if (gameDir) await saveCache(gameDir, llmMapRef.current);
+                      setLlmCachedCount(llmMapRef.current.size);
+                      log(`已导入 ${n} 条翻译。`);
+                    } catch (err) {
+                      log(
+                        `导入失败：${err instanceof Error ? err.message : String(err)}`,
+                      );
+                    }
+                  }}
+                  title="从 JSON 文件导入并合并翻译"
+                >
+                  导入 JSON
+                </button>
+                <button
+                  className="btn tools-llm-cache-btn"
+                  disabled={
+                    running || allExtractedTextsRef.current.length === 0
+                  }
+                  onClick={() => {
+                    exportUntranslated(
+                      allExtractedTextsRef.current,
+                      llmMapRef.current,
+                      gameDir ?? "game",
+                    );
+                  }}
+                  title="导出尚未翻译的条目，供手动填写后导入"
+                >
+                  导出未翻译
+                </button>
+                <button
+                  className="btn danger tools-llm-cache-btn"
+                  disabled={running || llmCachedCount === 0}
+                  onClick={async () => {
+                    if (!gameDir) return;
+                    if (!window.confirm("确定清空翻译缓存？此操作不可撤销。"))
+                      return;
+                    await clearCache(gameDir);
+                    llmMapRef.current = new Map();
+                    allExtractedTextsRef.current = [];
+                    setLlmCachedCount(0);
+                    log("已清空翻译缓存。");
+                  }}
+                  title="清空 OPFS 中的翻译缓存"
+                >
+                  清空缓存
+                </button>
+              </div>
+
+              {/* 翻译中进度 */}
+              {phase === "translating" && (
+                <div className="tools-llm-progress">
+                  <span>
+                    已翻译 {llmTranslatedTotal} / {llmGrandTotal} 条
+                    {llmFailedBatches > 0 && (
+                      <span className="tools-llm-failed">
+                        ，{llmFailedBatches} 批失败
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    className="btn danger"
+                    style={{
+                      marginLeft: "0.75rem",
+                      padding: "0.25rem 0.7rem",
+                      fontSize: "0.8rem",
+                    }}
+                    onClick={() => {
+                      llmAbortRef.current?.abort();
+                    }}
+                  >
+                    取消翻译（直接打包）
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
@@ -991,6 +1405,9 @@ export const Tools: React.FC = () => {
               setProcessedFiles(0);
               setCurrentFile(null);
               setAssetScanCount(null);
+              setLlmTranslatedTotal(0);
+              setLlmGrandTotal(0);
+              setLlmFailedBatches(0);
             }}
             disabled={running}
           >

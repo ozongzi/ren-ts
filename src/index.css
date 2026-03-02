@@ -1070,6 +1070,110 @@ body {
     font-weight: 400;
 }
 
+/* ── LLM translation block ───────────────────────────────────────────────── */
+
+.tools-llm-or-divider {
+    text-align: center;
+    font-size: 0.72rem;
+    color: rgba(255, 255, 255, 0.2);
+    margin: 0.75rem 0 0.5rem;
+    letter-spacing: 0.06em;
+}
+
+.tools-llm-config {
+    margin-top: 0.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.tools-llm-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.tools-llm-label {
+    font-size: 0.78rem;
+    color: var(--color-text-dim);
+    white-space: nowrap;
+    min-width: 4.5rem;
+}
+
+.tools-llm-input {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 5px;
+    color: var(--color-white);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    padding: 0.3rem 0.5rem;
+    outline: none;
+    transition: border-color var(--transition-fast);
+    min-width: 0;
+}
+
+.tools-llm-input:focus {
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+.tools-llm-input:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.tools-llm-input--wide {
+    flex: 1;
+    min-width: 12rem;
+}
+
+.tools-llm-input--num {
+    width: 4.5rem;
+    text-align: right;
+}
+
+.tools-llm-cache-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-top: 0.25rem;
+    padding-top: 0.45rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tools-llm-cache-count {
+    font-size: 0.78rem;
+    color: #4ade80;
+    margin-right: 0.2rem;
+    font-weight: 600;
+    min-width: 6rem;
+}
+
+.tools-llm-cache-btn {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.6rem;
+}
+
+.tools-llm-progress {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    color: var(--color-text);
+    margin-top: 0.3rem;
+    padding: 0.4rem 0.6rem;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.tools-llm-failed {
+    color: #f87171;
+}
+
 .tools-progress-header {
     display: flex;
     justify-content: space-between;
