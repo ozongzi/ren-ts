@@ -1174,6 +1174,47 @@ body {
     color: #f87171;
 }
 
+.tools-llm-prompt-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding-top: 0.45rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tools-llm-prompt-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.tools-llm-prompt-textarea {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 5px;
+    color: var(--color-white);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.6;
+    padding: 0.5rem 0.6rem;
+    resize: vertical;
+    outline: none;
+    transition: border-color var(--transition-fast);
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 7rem;
+}
+
+.tools-llm-prompt-textarea:focus {
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+.tools-llm-prompt-textarea:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    resize: none;
+}
+
 .tools-progress-header {
     display: flex;
     justify-content: space-between;

@@ -40,6 +40,7 @@ import {
   type TranslationMap,
   type LlmConfig,
   DEFAULT_LLM_CONFIG,
+  DEFAULT_SYSTEM_PROMPT,
 } from "../llmTranslate";
 import {
   loadCache,
@@ -84,6 +85,11 @@ function loadLlmConfigFromStorage(): Omit<LlmConfig, "apiKey"> {
         typeof parsed.targetLang === "string"
           ? parsed.targetLang
           : DEFAULT_LLM_CONFIG.targetLang,
+      systemPrompt:
+        typeof parsed.systemPrompt === "string" &&
+        parsed.systemPrompt.trim() !== ""
+          ? parsed.systemPrompt
+          : DEFAULT_LLM_CONFIG.systemPrompt,
     };
   } catch {
     return { ...DEFAULT_LLM_CONFIG };
@@ -1149,6 +1155,46 @@ export const Tools: React.FC = () => {
                   }
                   disabled={running}
                 />
+              </div>
+
+              {/* 自定义提示词 */}
+              <div className="tools-llm-prompt-section">
+                <div className="tools-llm-prompt-header">
+                  <span className="tools-llm-label" style={{ minWidth: 0 }}>
+                    系统提示词
+                  </span>
+                  <button
+                    className="btn tools-llm-cache-btn"
+                    disabled={running}
+                    onClick={() =>
+                      updateLlmConfig({ systemPrompt: DEFAULT_SYSTEM_PROMPT })
+                    }
+                    title="恢复为内置默认提示词"
+                  >
+                    恢复默认
+                  </button>
+                </div>
+                <textarea
+                  className="tools-llm-prompt-textarea"
+                  value={llmConfig.systemPrompt}
+                  onChange={(e) =>
+                    updateLlmConfig({ systemPrompt: e.target.value })
+                  }
+                  disabled={running}
+                  rows={6}
+                  spellCheck={false}
+                />
+                <p className="tools-hint" style={{ marginTop: "0.3rem" }}>
+                  用{" "}
+                  <code style={{ fontFamily: "var(--font-mono)" }}>
+                    {"{targetLang}"}
+                  </code>{" "}
+                  作为目标语言占位符。 提示词必须要求模型返回格式为{" "}
+                  <code style={{ fontFamily: "var(--font-mono)" }}>
+                    {"{"}"1": "...", "2": "..."{"}"}
+                  </code>{" "}
+                  的 JSON 对象，否则解析会失败。
+                </p>
               </div>
 
               {/* 缓存状态 + 操作按钮 */}

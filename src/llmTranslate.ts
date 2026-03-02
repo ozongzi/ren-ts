@@ -40,7 +40,32 @@ export interface LlmConfig {
   concurrency: number;
   /** Natural-language name of the target language, e.g. "中文". */
   targetLang: string;
+  /**
+   * System prompt sent to the LLM.  Use {targetLang} as a placeholder for
+   * the target language name — it is substituted at request time.
+   *
+   * The prompt MUST instruct the model to return a JSON object whose keys
+   * are the same numeric strings as the input (e.g. {"1": "...", "2": "..."}).
+   * Changing this requirement will break response parsing.
+   */
+  systemPrompt: string;
 }
+
+/**
+ * The built-in system prompt.  Exported so the UI can display it as the
+ * "reset to default" target and so it can be tested independently.
+ *
+ * {targetLang} is replaced with config.targetLang at request time.
+ */
+export const DEFAULT_SYSTEM_PROMPT =
+  `You are a professional visual novel translator. ` +
+  `Translate the given JSON object values from English into {targetLang}. ` +
+  `Rules:\n` +
+  `1. Return ONLY a valid JSON object with the same numeric keys.\n` +
+  `2. Translate every value. Do NOT omit any key.\n` +
+  `3. Preserve all formatting tags like {i}, {/i}, {b}, {/b}, {color=...}, etc. verbatim.\n` +
+  `4. Preserve leading/trailing ellipses and punctuation style.\n` +
+  `5. Do NOT add explanations, markdown fences, or any text outside the JSON object.`;
 
 export const DEFAULT_LLM_CONFIG: Omit<LlmConfig, "apiKey"> = {
   endpoint: "https://api.openai.com/v1",
@@ -48,6 +73,7 @@ export const DEFAULT_LLM_CONFIG: Omit<LlmConfig, "apiKey"> = {
   batchSize: 30,
   concurrency: 32,
   targetLang: "中文",
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,
 };
 
 // ─── extractTexts ─────────────────────────────────────────────────────────────
@@ -145,7 +171,11 @@ export async function translateAll(
   texts: string[],
   map: TranslationMap,
   config: LlmConfig,
-  onBatchDone: (result: BatchResult, doneTotal: number, grandTotal: number) => void,
+  onBatchDone: (
+    result: BatchResult,
+    doneTotal: number,
+    grandTotal: number,
+  ) => void,
   signal: AbortSignal,
 ): Promise<void> {
   // Deduplicate and exclude already-cached strings.
@@ -254,9 +284,7 @@ function translateLine(raw: string, map: TranslationMap): string {
 
   // "Choice text" => {
   {
-    const m = line.match(
-      /^(")((?:[^"\\]|\\.)*)(")(\s*(?:\([^)]*\))?\s*=>.*)$/,
-    );
+    const m = line.match(/^(")((?:[^"\\]|\\.)*)(")(\s*(?:\([^)]*\))?\s*=>.*)$/);
     if (m) {
       const orig = unescapeRrs(m[2]);
       const translated = map.get(orig);
@@ -308,7 +336,7 @@ async function translateBatchWithRetry(
 
     if (attempt > 0) {
       // Exponential back-off: 1s, 2s
-      await sleep((2 ** (attempt - 1)) * 1000, signal);
+      await sleep(2 ** (attempt - 1) * 1000, signal);
       if (signal.aborted) break;
     }
 
@@ -320,7 +348,10 @@ async function translateBatchWithRetry(
       // Only retry on transient errors (network, 429, 5xx).
       // Don't retry on auth errors (401/403) or cancelled requests.
       if (signal.aborted) break;
-      if (err instanceof LlmApiError && (err.status === 401 || err.status === 403)) {
+      if (
+        err instanceof LlmApiError &&
+        (err.status === 401 || err.status === 403)
+      ) {
         break;
       }
       // Continue to next attempt.
@@ -348,15 +379,10 @@ async function translateBatchOnce(
     input[String(i + 1)] = batch[i];
   }
 
-  const systemPrompt =
-    `You are a professional visual novel translator. ` +
-    `Translate the given JSON object values from English into ${config.targetLang}. ` +
-    `Rules:\n` +
-    `1. Return ONLY a valid JSON object with the same numeric keys.\n` +
-    `2. Translate every value. Do NOT omit any key.\n` +
-    `3. Preserve all formatting tags like {i}, {/i}, {b}, {/b}, {color=...}, etc. verbatim.\n` +
-    `4. Preserve leading/trailing ellipses and punctuation style.\n` +
-    `5. Do NOT add explanations, markdown fences, or any text outside the JSON object.`;
+  const systemPrompt = config.systemPrompt.replace(
+    /\{targetLang\}/g,
+    config.targetLang,
+  );
 
   const userPrompt = JSON.stringify(input, null, 0);
 
@@ -383,7 +409,10 @@ async function translateBatchOnce(
     });
   } catch (err) {
     if (signal.aborted) throw err;
-    throw new LlmApiError(0, `Network error: ${err instanceof Error ? err.message : String(err)}`);
+    throw new LlmApiError(
+      0,
+      `Network error: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   if (!response.ok) {
@@ -403,7 +432,10 @@ async function translateBatchOnce(
   try {
     envelope = JSON.parse(rawBody);
   } catch {
-    throw new LlmApiError(0, `Response is not valid JSON: ${rawBody.slice(0, 200)}`);
+    throw new LlmApiError(
+      0,
+      `Response is not valid JSON: ${rawBody.slice(0, 200)}`,
+    );
   }
 
   const content: string =
@@ -418,11 +450,18 @@ async function translateBatchOnce(
   let translated: Record<string, unknown>;
   try {
     translated = JSON.parse(content);
-    if (typeof translated !== "object" || translated === null || Array.isArray(translated)) {
+    if (
+      typeof translated !== "object" ||
+      translated === null ||
+      Array.isArray(translated)
+    ) {
       throw new Error("Not an object");
     }
   } catch {
-    throw new LlmApiError(0, `LLM returned invalid JSON: ${content.slice(0, 300)}`);
+    throw new LlmApiError(
+      0,
+      `LLM returned invalid JSON: ${content.slice(0, 300)}`,
+    );
   }
 
   // Match translated values back to original strings by numeric key.
@@ -503,8 +542,18 @@ class LlmApiError extends Error {
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    if (signal.aborted) { resolve(); return; }
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
     const id = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => { clearTimeout(id); resolve(); }, { once: true });
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(id);
+        resolve();
+      },
+      { once: true },
+    );
   });
 }
