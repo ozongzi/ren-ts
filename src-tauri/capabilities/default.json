@@ -42,9 +42,21 @@
       "identifier": "fs:allow-exists",
       "allow": [{ "path": "**" }]
     },
-    "fs:allow-stat",
-    "fs:allow-open",
-    "fs:allow-seek",
-    "fs:allow-read"
+    {
+      "identifier": "fs:allow-stat",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-open",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-seek",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-read",
+      "allow": [{ "path": "**" }]
+    }
   ]
 }
