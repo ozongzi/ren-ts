@@ -219,7 +219,7 @@ jobs:
           echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}"     > keystore.properties
           echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}"  >> keystore.properties
           echo "storeFile=$RUNNER_TEMP/keystore.jks"           >> keystore.properties
-          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
+          echo "${{ secrets.ANDROID_KEY_BASE64 }}" | tr -d '[:space:]' | base64 -d > $RUNNER_TEMP/keystore.jks
 
       # Patch the generated build.gradle.kts to wire up release signing.
       # Key fix: tauri android init does NOT emit `import java.io.FileInputStream`,
