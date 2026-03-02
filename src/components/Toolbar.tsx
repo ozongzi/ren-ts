@@ -40,8 +40,8 @@ export const Toolbar: React.FC = () => {
           className="toolbar-btn"
           style={{
             cursor: "default",
-            color: "rgba(120,220,120,0.75)",
-            borderColor: "rgba(120,220,120,0.2)",
+            color: "rgba(22,163,74,0.85)",
+            borderColor: "rgba(22,163,74,0.25)",
             fontSize: "0.78rem",
             letterSpacing: "0.04em",
             pointerEvents: "none",

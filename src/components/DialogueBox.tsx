@@ -18,7 +18,7 @@ import type { DialogueState } from "../types";
 // Falls back to FALLBACK_BG for all unknown speakers.
 const CHARACTER_COLORS: Record<string, string> = {};
 
-const FALLBACK_BG = "rgba(10, 10, 30, 0.88)";
+const FALLBACK_BG = "rgba(255, 255, 255, 0.92)";
 
 /**
  * Given the `who` string (e.g. "Keitaro", "Keitaro & Hiro", "Keitaro and Hiro"),

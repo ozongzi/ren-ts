@@ -1492,7 +1492,7 @@ export const Tools: React.FC = () => {
             style={{
               marginTop: "0.5rem",
               fontSize: "0.72rem",
-              color: "rgba(255,255,255,0.2)",
+              color: "rgba(26,26,46,0.25)",
               textAlign: "right",
             }}
           >

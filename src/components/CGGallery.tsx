@@ -184,10 +184,10 @@ export const CGGallery: React.FC = () => {
                       borderRadius: "20px",
                       border: isActive
                         ? "1.5px solid var(--color-accent)"
-                        : "1.5px solid rgba(255,255,255,0.15)",
+                        : "1.5px solid rgba(0,0,0,0.13)",
                       background: isActive
-                        ? "rgba(var(--color-accent-rgb, 200,160,80), 0.18)"
-                        : "rgba(255,255,255,0.04)",
+                        ? "rgba(214,58,90,0.1)"
+                        : "rgba(0,0,0,0.04)",
                       color: isActive
                         ? "var(--color-accent)"
                         : "var(--color-text-dim)",
@@ -361,7 +361,7 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            background: "rgba(255,255,255,0.04)",
+            background: "rgba(0,0,0,0.04)",
             gap: "0.4rem",
           }}
         >
@@ -385,7 +385,7 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
             style={{
               width: 22,
               height: 22,
-              border: "2px solid rgba(255,255,255,0.1)",
+              border: "2px solid rgba(0,0,0,0.08)",
               borderTopColor: "var(--color-accent)",
               borderRadius: "50%",
               animation: "spin 0.8s linear infinite",
@@ -408,7 +408,7 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
         >
           <div
             style={{
-              background: "rgba(0,0,0,0.45)",
+              background: "rgba(0,0,0,0.35)",
               borderRadius: "50%",
               width: 28,
               height: 28,
@@ -416,7 +416,7 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
               alignItems: "center",
               justifyContent: "center",
               fontSize: "0.75rem",
-              color: "rgba(255,255,255,0.8)",
+              color: "rgba(255,255,255,0.9)",
             }}
           >
             ▶
@@ -431,11 +431,11 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
             position: "absolute",
             top: "0.3rem",
             right: "0.3rem",
-            background: "rgba(0,0,0,0.6)",
+            background: "rgba(0,0,0,0.5)",
             borderRadius: "4px",
             padding: "0.1rem 0.3rem",
             fontSize: "0.6rem",
-            color: "rgba(255,255,255,0.8)",
+            color: "rgba(255,255,255,0.9)",
             pointerEvents: "none",
           }}
         >
@@ -452,9 +452,9 @@ const GalleryItem: React.FC<GalleryItemProps> = ({ entry, onClick }) => {
             left: 0,
             right: 0,
             padding: "0.35rem 0.45rem",
-            background: "linear-gradient(transparent, rgba(0,0,0,0.82))",
+            background: "linear-gradient(transparent, rgba(0,0,0,0.72))",
             fontSize: "0.65rem",
-            color: "rgba(255,255,255,0.9)",
+            color: "rgba(255,255,255,0.95)",
             textAlign: "left",
             wordBreak: "break-word",
             borderRadius: "0 0 8px 8px",
@@ -555,12 +555,12 @@ const CGViewer: React.FC<CGViewerProps> = ({
             left: "1rem",
             top: "50%",
             transform: "translateY(-50%)",
-            background: "rgba(0,0,0,0.55)",
+            background: "rgba(0,0,0,0.45)",
             border: "none",
             borderRadius: "50%",
             width: 44,
             height: 44,
-            color: "white",
+            color: "#ffffff",
             fontSize: "1.3rem",
             cursor: "pointer",
             display: "flex",
@@ -570,11 +570,11 @@ const CGViewer: React.FC<CGViewerProps> = ({
           }}
           onMouseEnter={(e) =>
             ((e.currentTarget as HTMLButtonElement).style.background =
-              "rgba(0,0,0,0.85)")
+              "rgba(0,0,0,0.72)")
           }
           onMouseLeave={(e) =>
             ((e.currentTarget as HTMLButtonElement).style.background =
-              "rgba(0,0,0,0.55)")
+              "rgba(0,0,0,0.45)")
           }
         >
           ‹
@@ -594,12 +594,12 @@ const CGViewer: React.FC<CGViewerProps> = ({
             right: "1rem",
             top: "50%",
             transform: "translateY(-50%)",
-            background: "rgba(0,0,0,0.55)",
+            background: "rgba(255,255,255,0.88)",
             border: "none",
             borderRadius: "50%",
             width: 44,
             height: 44,
-            color: "white",
+            color: "#1a1a2e",
             fontSize: "1.3rem",
             cursor: "pointer",
             display: "flex",
@@ -609,11 +609,11 @@ const CGViewer: React.FC<CGViewerProps> = ({
           }}
           onMouseEnter={(e) =>
             ((e.currentTarget as HTMLButtonElement).style.background =
-              "rgba(0,0,0,0.85)")
+              "rgba(0,0,0,0.72)")
           }
           onMouseLeave={(e) =>
             ((e.currentTarget as HTMLButtonElement).style.background =
-              "rgba(0,0,0,0.55)")
+              "rgba(0,0,0,0.45)")
           }
         >
           ›
@@ -640,7 +640,7 @@ const CGViewer: React.FC<CGViewerProps> = ({
             borderRadius: "6px",
             padding: "0.3rem 0.85rem",
             fontSize: "0.82rem",
-            color: "rgba(255,255,255,0.9)",
+            color: "rgba(26,26,46,0.75)",
             whiteSpace: "nowrap",
           }}
         >
@@ -649,11 +649,11 @@ const CGViewer: React.FC<CGViewerProps> = ({
         {totalFrames > 1 && (
           <div
             style={{
-              background: "rgba(0,0,0,0.55)",
+              background: "rgba(255,255,255,0.88)",
               borderRadius: "12px",
               padding: "0.2rem 0.7rem",
               fontSize: "0.75rem",
-              color: "rgba(255,255,255,0.7)",
+              color: "rgba(26,26,46,0.75)",
               whiteSpace: "nowrap",
             }}
           >
@@ -680,11 +680,11 @@ const CGViewer: React.FC<CGViewerProps> = ({
             top: "1rem",
             left: "50%",
             transform: "translateX(-50%)",
-            background: "rgba(0,0,0,0.45)",
+            background: "rgba(255,255,255,0.88)",
             borderRadius: "6px",
             padding: "0.2rem 0.65rem",
             fontSize: "0.7rem",
-            color: "rgba(255,255,255,0.5)",
+            color: "rgba(26,26,46,0.65)",
             pointerEvents: "none",
             whiteSpace: "nowrap",
           }}

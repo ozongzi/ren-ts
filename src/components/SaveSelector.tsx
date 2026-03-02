@@ -169,8 +169,8 @@ export const SaveSelector: React.FC = () => {
                       alignItems: "flex-start",
                       gap: "0.2rem",
                       padding: "0.7rem 0.9rem",
-                      background: "rgba(255,255,255,0.04)",
-                      border: "1px solid rgba(255,255,255,0.09)",
+                      background: "rgba(0,0,0,0.03)",
+                      border: "1px solid rgba(0,0,0,0.09)",
                       borderRadius: 8,
                       cursor: "pointer",
                       textAlign: "left",
@@ -178,15 +178,15 @@ export const SaveSelector: React.FC = () => {
                     }}
                     onMouseEnter={(e) => {
                       (e.currentTarget as HTMLButtonElement).style.background =
-                        "rgba(255,255,255,0.09)";
+                        "rgba(0,0,0,0.07)";
                       (e.currentTarget as HTMLButtonElement).style.borderColor =
-                        "rgba(255,255,255,0.18)";
+                        "rgba(0,0,0,0.18)";
                     }}
                     onMouseLeave={(e) => {
                       (e.currentTarget as HTMLButtonElement).style.background =
-                        "rgba(255,255,255,0.04)";
+                        "rgba(0,0,0,0.03)";
                       (e.currentTarget as HTMLButtonElement).style.borderColor =
-                        "rgba(255,255,255,0.09)";
+                        "rgba(0,0,0,0.09)";
                     }}
                   >
                     {/* Row 1: index + location */}
@@ -203,7 +203,7 @@ export const SaveSelector: React.FC = () => {
                           fontSize: "0.68rem",
                           fontWeight: 700,
                           color: "var(--color-text-dim)",
-                          background: "rgba(255,255,255,0.07)",
+                          background: "rgba(0,0,0,0.06)",
                           borderRadius: 4,
                           padding: "0.1rem 0.4rem",
                           flexShrink: 0,
@@ -246,7 +246,7 @@ export const SaveSelector: React.FC = () => {
                       flexShrink: 0,
                       padding: "0.45rem 0.6rem",
                       background: "transparent",
-                      border: "1px solid rgba(255,255,255,0.08)",
+                      border: "1px solid rgba(0,0,0,0.09)",
                       borderRadius: 7,
                       color: "var(--color-text-dim)",
                       cursor: deletingId === entry.id ? "default" : "pointer",
@@ -257,11 +257,11 @@ export const SaveSelector: React.FC = () => {
                     onMouseEnter={(e) => {
                       if (deletingId === entry.id) return;
                       (e.currentTarget as HTMLButtonElement).style.background =
-                        "rgba(220,60,60,0.15)";
+                        "rgba(180,30,30,0.1)";
                       (e.currentTarget as HTMLButtonElement).style.color =
-                        "rgba(255,120,120,0.9)";
+                        "rgba(176,48,48,0.9)";
                       (e.currentTarget as HTMLButtonElement).style.borderColor =
-                        "rgba(220,60,60,0.35)";
+                        "rgba(180,30,30,0.3)";
                     }}
                     onMouseLeave={(e) => {
                       (e.currentTarget as HTMLButtonElement).style.background =
@@ -269,7 +269,7 @@ export const SaveSelector: React.FC = () => {
                       (e.currentTarget as HTMLButtonElement).style.color =
                         "var(--color-text-dim)";
                       (e.currentTarget as HTMLButtonElement).style.borderColor =
-                        "rgba(255,255,255,0.08)";
+                        "rgba(0,0,0,0.09)";
                     }}
                   >
                     {deletingId === entry.id ? "…" : "✕"}

@@ -47,8 +47,8 @@ export const SaveLoadedScreen: React.FC = () => {
           inset: 0,
           zIndex: 0,
           background:
-            "radial-gradient(ellipse at 20% 80%, rgba(15,52,96,0.15) 0%, transparent 60%)," +
-            "radial-gradient(ellipse at 80% 20%, rgba(233,69,96,0.08) 0%, transparent 60%)",
+            "radial-gradient(ellipse at 20% 80%, rgba(37,99,235,0.08) 0%, transparent 60%)," +
+            "radial-gradient(ellipse at 80% 20%, rgba(214,58,90,0.07) 0%, transparent 60%)",
           pointerEvents: "none",
         }}
       />
@@ -61,8 +61,8 @@ export const SaveLoadedScreen: React.FC = () => {
         {/* ── Save info badge ── */}
         <div
           style={{
-            background: "rgba(255,255,255,0.06)",
-            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(255,255,255,0.82)",
+            border: "1px solid rgba(0,0,0,0.1)",
             borderRadius: "8px",
             padding: "0.5rem 1.2rem",
             textAlign: "center",
@@ -76,7 +76,7 @@ export const SaveLoadedScreen: React.FC = () => {
           <p
             style={{
               fontSize: "0.78rem",
-              color: "rgba(255,255,255,0.45)",
+              color: "rgba(26,26,46,0.45)",
               letterSpacing: "0.08em",
               textTransform: "uppercase",
               marginBottom: "0.25rem",
@@ -90,7 +90,7 @@ export const SaveLoadedScreen: React.FC = () => {
             <p
               style={{
                 fontSize: "0.75rem",
-                color: "rgba(120,220,120,0.85)",
+                color: "rgba(22,163,74,0.9)",
                 marginBottom: "0.4rem",
               }}
             >
@@ -100,7 +100,7 @@ export const SaveLoadedScreen: React.FC = () => {
             <p
               style={{
                 fontSize: "0.75rem",
-                color: "rgba(255,200,80,0.7)",
+                color: "rgba(180,100,0,0.75)",
                 marginBottom: "0.4rem",
               }}
             >
@@ -111,7 +111,7 @@ export const SaveLoadedScreen: React.FC = () => {
           <p
             style={{
               fontSize: "0.95rem",
-              color: "rgba(255,230,128,0.9)",
+              color: "#b03060",
               fontWeight: 600,
               marginBottom: snippetText ? "0.3rem" : 0,
             }}
@@ -122,7 +122,7 @@ export const SaveLoadedScreen: React.FC = () => {
             <p
               style={{
                 fontSize: "0.78rem",
-                color: "rgba(255,255,255,0.4)",
+                color: "rgba(26,26,46,0.45)",
                 fontStyle: "italic",
                 lineHeight: 1.4,
               }}
@@ -143,8 +143,8 @@ export const SaveLoadedScreen: React.FC = () => {
             className="title-btn"
             onClick={enterGame}
             style={{
-              borderColor: "rgba(233,69,96,0.5)",
-              background: "rgba(233,69,96,0.15)",
+              borderColor: "rgba(214,58,90,0.45)",
+              background: "rgba(214,58,90,0.1)",
               fontSize: "1.1rem",
               fontWeight: 700,
               letterSpacing: "0.1em",
@@ -173,7 +173,7 @@ export const SaveLoadedScreen: React.FC = () => {
           {/* Divider */}
           <div
             style={{
-              borderTop: "1px solid rgba(255,255,255,0.08)",
+              borderTop: "1px solid rgba(0,0,0,0.08)",
               margin: "0.2rem 0",
             }}
           />
@@ -183,8 +183,8 @@ export const SaveLoadedScreen: React.FC = () => {
             onClick={goToTitle}
             style={{
               fontSize: "0.9rem",
-              color: "rgba(255,255,255,0.55)",
-              borderColor: "rgba(255,255,255,0.1)",
+              color: "rgba(26,26,46,0.5)",
+              borderColor: "rgba(0,0,0,0.1)",
             }}
             aria-label="重新选择存档，返回标题界面"
           >
@@ -195,7 +195,7 @@ export const SaveLoadedScreen: React.FC = () => {
         <p
           style={{
             fontSize: "0.72rem",
-            color: "rgba(255,255,255,0.15)",
+            color: "rgba(26,26,46,0.25)",
             letterSpacing: "0.05em",
           }}
         >

@@ -123,8 +123,8 @@ export const Settings: React.FC = () => {
               <React.Fragment key={key}>
                 <kbd
                   style={{
-                    background: "rgba(255,255,255,0.08)",
-                    border: "1px solid rgba(255,255,255,0.15)",
+                    background: "rgba(0,0,0,0.06)",
+                    border: "1px solid rgba(0,0,0,0.12)",
                     borderRadius: "4px",
                     padding: "0.15rem 0.5rem",
                     fontFamily: "monospace",
@@ -238,8 +238,8 @@ const ZipRow: React.FC = () => {
           fontSize: "0.78rem",
           color: "var(--color-text-dim)",
           fontFamily: "monospace",
-          background: "rgba(255,255,255,0.04)",
-          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(0,0,0,0.04)",
+          border: "1px solid rgba(0,0,0,0.08)",
           borderRadius: "5px",
           padding: "0.45rem 0.75rem",
           wordBreak: "break-all",
@@ -264,11 +264,9 @@ const ZipRow: React.FC = () => {
             padding: "0.4rem 1rem",
             fontSize: "0.85rem",
             fontWeight: 600,
-            background: loading
-              ? "rgba(255,255,255,0.05)"
-              : "rgba(255,255,255,0.08)",
-            color: loading ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.8)",
-            border: "1px solid rgba(255,255,255,0.14)",
+            background: loading ? "rgba(0,0,0,0.04)" : "rgba(0,0,0,0.06)",
+            color: loading ? "rgba(26,26,46,0.35)" : "rgba(26,26,46,0.75)",
+            border: "1px solid rgba(0,0,0,0.12)",
             borderRadius: "6px",
             cursor: loading ? "default" : "pointer",
             transition: "background 0.15s",
@@ -285,9 +283,9 @@ const ZipRow: React.FC = () => {
               padding: "0.4rem 1rem",
               fontSize: "0.85rem",
               fontWeight: 600,
-              background: "rgba(200,40,40,0.12)",
-              color: "rgba(255,140,130,0.85)",
-              border: "1px solid rgba(255,80,80,0.2)",
+              background: "rgba(180,30,30,0.08)",
+              color: "rgba(176,48,48,0.9)",
+              border: "1px solid rgba(180,30,30,0.22)",
               borderRadius: "6px",
               cursor: loading ? "default" : "pointer",
               transition: "background 0.15s",
@@ -302,7 +300,7 @@ const ZipRow: React.FC = () => {
       <p
         style={{
           fontSize: "0.72rem",
-          color: "rgba(255,255,255,0.2)",
+          color: "rgba(26,26,46,0.3)",
           marginTop: "0.4rem",
           lineHeight: 1.5,
         }}
@@ -316,7 +314,7 @@ const ZipRow: React.FC = () => {
           style={{
             marginTop: "0.4rem",
             fontSize: "0.8rem",
-            color: "rgba(255,120,120,0.9)",
+            color: "rgba(176,48,48,0.9)",
           }}
         >
           ⚠️ {error}

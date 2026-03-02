@@ -83,8 +83,8 @@ export const TitleScreen: React.FC = () => {
           inset: 0,
           zIndex: 0,
           background:
-            "radial-gradient(ellipse at 20% 80%, rgba(233,69,96,0.08) 0%, transparent 60%)," +
-            "radial-gradient(ellipse at 80% 20%, rgba(15,52,96,0.15) 0%, transparent 60%)",
+            "radial-gradient(ellipse at 20% 80%, rgba(214,58,90,0.07) 0%, transparent 60%)," +
+            "radial-gradient(ellipse at 80% 20%, rgba(37,99,235,0.08) 0%, transparent 60%)",
           pointerEvents: "none",
         }}
       />
@@ -110,7 +110,7 @@ export const TitleScreen: React.FC = () => {
             onClick={handleContinue}
             disabled={!manifestLoaded || newGamePending}
             aria-label="继续游戏"
-            style={{ borderColor: "rgba(255,230,128,0.4)", color: "#ffe680" }}
+            style={{ borderColor: "rgba(37,99,235,0.35)", color: "#2563eb" }}
           >
             📂 继续游戏
           </button>
@@ -120,7 +120,7 @@ export const TitleScreen: React.FC = () => {
         <p
           style={{
             fontSize: "0.72rem",
-            color: "rgba(255,255,255,0.25)",
+            color: "rgba(26,26,46,0.35)",
             letterSpacing: "0.04em",
             marginTop: "-1rem",
             textAlign: "center",
@@ -135,7 +135,7 @@ export const TitleScreen: React.FC = () => {
           <p
             style={{
               fontSize: "0.72rem",
-              color: "rgba(255,255,255,0.2)",
+              color: "rgba(26,26,46,0.3)",
               letterSpacing: "0.05em",
               marginTop: "0.5rem",
             }}

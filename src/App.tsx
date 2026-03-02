@@ -54,7 +54,7 @@ export const App: React.FC = () => {
         width: "100%",
         height: "100%",
         overflow: "hidden",
-        background: "#000",
+        background: "var(--color-bg)",
       }}
     >
       {/* Block all game UI until a zip is mounted and scripts are loaded. */}

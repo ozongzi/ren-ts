@@ -207,8 +207,8 @@ export const AssetsDirScreen: React.FC = () => {
         <div
           role="alert"
           style={{
-            background: "rgba(180,30,30,0.15)",
-            border: "1px solid rgba(220,60,60,0.35)",
+            background: "rgba(180,30,30,0.08)",
+            border: "1px solid rgba(180,30,30,0.22)",
             borderRadius: 10,
             padding: "0.9rem 1.2rem",
             maxWidth: 480,
@@ -218,7 +218,7 @@ export const AssetsDirScreen: React.FC = () => {
           <p
             style={{
               fontWeight: 700,
-              color: "rgba(255,140,120,0.95)",
+              color: "rgba(176,48,48,0.95)",
               marginBottom: "0.35rem",
               fontSize: "0.9rem",
             }}
@@ -228,7 +228,7 @@ export const AssetsDirScreen: React.FC = () => {
           <p
             style={{
               fontSize: "0.82rem",
-              color: "rgba(255,160,140,0.8)",
+              color: "rgba(176,48,48,0.8)",
               lineHeight: 1.6,
               wordBreak: "break-word",
             }}
@@ -274,11 +274,9 @@ export const AssetsDirScreen: React.FC = () => {
           width: "100%",
           border: dragOver
             ? "2px dashed var(--color-accent)"
-            : "2px dashed rgba(255,255,255,0.15)",
+            : "2px dashed rgba(0,0,0,0.15)",
           borderRadius: 12,
-          background: dragOver
-            ? "rgba(233,69,96,0.07)"
-            : "rgba(255,255,255,0.03)",
+          background: dragOver ? "rgba(214,58,90,0.07)" : "rgba(0,0,0,0.03)",
           padding: "2rem 1.5rem",
           textAlign: "center",
           cursor: isLoading ? "default" : "pointer",
@@ -353,7 +351,7 @@ export const AssetsDirScreen: React.FC = () => {
           <p
             style={{
               fontSize: "0.72rem",
-              color: "rgba(255,255,255,0.25)",
+              color: "rgba(26,26,46,0.35)",
               fontFamily: "var(--font-mono)",
               wordBreak: "break-all",
               textAlign: "center",
@@ -387,7 +385,7 @@ export const AssetsDirScreen: React.FC = () => {
           <p
             style={{
               fontSize: "0.72rem",
-              color: "rgba(255,255,255,0.25)",
+              color: "rgba(26,26,46,0.35)",
               fontFamily: "var(--font-mono)",
               wordBreak: "break-all",
               textAlign: "center",
@@ -402,8 +400,8 @@ export const AssetsDirScreen: React.FC = () => {
       {!isLoading && (
         <div
           style={{
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid rgba(255,255,255,0.07)",
+            background: "rgba(0,0,0,0.03)",
+            border: "1px solid rgba(0,0,0,0.07)",
             borderRadius: 10,
             padding: "0.9rem 1.2rem",
             maxWidth: 460,
@@ -432,10 +430,10 @@ export const AssetsDirScreen: React.FC = () => {
                 <code
                   style={{
                     fontFamily: "var(--font-mono)",
-                    background: "rgba(255,255,255,0.07)",
+                    background: "rgba(0,0,0,0.06)",
                     borderRadius: 3,
                     padding: "0 4px",
-                    color: "rgba(180,220,255,0.75)",
+                    color: "rgba(37,99,235,0.8)",
                     marginRight: "0.45em",
                   }}
                 >
@@ -453,7 +451,7 @@ export const AssetsDirScreen: React.FC = () => {
         <p
           style={{
             fontSize: "0.68rem",
-            color: "rgba(255,255,255,0.15)",
+            color: "rgba(26,26,46,0.25)",
             textAlign: "center",
             maxWidth: 360,
             lineHeight: 1.6,
