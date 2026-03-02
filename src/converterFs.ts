@@ -450,8 +450,13 @@ const ZIP_LOCAL_HEADER_SIG = 0x04034b50;
 const ZIP_DATA_DESCRIPTOR_SIG = 0x08074b50;
 const ZIP_CENTRAL_DIR_SIG = 0x02014b50;
 const ZIP_EOCD_SIG = 0x06054b50;
+const ZIP64_EOCD_SIG = 0x06064b50;
+const ZIP64_EOCD_LOCATOR_SIG = 0x07064b50;
+const ZIP64_EXTRA_ID = 0x0001;
+const ZIP32_MAX = 0xffffffff; // sentinel / max for 32-bit fields
 const ZIP_VERSION_NEEDED_DEFLATE = 20; // 2.0
 const ZIP_VERSION_NEEDED_STORE = 10; // 1.0
+const ZIP_VERSION_NEEDED_ZIP64 = 45; // 4.5 — required when ZIP64 fields present
 const ZIP_VERSION_MADE_BY = 0x031e; // UNIX, spec version 3.0
 const ZIP_FLAG_DATA_DESCRIPTOR = 1 << 3;
 const ZIP_METHOD_STORE = 0;
@@ -605,17 +610,40 @@ function buildDataDescriptor(
 /**
  * Build a Central Directory File Header (46 + name bytes).
  */
+/**
+ * Write a 64-bit unsigned integer (little-endian) into a DataView.
+ * JS numbers are safe up to 2^53; ZIP64 fields can theoretically reach 2^64
+ * but in practice we only write archive offsets/sizes which stay well below
+ * Number.MAX_SAFE_INTEGER for any realistic game asset bundle.
+ */
+function writeU64(dv: DataView, offset: number, value: number): void {
+  // Low 32 bits
+  dv.setUint32(offset, value >>> 0, true);
+  // High 32 bits — for values < 2^53 the upper word is simply Math.floor(value / 2^32)
+  dv.setUint32(offset + 4, Math.floor(value / 0x100000000) >>> 0, true);
+}
+
 function buildCentralDirEntry(e: CentralDirEntry): Uint8Array {
-  const buf = new ArrayBuffer(46 + e.nameBytes.length);
+  // Determine whether we need a ZIP64 extra field for this entry.
+  // We only need it when localHeaderOffset >= 4 GiB (the sizes in the data
+  // descriptor are already stored as 32-bit values in our implementation and
+  // individual files are always < 4 GiB).
+  const needsZip64Offset = e.localHeaderOffset > ZIP32_MAX;
+  // ZIP64 extra field: 2-byte header id + 2-byte size + 8-byte offset = 12 bytes
+  const zip64ExtraLen = needsZip64Offset ? 12 : 0;
+
+  const buf = new ArrayBuffer(46 + e.nameBytes.length + zip64ExtraLen);
   const dv = new DataView(buf);
   writeU32(dv, 0, ZIP_CENTRAL_DIR_SIG);
   writeU16(dv, 4, ZIP_VERSION_MADE_BY);
   writeU16(
     dv,
     6,
-    e.method === ZIP_METHOD_DEFLATE
-      ? ZIP_VERSION_NEEDED_DEFLATE
-      : ZIP_VERSION_NEEDED_STORE,
+    needsZip64Offset
+      ? ZIP_VERSION_NEEDED_ZIP64
+      : e.method === ZIP_METHOD_DEFLATE
+        ? ZIP_VERSION_NEEDED_DEFLATE
+        : ZIP_VERSION_NEEDED_STORE,
   );
   writeU16(dv, 8, ZIP_FLAG_DATA_DESCRIPTOR);
   writeU16(dv, 10, e.method);
@@ -625,18 +653,66 @@ function buildCentralDirEntry(e: CentralDirEntry): Uint8Array {
   writeU32(dv, 20, e.compressedSize);
   writeU32(dv, 24, e.uncompressedSize);
   writeU16(dv, 28, e.nameBytes.length);
-  writeU16(dv, 30, 0); // extra field length
+  writeU16(dv, 30, zip64ExtraLen); // extra field length
   writeU16(dv, 32, 0); // file comment length
   writeU16(dv, 34, 0); // disk number start
   writeU16(dv, 36, 0); // internal attributes
   writeU32(dv, 38, 0); // external attributes
-  writeU32(dv, 42, e.localHeaderOffset);
+  // Local header offset: sentinel when >= 4 GiB (real value in ZIP64 extra)
+  writeU32(dv, 42, needsZip64Offset ? ZIP32_MAX : e.localHeaderOffset);
   new Uint8Array(buf, 46).set(e.nameBytes);
+
+  if (needsZip64Offset) {
+    const xBase = 46 + e.nameBytes.length;
+    writeU16(dv, xBase, ZIP64_EXTRA_ID); // header id
+    writeU16(dv, xBase + 2, 8); // data size (one 8-byte field)
+    writeU64(dv, xBase + 4, e.localHeaderOffset);
+  }
+
+  return new Uint8Array(buf);
+}
+
+/**
+ * Build a ZIP64 End of Central Directory record (56 bytes).
+ */
+function buildZip64Eocd(
+  entryCount: number,
+  centralDirSize: number,
+  centralDirOffset: number,
+): Uint8Array {
+  const buf = new ArrayBuffer(56);
+  const dv = new DataView(buf);
+  writeU32(dv, 0, ZIP64_EOCD_SIG);
+  writeU64(dv, 4, 44); // size of remaining record (56 - 12)
+  writeU16(dv, 12, ZIP_VERSION_MADE_BY);
+  writeU16(dv, 14, ZIP_VERSION_NEEDED_ZIP64);
+  writeU32(dv, 16, 0); // number of this disk
+  writeU32(dv, 20, 0); // disk where CD starts
+  writeU64(dv, 24, entryCount); // entries on this disk
+  writeU64(dv, 32, entryCount); // total entries
+  writeU64(dv, 40, centralDirSize);
+  writeU64(dv, 48, centralDirOffset);
+  return new Uint8Array(buf);
+}
+
+/**
+ * Build a ZIP64 End of Central Directory Locator (20 bytes).
+ * Must be written immediately before the EOCD32 record.
+ */
+function buildZip64EocdLocator(zip64EocdOffset: number): Uint8Array {
+  const buf = new ArrayBuffer(20);
+  const dv = new DataView(buf);
+  writeU32(dv, 0, ZIP64_EOCD_LOCATOR_SIG);
+  writeU32(dv, 4, 0); // disk with ZIP64 EOCD
+  writeU64(dv, 8, zip64EocdOffset); // absolute offset of ZIP64 EOCD
+  writeU32(dv, 16, 1); // total disks
   return new Uint8Array(buf);
 }
 
 /**
  * Build the End of Central Directory record (22 bytes).
+ * When the archive exceeds ZIP32 limits, fields that don't fit are set to
+ * the sentinel value 0xFFFFFFFF — the real values live in the ZIP64 EOCD.
  */
 function buildEocd(
   entryCount: number,
@@ -645,13 +721,15 @@ function buildEocd(
 ): Uint8Array {
   const buf = new ArrayBuffer(22);
   const dv = new DataView(buf);
+  const clamp = (v: number) => (v > ZIP32_MAX ? ZIP32_MAX : v);
+  const clampCount = (v: number) => (v > 0xffff ? 0xffff : v);
   writeU32(dv, 0, ZIP_EOCD_SIG);
   writeU16(dv, 4, 0); // disk number
   writeU16(dv, 6, 0); // disk with central dir
-  writeU16(dv, 8, entryCount);
-  writeU16(dv, 10, entryCount);
-  writeU32(dv, 12, centralDirSize);
-  writeU32(dv, 16, centralDirOffset);
+  writeU16(dv, 8, clampCount(entryCount));
+  writeU16(dv, 10, clampCount(entryCount));
+  writeU32(dv, 12, clamp(centralDirSize));
+  writeU32(dv, 16, clamp(centralDirOffset));
   writeU16(dv, 20, 0); // comment length
   return new Uint8Array(buf);
 }
@@ -1032,6 +1110,30 @@ class FsaConverterFs implements IConverterFs {
         await writable.write(u8(cdEntry));
         archiveOffset += cdEntry.length;
         centralDirSize += cdEntry.length;
+      }
+
+      // ── Write ZIP64 EOCD + Locator (when archive exceeds ZIP32 limits) ────
+      // Needed when: centralDirOffset >= 4 GiB, centralDirSize >= 4 GiB,
+      // or entry count > 65535.  We always write them when the offset alone
+      // exceeds 4 GiB, which is the common case for large game asset bundles.
+      const needsZip64 =
+        centralDirOffset > ZIP32_MAX ||
+        centralDirSize > ZIP32_MAX ||
+        centralDir.length > 0xffff;
+
+      if (needsZip64) {
+        const zip64EocdOffset = archiveOffset;
+        const zip64Eocd = buildZip64Eocd(
+          centralDir.length,
+          centralDirSize,
+          centralDirOffset,
+        );
+        await writable.write(u8(zip64Eocd));
+        archiveOffset += zip64Eocd.length;
+
+        const zip64Locator = buildZip64EocdLocator(zip64EocdOffset);
+        await writable.write(u8(zip64Locator));
+        archiveOffset += zip64Locator.length;
       }
 
       // ── Write End of Central Directory ────────────────────────────────────
