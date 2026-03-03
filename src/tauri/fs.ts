@@ -7,7 +7,7 @@
 // Path normalisation: every exported function strips a leading "file://" from
 // its path arguments so callers don't have to worry about URL vs native form.
 
-import { isTauri, isIOS } from "./platform";
+import { isTauri, isIOS } from "./platform.ts";
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 

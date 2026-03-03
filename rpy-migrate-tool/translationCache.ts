@@ -28,7 +28,7 @@
 //   unavailable the load/save functions degrade gracefully (load returns an
 //   empty map, save is a no-op with a console warning).
 
-import type { TranslationMap } from "./llmTranslate";
+import type { TranslationMap } from "./llmTranslate.ts";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

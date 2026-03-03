@@ -11,7 +11,7 @@
 // so on those browsers the user must re-pick every session.  We detect support
 // with `fsaSupported` and degrade gracefully.
 
-import { fsaSupported } from "./platform";
+import { fsaSupported } from "./platform.ts";
 
 // ─── IndexedDB constants ──────────────────────────────────────────────────────
 
