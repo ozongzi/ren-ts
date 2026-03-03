@@ -32,7 +32,7 @@ import {
   entryDataOffset,
   entryCompressedStream,
   type ZipEntryMeta,
-} from "../zip-rpy-migrate-tool/src/zipIndex";
+} from "./zipIndex.ts";
 import {
   buildLocalHeader,
   buildDataDescriptor,
