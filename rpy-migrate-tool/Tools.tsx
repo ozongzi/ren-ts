@@ -17,6 +17,7 @@ import {
   CancelledError,
 } from "./converterFs";
 import { convertRpy } from "./rpy-rrs-bridge/rpy2rrs-core";
+import { ZipRpyMigrateTool } from "./zipRpyMigrateTool";
 import {
   convertRpyc,
   detectMinigameFromAst,
@@ -249,6 +250,10 @@ export const Tools: React.FC = () => {
   const [converterKind, setConverterKind] = useState<ConverterId | null>(null);
   // Active IConverterFs for the chosen game dir (non-null once a dir is picked)
   const gameFsRef = useRef<IConverterFs | null>(null);
+
+  // ── UI: tabs / modal embedding for ZIP tool ───────────────────────────────
+  const [activeTab, setActiveTab] = useState<'converter' | 'zip'>('converter');
+  const [showZipModal, setShowZipModal] = useState(false);
 
   // ── Optional features ─────────────────────────────────────────────────────
   const [enableTranslation, setEnableTranslation] = useState(false);
@@ -914,6 +919,22 @@ export const Tools: React.FC = () => {
         {/* ── Header ── */}
         <div className="modal-header">
           <h2 className="modal-title">⚙️ Ren'Py → RRS 转换器</h2>
+          <div style={{ display: 'inline-flex', gap: '0.5rem', marginLeft: '0.75rem' }}>
+            <button
+              className={`btn ${activeTab === 'converter' ? 'primary' : ''}`}
+              onClick={() => setActiveTab('converter')}
+              disabled={running}
+            >
+              转换器
+            </button>
+            <button
+              className={`btn ${activeTab === 'zip' ? 'primary' : ''}`}
+              onClick={() => setActiveTab('zip')}
+              disabled={running}
+            >
+              ZIP 打包
+            </button>
+          </div>
           <button
             className="modal-close-btn"
             onClick={closeTools}
@@ -923,6 +944,22 @@ export const Tools: React.FC = () => {
             ✕
           </button>
         </div>
+
+        {/* ── ZIP Tab quick launcher ── */}
+        {activeTab === 'zip' && (
+          <div className="settings-group">
+            <p>ZIP 打包工具：用于从游戏 ZIP 生成 assets.zip。仅在 Tauri 或支持 File System Access API 的浏览器中可用。</p>
+            <div style={{ marginTop: '0.5rem' }}>
+              <button
+                className="btn primary"
+                onClick={() => setShowZipModal(true)}
+                disabled={running}
+              >
+                打开 ZIP 打包工具
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* ── Section 1: Game 目录 ── */}
         <div className="settings-group">
@@ -1524,6 +1561,8 @@ export const Tools: React.FC = () => {
               : "模式：浏览器 FSA"}
           </p>
         )}
+
+        {showZipModal && <ZipRpyMigrateTool onClose={() => setShowZipModal(false)} />}
       </div>
     </div>
   );

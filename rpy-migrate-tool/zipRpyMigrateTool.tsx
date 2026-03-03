@@ -66,6 +66,7 @@ import {
   exportUntranslated,
 } from "./translationCache";
 import pako from "pako";
+import { supportsConversionTools } from "../src/tauri_bridge";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -655,22 +656,44 @@ export const ZipRpyMigrateTool: React.FC<{ onClose: () => void }> = ({
   async function run() {
     if (!inputFile || running) return;
 
+    // Require platform support (Tauri or File System Access API). If not
+    // available, refuse to proceed to avoid Blob-based fallbacks that OOM.
+    if (!supportsConversionTools) {
+      alert(
+        "当前环境不支持本工具（需要 Tauri 或支持 File System Access API 的浏览器）。\n已中止。",
+      );
+      return;
+    }
+
     // Pre-acquire save target inside user gesture
     let saveHandle: FileSystemFileHandle | null = null;
+    let tauriSavePath: string | null = null;
     try {
-      saveHandle = await (window as any).showSaveFilePicker({
-        suggestedName: "assets.zip",
-        types: [
-          {
-            description: "ZIP Archive",
-            accept: { "application/zip": [".zip"] },
-          },
-        ],
-      });
-      if (!saveHandle) return;
+      if ((window as any).__TAURI_INTERNALS__) {
+        // Tauri: use native save dialog provided by pickSavePath (see TauriConverterFs)
+        const { pickSavePath } = await import("../src/tauri/fs");
+        tauriSavePath = await pickSavePath({
+          title: "保存 assets.zip",
+          defaultPath: "assets.zip",
+          filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
+        });
+        if (!tauriSavePath) return;
+      } else {
+        saveHandle = await (window as any).showSaveFilePicker({
+          suggestedName: "assets.zip",
+          types: [
+            {
+              description: "ZIP Archive",
+              accept: { "application/zip": [".zip"] },
+            },
+          ],
+        });
+        if (!saveHandle) return;
+      }
     } catch (e: any) {
       if (e?.name === "AbortError") return;
-      // showSaveFilePicker unavailable → fallback to blob download at end
+      alert("无法打开保存对话框，已中止。请在受支持的环境中运行此工具。");
+      return;
     }
 
     setRunning(true);
@@ -886,6 +909,42 @@ export const ZipRpyMigrateTool: React.FC<{ onClose: () => void }> = ({
           await writable.close();
         }
         log(`✓ 已保存：${(saveHandle as any).name ?? "assets.zip"}`);
+      } else if (tauriSavePath) {
+        // Tauri: open a native file handle and stream writes to it to avoid
+        // allocating the whole archive in JS heap.
+        try {
+          const { open } = await import("@tauri-apps/plugin-fs");
+          const fh = await open(tauriSavePath, { write: true, create: true, truncate: true });
+          const tauriWritable = {
+            async write(data: Uint8Array | BufferSource) {
+              const buf = data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+              // Tauri's fh.write accepts a Uint8Array
+              await fh.write(buf);
+            },
+            async close() {
+              await fh.close();
+            },
+            async abort() {
+              try { await fh.close(); } catch (e) {}
+            },
+            async seek(_pos?: number) {
+              // Not implemented; streaming writer writes sequentially.
+            },
+            async truncate(_size?: number) {
+              // Not implemented.
+            },
+          } as unknown as FileSystemWritableFileStream;
+
+          try {
+            await writeAssetsZip(tauriWritable, writerOpts);
+          } finally {
+            try { await tauriWritable.close(); } catch (e) {}
+          }
+          log(`✓ 已保存：${tauriSavePath}`);
+        } catch (err) {
+          log(`✗ 保存失败（Tauri）：${err instanceof Error ? err.message : String(err)}`);
+          throw err;
+        }
       } else {
         // Blob fallback for environments without showSaveFilePicker
         const chunks: Uint8Array[] = [];

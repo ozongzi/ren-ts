@@ -11,7 +11,7 @@ import { SaveLoadedScreen } from "./components/SaveLoadedScreen";
 import { EndScreen } from "./components/EndScreen";
 import { AssetsDirScreen } from "./components/AssetsDirScreen";
 import { SaveSelector } from "./components/SaveSelector";
-import { ZipRpyMigrateTool } from "../rpy-migrate-tool/zipRpyMigrateTool";
+
 
 /**
  * Root application component.
@@ -98,24 +98,14 @@ export const App: React.FC = () => {
           disabled={showSettings || showTools}
           onClick={() => useGameStore.getState().openTools()}
         />
-        <IconButton
-          icon="📦"
-          label="ZIP 打包工具"
-          title="从游戏 ZIP 提取资源并生成 assets.zip"
-          disabled={showSettings || showTools || showZipMigrate}
-          onClick={() => useGameStore.getState().openZipMigrate()}
-        />
+
       </div>
 
       {/* ── Global modals (can appear over title/lobby screens too) ── */}
       {showGallery && <CGGallery />}
       {showSettings && <Settings />}
       {showTools && <Tools />}
-      {showZipMigrate && (
-        <ZipRpyMigrateTool
-          onClose={() => useGameStore.getState().closeZipMigrate()}
-        />
-      )}
+
 
       <SaveSelector />
 
