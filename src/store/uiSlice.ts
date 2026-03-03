@@ -33,6 +33,10 @@ export interface UISlice {
   clearSaveError: () => void;
   /** Internal: set a save error message to display as a toast. */
   setSaveError: (msg: string) => void;
+
+  showZipMigrate: boolean;
+  openZipMigrate: () => void;
+  closeZipMigrate: () => void;
 }
 
 // ─── Slice factory ────────────────────────────────────────────────────────────
@@ -70,4 +74,8 @@ export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set) => ({
 
   clearSaveError: () => set({ saveError: null }),
   setSaveError: (msg: string) => set({ saveError: msg }),
+
+  showZipMigrate: false,
+  openZipMigrate: () => set({ showZipMigrate: true }),
+  closeZipMigrate: () => set({ showZipMigrate: false }),
 });

@@ -1,0 +1,16 @@
+{
+  "name": "zip-rpy-migrate-tool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ZIP/RPA recursive extractor + script converter helper for ren_ts (streaming media copy, in-memory script conversion)",
+  "scripts": {
+    "build": "npx tsc -p ../../tsconfig.json --outDir dist --rootDir src --skipLibCheck",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "test": "npm run build && node dist/src/cliTest.js",
+    "start": "npm run test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
