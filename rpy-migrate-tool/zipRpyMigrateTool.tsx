@@ -65,6 +65,7 @@ import {
   importMapFromJson,
   exportUntranslated,
 } from "./translationCache";
+import pako from "pako";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -179,8 +180,10 @@ async function inflateRaw(blob: Blob): Promise<Uint8Array> {
     }
     return out;
   }
-  const { inflateRawSync } = await import("zlib");
-  return new Uint8Array(inflateRawSync(Buffer.from(await blob.arrayBuffer())));
+  // 浏览器 Fallback: pako
+  const arrayBuffer = await blob.arrayBuffer();
+  const uint8 = new Uint8Array(arrayBuffer);
+  return pako.inflateRaw(uint8);
 }
 
 async function readEntryBytes(
@@ -286,7 +289,7 @@ async function processZip(
           dataOff,
           dataOff + meta.compressedSize,
         );
-        if (meta.method === 8) blob = new Blob([await inflateRaw(blob)]);
+        if (meta.method === 8) blob = new Blob([new Uint8Array(await inflateRaw(blob))]);
         await processRpa(blob);
       } else if (ext === "zip") {
         const dataOff = await entryDataOffset(nestedFile, meta);
@@ -294,7 +297,7 @@ async function processZip(
           dataOff,
           dataOff + meta.compressedSize,
         );
-        if (meta.method === 8) blob = new Blob([await inflateRaw(blob)]);
+        if (meta.method === 8) blob = new Blob([new Uint8Array(await inflateRaw(blob))]);
         const parentDir = dest.split("/").slice(0, -1).join("/");
         await processNestedZip(blob, parentDir);
       } else if (isMedia(ext)) {
@@ -339,7 +342,7 @@ async function processZip(
       let blob: Blob = file.slice(dataOff, dataOff + meta.compressedSize);
       if (meta.method === 8) {
         try {
-          blob = new Blob([await inflateRaw(blob)]);
+          blob = new Blob([new Uint8Array(await inflateRaw(blob))]);
         } catch (e) {
           onLog(`  ⚠ 解压失败：${rel}: ${e}`);
           continue;
@@ -352,7 +355,7 @@ async function processZip(
       let blob: Blob = file.slice(dataOff, dataOff + meta.compressedSize);
       if (meta.method === 8) {
         try {
-          blob = new Blob([await inflateRaw(blob)]);
+          blob = new Blob([new Uint8Array(await inflateRaw(blob))]);
         } catch (e) {
           onLog(`  ⚠ 解压失败：${rel}: ${e}`);
           continue;
@@ -429,9 +432,7 @@ async function writeAssetsZip(
       readable =
         meta.method === 0
           ? compStream
-          : (compStream.pipeThrough(
-              new DecompressionStream("deflate-raw"),
-            ) as ReadableStream<Uint8Array>);
+          : (compStream.pipeThrough(new DecompressionStream("deflate-raw") as any) as ReadableStream<Uint8Array>);
     } else {
       const s = entry.source.reader.stream(entry.source.entryPath);
       if (!s) throw new Error(`RPA entry not found: ${entry.source.entryPath}`);
@@ -911,7 +912,11 @@ export const ZipRpyMigrateTool: React.FC<{ onClose: () => void }> = ({
           },
         } as unknown as FileSystemWritableFileStream;
         await writeAssetsZip(fakeWritable, writerOpts);
-        const blob = new Blob(chunks, { type: "application/zip" });
+        // TypeScript strict: ensure ArrayBuffer[]
+        const abChunks = chunks.map(chunk =>
+          (chunk instanceof Uint8Array ? new Uint8Array(chunk) : new Uint8Array(chunk))
+        );
+        const blob = new Blob(abChunks, { type: "application/zip" });
         const url = URL.createObjectURL(blob);
         const a = Object.assign(document.createElement("a"), {
           href: url,
