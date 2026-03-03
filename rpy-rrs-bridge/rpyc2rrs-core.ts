@@ -679,6 +679,15 @@ class AstConverter {
   }
 
   private processPythonLine(line: string): void {
+    // gui.init(w, h)
+    const guiInitM = line.match(/^gui\.init\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)/);
+    if (guiInitM) {
+      this.flushSpeak();
+      this.emit(`${this.pad()}config.screen_width = ${guiInitM[1]};`);
+      this.emit(`${this.pad()}config.screen_height = ${guiInitM[2]};`);
+      return;
+    }
+
     // renpy.pause(X)
     const pauseM = line.match(/^renpy\.pause\s*\(\s*([\d.]+)/);
     if (pauseM) {

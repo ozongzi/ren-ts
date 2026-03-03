@@ -461,14 +461,6 @@ function executeStep(state: GameState, step: Step): StepResult {
       if (!at && existingIdx >= 0) {
         at = state.sprites[existingIdx].at;
       }
-      // When no position is specified and there is no existing sprite to
-      // inherit from, default to "center" instead of leaving `at` undefined.
-      // An undefined `at` causes the sprite to be treated as a full-screen
-      // overlay, which is almost never the intended behaviour for a plain
-      // `show character` statement.
-      if (!at) {
-        at = "center";
-      }
 
       if (existingIdx >= 0) {
         // Replace existing sprite with same tag in-place (keeps z-index slot)

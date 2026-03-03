@@ -780,6 +780,16 @@ class Converter {
       return;
     }
 
+    // ── gui.init(w, h) ────────────────────────────────────────────────────────
+    const guiInitMatch = line.match(/^gui\.init\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)/);
+    if (guiInitMatch) {
+      const w = guiInitMatch[1];
+      const h = guiInitMatch[2];
+      this.emit(`${this.pad()}config.screen_width = ${w};`);
+      this.emit(`${this.pad()}config.screen_height = ${h};`);
+      return;
+    }
+
     // ── Unrecognised ──────────────────────────────────────────────────────────
     this.emit(`${this.pad()}// UNHANDLED: ${line}`);
   }

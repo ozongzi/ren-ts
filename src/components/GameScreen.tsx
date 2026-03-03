@@ -125,33 +125,33 @@ export const GameScreen: React.FC = () => {
   const anyModalOpen = showGallery || showSettings;
 
   return (
-      <div
-        className={`game-container${choices ? " has-choices" : ""}`}
-        onClick={handleScreenClick}
-        role="main"
-        aria-label="游戏画面"
-      >
-        {/* ── Layer 0: Background ── */}
-        <Background src={backgroundSrc} filter={bgFilter} />
+    <div
+      className={`game-container${choices ? " has-choices" : ""}`}
+      onClick={handleScreenClick}
+      role="main"
+      aria-label="游戏画面"
+    >
+      {/* ── Layer 0: Background ── */}
+      <Background src={backgroundSrc} filter={bgFilter} />
 
-        {/* ── Layer 1: Sprites ── */}
-        <SpriteLayer sprites={sprites} />
+      {/* ── Layer 1: Sprites ── */}
+      <SpriteLayer sprites={sprites} />
 
-        {/* ── Layer 10: Dialogue ── */}
-        {dialogue && !choices && (
-          <DialogueBox
-            dialogue={dialogue}
-            waitingForInput={waitingForInput}
-            autoAdvanceDelay={autoAdvanceDelay}
-            onAdvance={click}
-          />
-        )}
+      {/* ── Layer 10: Dialogue ── */}
+      {dialogue && !choices && (
+        <DialogueBox
+          dialogue={dialogue}
+          waitingForInput={waitingForInput}
+          autoAdvanceDelay={autoAdvanceDelay}
+          onAdvance={click}
+        />
+      )}
 
-        {/* ── Layer 20: Choice Menu ── */}
-        {choices && <ChoiceMenu choices={choices} onChoose={choose} />}
+      {/* ── Layer 20: Choice Menu ── */}
+      {choices && <ChoiceMenu choices={choices} onChoose={choose} />}
 
-        {/* ── Layer 30: Toolbar HUD ── */}
-        {!anyModalOpen && <Toolbar />}
-      </div>
+      {/* ── Layer 30: Toolbar HUD ── */}
+      {!anyModalOpen && <Toolbar />}
+    </div>
   );
 };

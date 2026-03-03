@@ -32,9 +32,8 @@
     --transition-med: 0.3s ease;
     --transition-slow: 0.6s ease;
 
-    /* Fixed logical resolution of the game canvas */
-    --game-logical-w: 1280px;
-    --game-logical-h: 720px;
+    --game-width: 100vw;
+    --game-height: 100vh;
 }
 
 html,
@@ -42,7 +41,7 @@ body {
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background: #000;
+    background: var(--color-bg);
     color: var(--color-text);
     font-family: var(--font-main);
     -webkit-font-smoothing: antialiased;
@@ -56,31 +55,15 @@ body {
     overflow: hidden;
 }
 
-/* ─── Viewport: fills the browser window, centers the canvas, shows letterbox ── */
-
-.game-viewport {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #000;
-    overflow: hidden;
-}
-
-/* ─── Game container (logical 1280×720 canvas, scaled by JS) ──────────────── */
+/* ─── Game container ───────────────────────────────────────────────────────── */
 
 .game-container {
     position: relative;
-    /* Fixed logical size — never changes; outer scale handles the rest */
-    width: var(--game-logical-w);
-    height: var(--game-logical-h);
-    flex-shrink: 0;
+    width: 100%;
+    height: 100%;
     overflow: hidden;
-    background: #000;
+    background: #e8eaed;
     cursor: pointer;
-    /* transform-origin stays top-left so the JS scale math is straightforward */
-    transform-origin: top left;
 }
 
 .game-container.has-choices {
@@ -930,7 +913,7 @@ body {
 /* ─── App-level icon button bar (top-left HUD) ──────────────────────────────── */
 
 .app-icon-btns {
-    position: absolute;
+    position: fixed;
     top: 1.5rem;
     left: 2rem;
     z-index: 1000;
