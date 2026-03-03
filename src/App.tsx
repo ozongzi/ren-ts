@@ -11,7 +11,7 @@ import { SaveLoadedScreen } from "./components/SaveLoadedScreen";
 import { EndScreen } from "./components/EndScreen";
 import { AssetsDirScreen } from "./components/AssetsDirScreen";
 import { SaveSelector } from "./components/SaveSelector";
-import { ZipRpyMigrateTool } from "../rpy-migrate-tool/ZipRpyMigrateTool";
+import { ZipRpyMigrateTool } from "../rpy-migrate-tool/zipRpyMigrateTool";
 
 /**
  * Root application component.
