@@ -38,7 +38,7 @@
 //     .rawSource   string | null   (second slot if present; debugging only)
 //     .astPickle   PickleValue     (decoded first slot)
 
-import { decodePickle, zlibDecompress, type PickleValue } from "./pickle.ts";
+import { decodePickle, zlibDecompress, type PickleValue } from "./pickle";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 

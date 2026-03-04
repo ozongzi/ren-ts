@@ -5,25 +5,11 @@ import {
   pickZipFileTauri,
   openTauriFileShim,
   persistZipPath,
-  fsaSupported,
-  pickZipFileWeb,
 } from "../tauri_bridge";
-import type { AssetsSlice } from "../store/assetsSlice";
 
 /**
  * Settings modal panel.
- * Exposes volume controls and a Zip selection row that works on Tauri and Web.
- *
- * On Web:
- *  - If the File System Access API is available (Chrome/Edge), we use
- *    `pickZipFileWeb()` to get a persisted `FileSystemFileHandle` and call
- *    `mountZipFromHandle(handle)`.
- *  - Otherwise we fall back to a plain `<input type="file">` and call
- *    `mountZip(file)` (bytes copied into OPFS).
- *
- * On Tauri:
- *  - Use native picker + `openTauriFileShim()` (seek/read backed File shim).
- *    Persist the native path before mounting so the app can auto-restore.
+ * Currently exposes volume controls for BGM, SFX, voice, and master.
  */
 export const Settings: React.FC = () => {
   const closeSettings = useGameStore((s) => s.closeSettings);
@@ -51,7 +37,7 @@ export const Settings: React.FC = () => {
       aria-label="设置"
     >
       <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
+        {/* ── Header ── */}
         <div className="modal-header">
           <h2 className="modal-title">⚙️ 设置</h2>
           <button
@@ -63,7 +49,7 @@ export const Settings: React.FC = () => {
           </button>
         </div>
 
-        {/* Volume controls */}
+        {/* ── Volume controls ── */}
         <div className="settings-group">
           <div className="settings-label">音量</div>
 
@@ -95,12 +81,12 @@ export const Settings: React.FC = () => {
 
         <div className="divider" />
 
-        {/* Zip row: shown on all platforms, supports Tauri + Web FSA + fallback */}
-        <ZipRow />
+        {/* ── Zip file ── */}
+        {isTauri && <ZipRow />}
 
         {isTauri && <div className="divider" />}
 
-        {/* About */}
+        {/* ── About ── */}
         <div className="settings-group">
           <div className="settings-label">关于</div>
           <p
@@ -117,7 +103,7 @@ export const Settings: React.FC = () => {
           </p>
         </div>
 
-        {/* Keyboard shortcuts */}
+        {/* ── Keyboard shortcuts ── */}
         <div className="settings-group">
           <div className="settings-label">键盘快捷键</div>
           <div
@@ -167,20 +153,19 @@ export const Settings: React.FC = () => {
   );
 };
 
-// Zip row component (supports Tauri, Web FSA, and plain file input fallback)
+// ─── Zip row (Tauri only) ─────────────────────────────────────────────────────
+
 const ZipRow: React.FC = () => {
   const zipFileName = useGameStore((s) => s.zipFileName);
   const mountZip = useGameStore((s) => s.mountZip);
-  // Use a typed cast to access the FSA-specific mount function without `any`.
-  const mountZipFromHandle = useGameStore(
-    (s) => (s as unknown as AssetsSlice).mountZipFromHandle,
-  );
   const unmountZip = useGameStore((s) => s.unmountZip);
   const inputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Tauri native picker flow
+  // On Tauri: use the native dialog so the path is persisted for auto-restore.
+  // openTauriFileShim returns a File-API-compatible shim backed by seek+read,
+  // so the full ZIP is never copied into JS heap regardless of archive size.
   const handleTauriPick = async () => {
     setError(null);
     setLoading(true);
@@ -202,26 +187,7 @@ const ZipRow: React.FC = () => {
     }
   };
 
-  // Web FSA flow (Chrome / Edge)
-  const handleFsaPick = async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      if (!fsaSupported) {
-        setError("当前浏览器不支持持久化文件句柄。");
-        return;
-      }
-      const handle = await pickZipFileWeb();
-      if (!handle) return;
-      await mountZipFromHandle(handle);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "未知错误");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Plain file fallback (Firefox / Safari)
+  // Fallback for non-Tauri (should not normally be shown, but kept for safety).
   const handleFile = async (file: File | undefined | null) => {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".zip")) {
@@ -248,8 +214,6 @@ const ZipRow: React.FC = () => {
     if (loading) return;
     if (isTauri) {
       handleTauriPick();
-    } else if (fsaSupported) {
-      handleFsaPick();
     } else {
       inputRef.current?.click();
     }
@@ -259,7 +223,7 @@ const ZipRow: React.FC = () => {
     <div className="settings-group">
       <div className="settings-label">游戏包 (.zip)</div>
 
-      {/* Hidden file input for fallback browsers */}
+      {/* Hidden file input */}
       <input
         ref={inputRef}
         type="file"
@@ -307,16 +271,13 @@ const ZipRow: React.FC = () => {
             cursor: loading ? "default" : "pointer",
             transition: "background 0.15s",
           }}
-          aria-label="选择或更换 zip 文件"
+          aria-label="重新选择 zip 文件"
         >
           {loading ? "加载中…" : "📦 更换 zip"}
         </button>
         {zipFileName && (
           <button
-            onClick={() => {
-              if (loading) return;
-              unmountZip();
-            }}
+            onClick={unmountZip}
             disabled={loading}
             style={{
               padding: "0.4rem 1rem",
@@ -344,11 +305,7 @@ const ZipRow: React.FC = () => {
           lineHeight: 1.5,
         }}
       >
-        {isTauri
-          ? "文件路径将保存在本地，下次启动可一键加载。"
-          : fsaSupported
-            ? "文件句柄将保存在本地，下次启动点击授权即可加载。"
-            : "当前浏览器不支持记住文件位置，每次需重新选择。"}
+        更换后路径将自动保存，下次启动直接加载。
       </p>
 
       {error && (
@@ -367,7 +324,8 @@ const ZipRow: React.FC = () => {
   );
 };
 
-// Volume row
+// ─── Volume row ───────────────────────────────────────────────────────────────
+
 interface VolumeRowProps {
   label: string;
   value: number;

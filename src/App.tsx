@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { useGameStore } from "./store";
 import { IconButton } from "./components/IconButton";
-import { isTauri } from "./tauri_bridge";
+import { supportsConversionTools } from "./tauri_bridge";
 import { TitleScreen } from "./components/TitleScreen";
 import { GameScreen } from "./components/GameScreen";
 import { CGGallery } from "./components/CGGallery";
@@ -47,8 +47,6 @@ export const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, [saveError, clearSaveError]);
 
-  const showZipMigrate = useGameStore((s) => s.showZipMigrate);
-
   return (
     <div
       style={{
@@ -86,22 +84,23 @@ export const App: React.FC = () => {
           disabled={showSettings || showTools}
           onClick={() => useGameStore.getState().openSettings()}
         />
-        {isTauri && (
-          <IconButton
-            icon="🛠️"
-            label="打开工具"
-            title="打开 Ren'Py → RRS 转换工具"
-            disabled={showSettings || showTools}
-            onClick={() => useGameStore.getState().openTools()}
-          />
-        )}
+        <IconButton
+          icon="🛠️"
+          label="打开工具"
+          title={
+            supportsConversionTools
+              ? "打开 Ren'Py → RRS 转换工具"
+              : "转换工具仅支持 Tauri 桌面端（macOS / Windows / Linux）以及 Chrome / Edge 浏览器"
+          }
+          disabled={showSettings || showTools}
+          onClick={() => useGameStore.getState().openTools()}
+        />
       </div>
 
       {/* ── Global modals (can appear over title/lobby screens too) ── */}
       {showGallery && <CGGallery />}
       {showSettings && <Settings />}
       {showTools && <Tools />}
-
       <SaveSelector />
 
       {/* ── Global error toast ── */}

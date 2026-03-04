@@ -46,7 +46,7 @@ export { FsaConverterFs } from "./converterFs/FsaConverterFs";
 
 // ─── Platform-aware factory ───────────────────────────────────────────────────
 
-import { isTauri } from "../src/tauri_bridge";
+import { isTauri } from "./tauri/platform";
 import { pickTauriConverterFs } from "./converterFs/TauriConverterFs";
 import { pickFsaConverterFs } from "./converterFs/FsaConverterFs";
 import type { ConverterFsResult } from "./converterFs/types";

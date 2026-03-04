@@ -19,7 +19,7 @@ import {
   makeDirTauri,
   pathExists,
   walkDir as tauriWalkDir,
-} from "../../src/tauri/fs";
+} from "../tauri/fs";
 import {
   listRpa,
   readRpaEntry,
@@ -28,8 +28,8 @@ import {
   type StreamingZipProgress,
   type VirtualZipEntry as TauriBridgeVirtualEntry,
   type RpaFileEntry as TauriBridgeRpaEntry,
-} from "../../src/tauri/zip";
-import { pickSavePath } from "../../src/tauri/fs";
+} from "../tauri/zip";
+import { pickSavePath } from "../tauri/fs";
 import type {
   IConverterFs,
   ZipProgress,

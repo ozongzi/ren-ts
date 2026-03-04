@@ -33,15 +33,12 @@ export interface UISlice {
   clearSaveError: () => void;
   /** Internal: set a save error message to display as a toast. */
   setSaveError: (msg: string) => void;
-
-  showZipMigrate: boolean;
-  openZipMigrate: () => void;
-  closeZipMigrate: () => void;
 }
 
 // ─── Slice factory ────────────────────────────────────────────────────────────
 
 import type { StateCreator } from "zustand";
+import { supportsConversionTools } from "../tauri_bridge";
 
 export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set) => ({
   showGallery: false,
@@ -56,7 +53,16 @@ export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set) => ({
   openSettings: () => set({ showSettings: true }),
   closeSettings: () => set({ showSettings: false }),
 
-  openTools: () => set({ showTools: true }),
+  openTools: () => {
+    if (!supportsConversionTools) {
+      set({
+        saveError:
+          "转换工具仅支持 Tauri 桌面端（macOS / Windows / Linux）以及 Chrome / Edge 浏览器。当前环境不支持所需的文件系统 API。",
+      });
+      return;
+    }
+    set({ showTools: true });
+  },
   closeTools: () => set({ showTools: false }),
 
   openSaveSelector: () => set({ showSaveSelector: true }),
@@ -64,8 +70,4 @@ export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set) => ({
 
   clearSaveError: () => set({ saveError: null }),
   setSaveError: (msg: string) => set({ saveError: msg }),
-
-  showZipMigrate: false,
-  openZipMigrate: () => set({ showZipMigrate: true }),
-  closeZipMigrate: () => set({ showZipMigrate: false }),
 });

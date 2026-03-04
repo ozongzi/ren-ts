@@ -9,7 +9,7 @@
 // source directly from disk (or from an RPA archive) and writes the output
 // file natively.  Only metadata (paths, progress counters) is serialised.
 
-import { isTauri } from "./platform.ts";
+import { isTauri } from "./platform";
 
 // ─── Shared types ─────────────────────────────────────────────────────────────
 

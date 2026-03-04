@@ -42,7 +42,7 @@ import {
   shortClass,
   asString,
   asList,
-} from "../pickle.ts";
+} from "../src/pickle";
 import type { MinigameDetectResult, MinigameStub } from "./minigame-detect";
 
 // ─── Shared helpers (duplicated from rpy2rrs-core.ts to stay self-contained) ──
