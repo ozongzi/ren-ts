@@ -1039,6 +1039,18 @@ body {
 }
 
 /* ─── Tools panel ────────────────────────────────────────────────────────────*/
+.tools-mode-toggle {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.tools-zip-input-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.35rem;
+}
 
 .tools-hint {
     margin-top: 0.45rem;
