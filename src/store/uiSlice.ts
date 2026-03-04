@@ -42,7 +42,6 @@ export interface UISlice {
 // ─── Slice factory ────────────────────────────────────────────────────────────
 
 import type { StateCreator } from "zustand";
-import { supportsConversionTools } from "../tauri_bridge";
 
 export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set) => ({
   showGallery: false,
@@ -57,16 +56,7 @@ export const createUISlice: StateCreator<UISlice, [], [], UISlice> = (set) => ({
   openSettings: () => set({ showSettings: true }),
   closeSettings: () => set({ showSettings: false }),
 
-  openTools: () => {
-    if (!supportsConversionTools) {
-      set({
-        saveError:
-          "转换工具仅支持 Tauri 桌面端（macOS / Windows / Linux）以及 Chrome / Edge 浏览器。当前环境不支持所需的文件系统 API。",
-      });
-      return;
-    }
-    set({ showTools: true });
-  },
+  openTools: () => set({ showTools: true }),
   closeTools: () => set({ showTools: false }),
 
   openSaveSelector: () => set({ showSaveSelector: true }),

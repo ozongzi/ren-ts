@@ -14,6 +14,8 @@
 
 mod commands;
 mod rpa;
+mod rpy2rrs;
+mod rpy2rrs_command;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -24,6 +26,11 @@ pub fn run() {
             commands::build_zip,
             rpa::list_rpa,
             rpa::read_rpa_entry,
+            rpy2rrs_command::converter,
+            rpy2rrs_command::converter_dir,
+            rpy2rrs_command::extract_tl,
+            rpy2rrs_command::export,
+            rpy2rrs_command::export_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ren'Ts");
