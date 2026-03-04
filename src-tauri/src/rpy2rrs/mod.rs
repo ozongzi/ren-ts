@@ -214,7 +214,7 @@ fn decode_rpc2(data: &[u8]) -> Result<Vec<u8>> {
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
-pub fn change_ext(p: &str, new_ext: &str) -> String {
+fn change_ext(p: &str, new_ext: &str) -> String {
     match p.rfind('.') {
         Some(i) => format!("{}.{}", &p[..i], new_ext),
         None => format!("{}.{}", p, new_ext),
@@ -304,7 +304,13 @@ where
                     if written.contains(&out) {
                         return None;
                     }
-                    let content = convert_rpy(src, vpath, tmap.cloned(), None);
+                    let mg = rpy::detect_minigame_from_rpy(src);
+                    let stubs: Vec<(String, String)> = mg.stubs
+                        .into_iter()
+                        .map(|s| (s.entry_label, s.exit_label))
+                        .collect();
+                    let stubs_opt = if stubs.is_empty() { None } else { Some(stubs) };
+                    let content = convert_rpy(src, vpath, tmap.cloned(), stubs_opt);
                     if let Err(e) = write_text(zip, &out, &content) {
                         stats.error_count += 1;
                         on_progress(vpath, &format!("ERROR write: {}", e));
@@ -515,7 +521,7 @@ where
     Ok(stats)
 }
 
-pub fn build_manifest(files: &[String]) -> String {
+fn build_manifest(files: &[String]) -> String {
     let entries: Vec<String> = files
         .iter()
         .map(|f| format!("    \"{}\"", f.replace('\\', "/")))
@@ -541,4 +547,44 @@ mod tests {
         }
         assert!(result.is_ok());
     }
+}
+
+// ── Public helpers for directory-based conversion (used by rpy2rrs_command) ──
+
+/// Convert a single .rpy source string to .rrs, applying an optional
+/// translation map.  Mirrors the logic in `process_and_write`.
+pub fn convert_rpy_str(
+    src: &str,
+    vpath: &str,
+    tmap: Option<&HashMap<String, String>>,
+) -> String {
+    let mg = rpy::detect_minigame_from_rpy(src);
+    let stubs: Vec<(String, String)> = mg.stubs
+        .into_iter()
+        .map(|s| (s.entry_label, s.exit_label))
+        .collect();
+    let stubs_opt = if stubs.is_empty() { None } else { Some(stubs) };
+    rpy::convert_rpy(src, vpath, tmap.cloned(), stubs_opt)
+}
+
+/// Decode a .rpyc blob and convert it to .rrs in one step.
+pub fn decode_rpyc_and_convert(
+    data: &[u8],
+    vpath: &str,
+    tmap: Option<&HashMap<String, String>>,
+) -> Result<String> {
+    let ast = decode_rpyc(data)?;
+    let root_nodes = rpyc::unwrap_ast_nodes(&ast);
+    let det = rpyc::detect_minigame_from_ast(&root_nodes);
+    let stubs: Vec<(String, String)> = det
+        .stubs
+        .into_iter()
+        .map(|s| (s.entry_label, s.exit_label))
+        .collect();
+    Ok(rpyc::convert_rpyc(&ast, vpath, tmap.cloned(), Some(stubs)))
+}
+
+/// Public wrapper around the private `build_manifest` function.
+pub fn build_manifest_pub(files: &[String]) -> String {
+    build_manifest(files)
 }

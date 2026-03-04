@@ -31,6 +31,7 @@ class Parser {
     const defines: DefineDecl[] = [];
     const labels: LabelDecl[] = [];
     while (!this.check("EOF")) {
+      const posBefore = this.pos;
       try {
         if (this.checkIdent("label")) {
           labels.push(this.parseLabel());
@@ -46,6 +47,9 @@ class Parser {
           e instanceof Error ? e.message : e,
         );
         this.skipToRecoveryPoint(0);
+        // Safety: if skipToRecoveryPoint didn't consume anything, force-advance
+        // to avoid an infinite loop on a stray token.
+        if (this.pos === posBefore) this.advance();
       }
     }
     return { defines, labels };
@@ -749,12 +753,17 @@ class Parser {
   private skipToRecoveryPoint(minDepth: number): void {
     let depth = 0;
     while (!this.check("EOF")) {
-      if (this.check(";") && depth <= 0) {
+      if (this.check(";") && depth <= minDepth) {
         this.advance(); // consume the semicolon
         return;
       }
       if (this.check("}")) {
-        if (depth <= minDepth) return; // leave the closing brace for the caller
+        if (depth <= minDepth) {
+          // At top-level, consume the stray } and stop —
+          // do NOT return without advancing or we loop forever.
+          this.advance();
+          return;
+        }
         depth--;
         this.advance();
         continue;
