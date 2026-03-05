@@ -1,5 +1,6 @@
 import React, { useEffect, useCallback, useRef } from "react";
 import { useGameStore } from "../store";
+import { audioManager } from "../audio";
 import { Background } from "./Background";
 import { SpriteLayer } from "./SpriteLayer";
 import { DialogueBox } from "./DialogueBox";
@@ -112,6 +113,8 @@ export const GameScreen: React.FC = () => {
 
   // ── Main click handler (advance dialogue on screen click) ───────────────────
   const handleScreenClick = () => {
+    // Unlock audio on first interaction (browser autoplay policy)
+    audioManager.unlock();
     // Don't advance if any modal is open
     if (showGallery || showSettings) return;
     // Don't advance if choices are displayed (ChoiceMenu handles clicks)

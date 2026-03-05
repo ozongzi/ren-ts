@@ -51,6 +51,21 @@ export class VarStore {
     return key in this._game || key in this._defines;
   }
 
+  /**
+   * Return the value of the first key that starts with `prefix`, or undefined.
+   * Checks defineVars (image defines live there). Used for Ren'Py tag-fallback:
+   * when "image.sayori" isn't defined but "image.sayori.1a" is, return that.
+   */
+  firstWithPrefix(prefix: string): unknown {
+    for (const k of Object.keys(this._defines)) {
+      if (k.startsWith(prefix)) return this._defines[k];
+    }
+    for (const k of Object.keys(this._game)) {
+      if (k.startsWith(prefix)) return this._game[k];
+    }
+    return undefined;
+  }
+
   // ── Write (game vars only) ─────────────────────────────────────────────────
 
   /**

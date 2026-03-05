@@ -108,6 +108,10 @@ class AudioManager {
 
   // Whether user has interacted (browsers block autoplay until interaction)
   private unlocked = false;
+  // BGM pending play: stored when playBGM is called before unlock
+  private pendingBGM: { src: string; opts: BGMOptions } | null = null;
+  // Raw BGM src (before resolve) stored so unlock can re-trigger resolve+play
+  private pendingRawBGM: { raw: string; opts: BGMOptions } | null = null;
 
   // ─── Volume control ─────────────────────────────────────────────────────────
 
@@ -138,11 +142,52 @@ class AudioManager {
 
   // ─── Unlock (call on first user gesture) ────────────────────────────────────
 
+  /** Queue a raw (pre-resolve) BGM src to be resolved+played after unlock. */
+  queueBGM(rawSrc: string, opts: BGMOptions = {}): void {
+    this.pendingRawBGM = { raw: rawSrc, opts };
+  }
+
   unlock(): void {
     if (this.unlocked) return;
     this.unlocked = true;
-    // Resume any suspended audio contexts (not needed for plain <audio>)
-    // If we had a pending BGM play, resume it
+    console.log("[audio-debug] unlock called, bgmEl=", this.bgmEl, "paused=", this.bgmEl?.paused, "src=", this.bgmSrc);
+
+    // Play a silent audio to unblock autoplay policy for this page session.
+    try {
+      const ctx = new AudioContext();
+      const buf = ctx.createBuffer(1, 1, 22050);
+      const node = ctx.createBufferSource();
+      node.buffer = buf;
+      node.connect(ctx.destination);
+      node.start(0);
+      node.onended = () => ctx.close();
+    } catch {
+      const el = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
+      el.play().catch(() => {});
+    }
+
+    // Resume blocked BGM if element exists and is paused
+    if (this.bgmEl && this.bgmEl.paused && this.bgmSrc) {
+      this.bgmEl.play().catch((err) => console.warn("[audio-debug] resume failed:", err));
+      return;
+    }
+    // Play any blob-URL BGM that was queued before unlock
+    if (this.pendingBGM) {
+      const { src, opts } = this.pendingBGM;
+      this.pendingBGM = null;
+      this.playBGM(src, opts);
+      return;
+    }
+    // Re-resolve and play any raw BGM src that was queued before unlock
+    if (this.pendingRawBGM) {
+      const { raw, opts } = this.pendingRawBGM;
+      this.pendingRawBGM = null;
+      import("./assets").then(({ resolveAssetAsync }) => {
+        resolveAssetAsync(raw).then((url) => {
+          if (url) this.playBGM(url, opts);
+        });
+      });
+    }
   }
 
   // ─── BGM ────────────────────────────────────────────────────────────────────
@@ -155,6 +200,12 @@ class AudioManager {
   playBGM(src: string, opts: BGMOptions = {}): void {
     if (!src) return;
     if (this.bgmSrc === src && this.bgmEl && !this.bgmEl.paused) return;
+
+    // Queue for after unlock if user hasn't interacted yet
+    if (!this.unlocked) {
+      this.pendingBGM = { src, opts };
+      return;
+    }
 
     const fadein = (opts.fadein ?? 0) * 1000;
     const fadeout = (opts.fadeout ?? 0) * 1000;
@@ -182,7 +233,13 @@ class AudioManager {
       el.play().catch((err) => {
         // Autoplay was blocked — retry after interaction
         console.warn("[audio] BGM autoplay blocked:", err);
+        console.log("[audio-debug] BGM src was:", src);
       });
+
+      // Debug: poll BGM state every 2s
+      setTimeout(() => {
+        console.log("[audio-debug] BGM state: paused=", el.paused, "currentTime=", el.currentTime, "volume=", el.volume, "src=", el.src?.slice(0, 40));
+      }, 2000);
 
       if (fadein > 0) {
         this.bgmFade = fadeVolume(
@@ -215,6 +272,7 @@ class AudioManager {
 
   /** Stop the currently playing BGM, optionally with a fade-out. */
   stopBGM(opts: StopOptions = {}): void {
+    console.log("[audio-debug] stopBGM called", new Error().stack?.split('\n')[2]);
     if (!this.bgmEl) return;
     const fadeout = (opts.fadeout ?? 0) * 1000;
 

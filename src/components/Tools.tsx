@@ -543,11 +543,13 @@ export const Tools: React.FC = () => {
 
       // ── Collect script files: .rpy (primary) + .rpyc (fallback) ──────────
       // tl/* files are Ren'Py translation sources — never convert or pack them.
+      // unrpyc/* are test/tooling artifacts — skip those too.
       const isTlPath = (p: string) => p.startsWith("tl/");
+      const isToolPath = (p: string) => p.startsWith("unrpyc/") || p.startsWith("renpy/") || p.startsWith(".git/");
 
       const rpyFiles = (
         await fs.walkDir("", (n) => n.toLowerCase().endsWith(".rpy"))
-      ).filter((p) => !isTlPath(p));
+      ).filter((p) => !isTlPath(p) && !isToolPath(p));
 
       // Build a set of base paths that already have a .rpy source file so we
       // can skip the corresponding .rpyc (rpy always wins, matching Ren'Py).
@@ -557,7 +559,7 @@ export const Tools: React.FC = () => {
 
       const rpycFiles = (
         await fs.walkDir("", (n) => n.toLowerCase().endsWith(".rpyc"))
-      ).filter((p) => !isTlPath(p));
+      ).filter((p) => !isTlPath(p) && !isToolPath(p));
 
       // Only keep .rpyc files that have NO matching .rpy companion.
       const rpycOnly = rpycFiles.filter(

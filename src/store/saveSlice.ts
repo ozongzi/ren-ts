@@ -20,6 +20,7 @@ import { stateToSave, applySave, formatLabel } from "../save";
 import { getSaveStore, type SaveEntry } from "../saveStore";
 import { startNewGame, resumeFromSave } from "../engine";
 import { audioManager } from "../audio";
+import { resolveAssetAsync } from "../assets";
 
 // ─── Slice interface ──────────────────────────────────────────────────────────
 
@@ -106,7 +107,9 @@ export function createSaveSlice(
       if (state.phase !== "save_loaded") return;
 
       if (state.bgmSrc) {
-        audioManager.playBGM(state.bgmSrc, { fadein: 1 });
+        resolveAssetAsync(state.bgmSrc).then((url) => {
+          if (url) audioManager.playBGM(url, { fadein: 1 });
+        });
       }
 
       const playing: GameState = { ...state, phase: "playing" };

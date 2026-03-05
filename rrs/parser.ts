@@ -31,6 +31,7 @@ class Parser {
     const defines: DefineDecl[] = [];
     const labels: LabelDecl[] = [];
     while (!this.check("EOF")) {
+      const posBefore = this.pos;
       try {
         if (this.checkIdent("label")) {
           labels.push(this.parseLabel());
@@ -46,6 +47,9 @@ class Parser {
           e instanceof Error ? e.message : e,
         );
         this.skipToRecoveryPoint(0);
+        // Safety: if nothing was consumed (e.g. stray '}' at top level),
+        // force-advance to prevent an infinite loop.
+        if (this.pos === posBefore) this.advance();
       }
     }
     return { defines, labels };
@@ -64,29 +68,27 @@ class Parser {
   private isTopLevelAssignment(): boolean {
     if (this.peek().kind !== "Ident") return false;
     let i = 1;
-    while (this.peek(i).kind === "." && this.peek(i + 1).kind === "Ident") {
+    while (this.peek(i).kind === ".") {
+      const next = this.peek(i + 1);
+      if (next.kind !== "Ident" && next.kind !== "Num") break;
+      // Skip past the segment (may be Num + Ident, e.g. "4p")
       i += 2;
+      while (this.peek(i).kind === "Ident" || this.peek(i).kind === "Num") i++;
     }
     return this.peek(i).kind === "=";
   }
 
-  /**
-   * Parse a top-level bare assignment as a define declaration (keyword already
-   * absent — the caller detected it via isTopLevelAssignment()):
-   *   char.k      = "Keitaro";
-   *   audio.bgm   = "Audio/BGM/Main.ogg";
-   *   GAME_NAME   = "My VN Game";
-   *
-   * The key may be a simple identifier or a dotted name (e.g. char.k).
-   * The value is a quoted string, a numeric literal, or a bare identifier.
-   */
   private parseDefineBody(): DefineDecl {
-    // Parse dotted key: e.g. "char.k", "audio.bgm_main", "CAMP_NAME"
     let key = this.expectKind("Ident").value;
     while (this.check(".")) {
+      const afterDot = this.peek(1);
+      if (afterDot.kind !== "Ident" && afterDot.kind !== "Num") break;
       this.advance(); // consume "."
-      const next = this.expectKind("Ident");
-      key += "." + next.value;
+      let segment = this.advance().value;
+      while (this.peek().kind === "Ident" || this.peek().kind === "Num") {
+        segment += this.advance().value;
+      }
+      key += "." + segment;
     }
 
     this.expectKind("=");
@@ -215,12 +217,16 @@ class Parser {
     if (tok.kind === "Ident") {
       let name = tok.value;
       let peekIdx = 1;
-      while (
-        this.peek(peekIdx).kind === "." &&
-        this.peek(peekIdx + 1).kind === "Ident"
-      ) {
-        name += "." + this.peek(peekIdx + 1).value;
+      while (this.peek(peekIdx).kind === ".") {
+        const next = this.peek(peekIdx + 1);
+        if (next.kind !== "Ident" && next.kind !== "Num") break;
         peekIdx += 2;
+        let seg = next.value;
+        while (this.peek(peekIdx).kind === "Ident" || this.peek(peekIdx).kind === "Num") {
+          seg += this.peek(peekIdx).value;
+          peekIdx++;
+        }
+        name += "." + seg;
       }
       const opTok = this.peek(peekIdx);
       if (
@@ -230,11 +236,14 @@ class Parser {
         opTok.kind === "*=" ||
         opTok.kind === "/="
       ) {
-        // Consume all the name tokens
+        // Consume all the name tokens using parseDottedIdent logic
         this.advance(); // first ident
         while (this.check(".")) {
+          const afterDot = this.peek(1);
+          if (afterDot.kind !== "Ident" && afterDot.kind !== "Num") break;
           this.advance(); // .
-          this.advance(); // ident
+          this.advance(); // segment start
+          while (this.peek().kind === "Ident" || this.peek().kind === "Num") this.advance();
         }
         return this.parseAssign(name);
       }
@@ -248,9 +257,21 @@ class Parser {
 
   private parseDottedIdent(): string {
     let name = this.expectKind("Ident").value;
-    while (this.check(".") && this.peek(1).kind === "Ident") {
+    while (this.check(".")) {
+      // Peek ahead: after the dot we accept:
+      //   Ident        → normal segment "foo"
+      //   Num + Ident  → mixed segment like "4p" (tokenized as Num("4") Ident("p"))
+      //   Num alone    → pure-number segment like "4"
+      const afterDot = this.peek(1);
+      if (afterDot.kind !== "Ident" && afterDot.kind !== "Num") break;
       this.advance(); // consume "."
-      name += "." + this.advance().value;
+      let segment = this.advance().value; // Ident or Num
+      // Absorb any immediately following Ident (e.g. "p" after "4")
+      while (this.peek().kind === "Ident" || this.peek().kind === "Num") {
+        // Only absorb if no dot between them (i.e. same segment)
+        segment += this.advance().value;
+      }
+      name += "." + segment;
     }
     return name;
   }

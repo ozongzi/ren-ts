@@ -107,10 +107,10 @@ export class GameData {
       return;
     }
 
-    if (!src.includes("label ")) {
+    if (!src.includes("label ") && !src.includes(" = ")) {
       console.warn(
         `[loader] ✗ ${filename} — content does not look like a .rrs file ` +
-          `(no "label " keyword found). First 200 chars: ${src.slice(0, 200)}`,
+          `(no "label " or assignments found). First 200 chars: ${src.slice(0, 200)}`,
       );
       return;
     }
@@ -133,7 +133,7 @@ export class GameData {
 
     const newLabels = Object.keys(script.labels);
     if (newLabels.length === 0) {
-      console.warn(`[loader] ✗ ${filename} — parsed OK but produced 0 labels`);
+      // defines-only file (e.g. definitions.rrs) — that's fine, defines were merged above.
       return;
     }
 

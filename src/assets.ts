@@ -111,7 +111,13 @@ export function isCssColor(src: string): boolean {
 
 /** Returns true if the src is an audio path */
 export function isAudioPath(src: string): boolean {
-  return src.startsWith("Audio/");
+  // Standard prefix used by most VNs
+  if (src.startsWith("Audio/")) return true;
+  // DDLC uses bare bgm/ sfx/ voice/ prefixes without "Audio/"
+  if (src.startsWith("bgm/")) return true;
+  if (src.startsWith("sfx/")) return true;
+  if (src.startsWith("voice/")) return true;
+  return false;
 }
 
 /** Returns true if the src is a video path (.webm) */
@@ -197,6 +203,30 @@ export const AT_POSITION_LEFT: Record<string, number> = {
   right2: 65,
   right3: 57,
   right4: 55,
+
+  // ── DDLC transforms (from transforms.rpyc, 1280px canvas) ─────────────────
+  // Naming: [t|s|h|l|f|hf|i] + slot (1-char count)(1-char index)
+  // All series share the same xcenter values per slot number.
+  // thide / lhide = off-screen (move out)
+  thide: -25, lhide: -25,
+
+  // 1-up layouts
+  t11: 50, s11: 50, h11: 50, l11: 50, f11: 50, hf11: 50, i11: 50,
+
+  // 2-up layouts
+  t21: 31.2, s21: 31.2, h21: 31.2, l21: 31.2, f21: 31.2, hf21: 31.2,
+  t22: 68.8, s22: 68.8, h22: 68.8, l22: 68.8, f22: 68.8, hf22: 68.8,
+
+  // 3-up layouts
+  t31: 18.8, s31: 18.8, h31: 18.8, l31: 18.8, f31: 18.8, hf31: 18.8,
+  t32: 50,   s32: 50,   h32: 50,   l32: 50,   f32: 50,   hf32: 50,
+  t33: 81.2, s33: 81.2, h33: 81.2, l33: 81.2, f33: 81.2, hf33: 81.2,
+
+  // 4-up layouts
+  t41: 15.6, s41: 15.6, h41: 15.6, l41: 15.6, f41: 15.6, hf41: 15.6,
+  t42: 38.5, s42: 38.5, h42: 38.5, l42: 38.5, f42: 38.5, hf42: 38.5,
+  t43: 61.4, s43: 61.4, h43: 61.4, l43: 61.4, f43: 61.4, hf43: 61.4,
+  t44: 84.4, s44: 84.4, h44: 84.4, l44: 84.4, f44: 84.4, hf44: 84.4,
 };
 
 /**

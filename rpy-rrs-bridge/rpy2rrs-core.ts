@@ -278,6 +278,11 @@ class Converter {
         i += 2;
         continue;
       }
+      // zorder N — Ren'Py keyword, not part of image key
+      if (p === "zorder" && i + 1 < parts.length) {
+        i += 2;
+        continue;
+      }
       if (forScene && FILTERS.has(p)) {
         filter = p;
         i++;
@@ -359,8 +364,38 @@ class Converter {
     if (defaultMatch) {
       const varName = defaultMatch[1];
       let val = defaultMatch[2].trim();
+      // Skip assignments where the value references persistent.* — these are
+      // runtime values that can't be resolved at define time.
+      if (val.startsWith("persistent.") || val === "persistent") return;
       val = val.replace(/\bTrue\b/g, "true").replace(/\bFalse\b/g, "false");
       this.emit(`${this.pad()}${varName} = ${val};`);
+      return;
+    }
+
+    // ── define ABBR = Character("Name", ...) ─────────────────────────────────
+    const defineCharMatch = line.match(
+      /^define\s+(\w+)\s*=\s*Character\s*\(\s*(['"])([^'"]*)\2/,
+    );
+    if (defineCharMatch) {
+      const abbr = defineCharMatch[1];
+      const fullName = defineCharMatch[3];
+      if (abbr !== "narrator" && abbr !== "nvl") {
+        const name = fullName === "empty" ? "" : fullName;
+        this.emit(`char.${abbr} = "${escStr(name)}";`);
+      }
+      return;
+    }
+
+    // ── define ABBR = DynamicCharacter('var_name', ...) ──────────────────────
+    // DynamicCharacter's first arg is a variable name (not a display name).
+    // The engine resolves the display name at speak time via vars[nameVar].
+    const defineDynCharMatch = line.match(
+      /^define\s+(\w+)\s*=\s*DynamicCharacter\s*\(\s*(['"])(\w+)\2/,
+    );
+    if (defineDynCharMatch) {
+      const abbr = defineDynCharMatch[1];
+      const nameVar = defineDynCharMatch[3];
+      this.emit(`char.${abbr}.nameVar = "${nameVar}";`);
       return;
     }
 
@@ -827,9 +862,31 @@ class Converter {
       return;
     }
 
+    // im.Composite((w,h), (x,y), "layer1.png", (x,y), "layer2.png", ...)
+    // → composite:layer1.png|layer2.png|...
+    if (valuePart.startsWith("im.Composite(")) {
+      const allPaths: string[] = [];
+      const pathRe = /"([^"]+\.(?:png|jpg|jpeg|webp))"/gi;
+      let pm: RegExpExecArray | null;
+      while ((pm = pathRe.exec(valuePart)) !== null) {
+        allPaths.push(pm[1]);
+      }
+      if (allPaths.length > 0) {
+        this.emit(`${key} = "composite:${allPaths.map(escStr).join("|")}";`);
+      }
+      return;
+    }
+
     const imM = valuePart.match(/^im\.\w+\s*\(\s*"([^"]+)"/);
     if (imM) {
       this.emit(`${key} = "${escStr(imM[1])}";`);
+      return;
+    }
+
+    // Image("path") or Image("path", ...)
+    const imageCtorM = valuePart.match(/^Image\s*\(\s*"([^"]+)"/);
+    if (imageCtorM) {
+      this.emit(`${key} = "${escStr(imageCtorM[1])}";`);
       return;
     }
 

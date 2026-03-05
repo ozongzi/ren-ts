@@ -51,18 +51,22 @@ export function isImagePath(filePath: string): boolean {
 }
 
 /**
- * Derive the RRS image key from a file path.
+ * Derive the RRS image key from a file path, following Ren'Py auto-image rules:
  *
- * Rules (applied to the basename without extension):
- *   1. Lower-case the whole string.
- *   2. Replace any run of non-alphanumeric characters (spaces, hyphens,
- *      dots inside the name, etc.) with a single underscore.
- *   3. Strip leading / trailing underscores.
+ *   - Only the basename (without extension) is used; directory is ignored.
+ *   - The basename is split on whitespace and underscores into parts.
+ *   - Parts are joined with "." to form the key.
+ *   - Each part is lowercased.
+ *
+ * This matches how Ren'Py resolves `show sayori happy` →
+ * looks up an image whose tag is "sayori" and attribute is "happy",
+ * which comes from a file named "sayori happy.png" or "sayori_happy.png".
  *
  * @example
- *   imageKeyFromPath("BGs/cabin_day.jpg")          // → "cabin_day"
- *   imageKeyFromPath("Sprites/Keitaro Normal1.png") // → "keitaro_normal1"
- *   imageKeyFromPath("Yoichi_1_12_idle.webm")       // → "yoichi_1_12_idle"
+ *   imageKeyFromPath("sayori happy.png")        // → "sayori.happy"
+ *   imageKeyFromPath("sayori_happy.png")         // → "sayori.happy"
+ *   imageKeyFromPath("BGs/cabin day.jpg")        // → "cabin.day"
+ *   imageKeyFromPath("monika 1a.png")            // → "monika.1a"
  */
 export function imageKeyFromPath(filePath: string): string {
   // Grab just the filename portion
@@ -73,11 +77,15 @@ export function imageKeyFromPath(filePath: string): string {
   const dot = basename.lastIndexOf(".");
   const stem = dot === -1 ? basename : basename.slice(0, dot);
 
-  // Normalise to snake_case identifier
-  return stem
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_") // non-alnum runs → single underscore
-    .replace(/^_+|_+$/g, ""); // strip leading/trailing underscores
+  // Split on whitespace and underscores, filter empty parts, lowercase
+  const parts = stem
+    .split(/[\s_]+/)
+    .map((p) => p.toLowerCase())
+    .filter((p) => p.length > 0);
+
+  if (parts.length === 0) return "";
+
+  return parts.join(".");
 }
 
 /**

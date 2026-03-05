@@ -50,7 +50,11 @@ function syncAudio(prev: GameState, next: GameState): void {
   if (next.bgmSrc !== prev.bgmSrc) {
     if (next.bgmSrc) {
       const rawBgm = next.bgmSrc;
+      // Queue the raw src so unlock() can re-resolve+play inside the user gesture
+      audioManager.queueBGM(rawBgm, { fadein: 1 });
+      // Also attempt resolve+play now (works if already unlocked)
       resolveAssetAsync(rawBgm).then((url) => {
+        console.log("[audio-debug] syncAudio resolved bgm:", rawBgm, "->", url?.slice(0,60));
         if (url) audioManager.playBGM(url, { fadein: 1 });
       });
     } else {

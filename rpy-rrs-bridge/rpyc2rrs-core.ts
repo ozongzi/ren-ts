@@ -543,6 +543,10 @@ class AstConverter {
   // ── Return ───────────────────────────────────────────────────────────────────
 
   private processReturn(): void {
+    // At top level (depth === 0) there's no label to return from —
+    // this happens when a Python init block contains a bare `return`.
+    // Just skip it.
+    if (this.depth === 0) return;
     this.flushSpeak();
     this.emit(`${this.pad()}return;`);
   }
@@ -755,6 +759,9 @@ class AstConverter {
 
       val = val.replace(/\bTrue\b/g, "true").replace(/\bFalse\b/g, "false");
 
+      // Skip assignments where the value references persistent.* — runtime only.
+      if (val.startsWith("persistent.") || val === "persistent") return;
+
       // Strip trailing comments
       const commentIdx = val.indexOf("#");
       if (commentIdx > 0) val = val.slice(0, commentIdx).trim();
@@ -775,9 +782,31 @@ class AstConverter {
     const varname = asString(getField(node, "varname") ?? null) ?? "";
 
     const codeObj = getField(node, "code") ?? null;
-    const src = isPickleObject(codeObj)
+
+    // Try to extract source string from code object.
+    // There are two known layouts:
+    //   1. code is a PyCode with code.source = "..."  (older rpyc)
+    //   2. code is a PyCode with code._state = [1, PyExpr{source: "..."}]  (newer rpyc)
+    let src: string | null | undefined = isPickleObject(codeObj)
       ? asString(getField(codeObj, "source") ?? null)
       : asString(codeObj);
+
+    if (!src && isPickleObject(codeObj)) {
+      // Try _state[1].source
+      const state = getField(codeObj, "_state");
+      if (state && typeof state === "object" && "_type" in state && (state as any)._type === "tuple") {
+        const items = (state as any).items;
+        if (Array.isArray(items) && items.length >= 2) {
+          const pyExpr = items[1];
+          process.stderr.write(`[DEBUG Define.pyExpr] pyExpr type=${typeof pyExpr} isPickle=${isPickleObject(pyExpr)} className=${isPickleObject(pyExpr) ? (pyExpr as any).className : "n/a"} fields=${isPickleObject(pyExpr) ? JSON.stringify(Object.keys((pyExpr as any).fields ?? {})) : "n/a"}\n`);
+          if (isPickleObject(pyExpr)) {
+            src = asString(getField(pyExpr, "source") ?? null);
+            process.stderr.write(`[DEBUG Define.src] src=${src}\n`);
+          }
+        }
+      }
+    }
+
     if (!src) return;
 
     const key =
@@ -797,6 +826,13 @@ class AstConverter {
     );
     if (charNameM) {
       this.emit(`char.${varname} = "${escStr(charNameM[1])}";`);
+      return;
+    }
+
+    // DynamicCharacter('var_name', ...) — first arg is a variable name
+    const dynCharM = src.match(/DynamicCharacter\s*\(\s*["'](\w+)["']/);
+    if (dynCharM) {
+      this.emit(`char.${varname}.nameVar = "${dynCharM[1]}";`);
       return;
     }
 

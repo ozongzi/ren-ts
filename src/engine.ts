@@ -369,13 +369,23 @@ interface StepResult {
 
 function resolveImageSrc(src: string, vars: VarStore): string {
   if (!src) return src;
-  if (src.startsWith("#") || src.includes("/")) return src;
-  const key = "image." + src;
+  if (src.startsWith("#") || src.includes("/") || src.startsWith("composite:")) return src;
+  // Normalise spaces to dots to match image key convention:
+  // "sayori 1a" → "image.sayori.1a"
+  // Do NOT replace underscores — "residential_day" is a distinct key from "residential.day"
+  const normalised = src.replace(/\s+/g, ".");
+  const key = "image." + normalised;
   const resolved = vars.get(key);
   if (typeof resolved === "string") return resolved;
-  // Key not found — log a warning and return empty string so the browser does
-  // not fire a 404 request for the raw key string.
-  console.warn(`[engine] image var not found: ${key}`);
+
+  // Bare tag with no dots/spaces (e.g. "sayori") has no direct image define —
+  // Ren'Py resolves it via tag inheritance (reuse last-shown variant).
+  // The engine handles this in the "show" case via `src || sp.src`.
+  // Don't warn here; it's expected and not an error.
+  const isBareTag = !src.includes(".") && !src.includes(" ");
+  if (!isBareTag) {
+    console.warn(`[engine] image var not found: ${key}`);
+  }
   return "";
 }
 
@@ -387,6 +397,19 @@ function resolveCharName(who: string | null, vars: VarStore): string | null {
     if (name === "" || name === null || name === undefined) return null;
     return String(name);
   }
+  // DynamicCharacter: check for a nameVar indirection
+  const nameVarKey = "char." + who + ".nameVar";
+  if (vars.has(nameVarKey)) {
+    const nameVar = String(vars.get(nameVarKey));
+    if (vars.has(nameVar)) {
+      const resolved = vars.get(nameVar);
+      if (resolved !== null && resolved !== undefined && resolved !== "") {
+        return String(resolved);
+      }
+    }
+    // nameVar not set yet — fall back to capitalised abbr
+    return who.charAt(0).toUpperCase() + who.slice(1);
+  }
   return who;
 }
 
@@ -395,11 +418,16 @@ function resolveAudioSrc(
   vars: VarStore,
 ): string | undefined {
   if (!src) return undefined;
-  if (src.includes("/")) return src;
+  if (src.includes("/")) {
+    // Strip Ren'Py audio property prefix: "<loop 4.5>bgm/2.ogg" → "bgm/2.ogg"
+    return src.replace(/^<[^>]*>\s*/, "");
+  }
   const key = src.startsWith("audio.") ? src : "audio." + src;
   const resolved = vars.get(key);
-  if (typeof resolved === "string") return resolved;
-  // Key not found — return undefined so callers skip playback gracefully.
+  if (typeof resolved === "string") {
+    // Strip Ren'Py audio property prefix from the resolved value too
+    return resolved.replace(/^<[^>]*>\s*/, "");
+  }
   console.warn(`[engine] audio var not found: ${key}`);
   return undefined;
 }
@@ -426,6 +454,7 @@ function executeStep(state: GameState, step: Step): StepResult {
     // ── Scene (background swap) ─────────────────────────────────────────────
     case "scene": {
       const backgroundSrc = resolveImageSrc(step.src, state.vars);
+      console.log(`[scene-debug] src="${step.src}" resolved="${backgroundSrc?.slice(0,80)}"`);
       // A `scene` command hides all sprites
       return advance({
         ...state,
@@ -449,14 +478,11 @@ function executeStep(state: GameState, step: Step): StepResult {
     // replaced in-place (preserving z-index and position).
     case "show": {
       const newTag = spriteTag(step.sprite);
-      // Resolve sprite src via vars["image." + sprite]; step.src is no longer
-      // pre-resolved at compile time.
       const src = resolveImageSrc(step.sprite, state.vars);
+      const existingIdx = state.sprites.findIndex(sp => spriteTag(sp.key) === newTag);
+      console.log(`[show-debug] sprite="${step.sprite}" src="${src?.slice(0,80)}" existingIdx=${existingIdx}`);
 
       // Inherit position from existing same-tag sprite when not specified
-      const existingIdx = state.sprites.findIndex(
-        (sp) => spriteTag(sp.key) === newTag,
-      );
       let at = step.at;
       if (!at && existingIdx >= 0) {
         at = state.sprites[existingIdx].at;
@@ -494,6 +520,9 @@ function executeStep(state: GameState, step: Step): StepResult {
         at,
         zIndex: newZIndex,
       };
+      // If src is empty (bare tag with no image define and no existing sprite
+      // to inherit from), don't create a blank sprite entry.
+      if (!src) return advance(state);
       return advance({
         ...state,
         sprites: [...state.sprites, newSprite],

@@ -87,12 +87,100 @@ interface NaturalSize {
   height: number;
 }
 
+// ─── Composite sprite (im.Composite layers) ───────────────────────────────────
+const CompositeSprite: React.FC<SpriteElementProps> = ({
+  sprite,
+  groupReady,
+  onLoaded,
+}) => {
+  const { zIndex, src, at } = sprite;
+  const layers = src.slice("composite:".length).split("|");
+
+  const vars = useGameStore((s) => s.vars);
+  const screenWidth = (vars.get("config.screen_width") as number) ?? 1920;
+  const screenHeight = (vars.get("config.screen_height") as number) ?? 1080;
+
+  const [resolvedLayers, setResolvedLayers] = useState<string[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    console.log(`[composite-debug] src="${src}" layers=`, layers);
+    Promise.all(layers.map((l) => resolveAssetAsync(l))).then((urls) => {
+      console.log(`[composite-debug] resolved urls=`, urls);
+      if (!cancelled) {
+        setResolvedLayers(urls.filter(Boolean) as string[]);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [src]);
+
+  useEffect(() => {
+    if (resolvedLayers.length === 0) return;
+    console.log(`[composite-debug] onLoaded zIndex=${zIndex} groupReady=${loaded}`);
+    setLoaded(true);
+    onLoaded(zIndex);
+  }, [resolvedLayers, zIndex, onLoaded]);
+
+  console.log(`[composite-debug] render: resolvedLayers=${resolvedLayers.length} loaded=${loaded} groupReady=${groupReady} at=${at}`);
+
+  if (resolvedLayers.length === 0) return null;
+
+  const effectiveAt = at ?? "center";
+  const leftPct = atToLeftPercent(effectiveAt);
+  const cssZIndex = isExpressionSprite(sprite.key) ? 2 + zIndex + FACE_ZINDEX_BONUS : 2 + zIndex;
+
+  // Composite sprites: use screen height as the reference size (DDLC sprites are 960×960 or similar)
+  const heightPct = `${(screenHeight / screenHeight) * 95}%`;
+
+  const containerStyle: React.CSSProperties = {
+    position: "absolute",
+    bottom: 0,
+    left: leftPct ?? "50%",
+    transform: "translateX(-50%)",
+    zIndex: cssZIndex,
+    height: heightPct,
+    width: "auto",
+    pointerEvents: "none",
+    opacity: groupReady && loaded ? 1 : 0,
+    transition: "opacity 0.12s ease",
+  };
+
+  const layerStyle: React.CSSProperties = {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    height: "100%",
+    width: "auto",
+  };
+
+  return (
+    <div style={containerStyle}>
+      {resolvedLayers.map((url, i) => (
+        <img
+          key={i}
+          src={url}
+          alt=""
+          draggable={false}
+          style={i === 0 ? { ...layerStyle, position: "relative" } : layerStyle}
+        />
+      ))}
+    </div>
+  );
+};
+
 const SpriteElement: React.FC<SpriteElementProps> = ({
   sprite,
   groupReady,
   onLoaded,
 }) => {
   const { zIndex, src, at } = sprite;
+  console.log(`[sprite-debug] key="${sprite.key}" src="${src}" at="${at}"`);
+
+  // Delegate composite sprites to dedicated component
+  if (src?.startsWith("composite:")) {
+    return <CompositeSprite sprite={sprite} groupReady={groupReady} onLoaded={onLoaded} />;
+  }
 
   const vars = useGameStore((s) => s.vars);
   const screenWidth = (vars.get("config.screen_width") as number) ?? 1920;
