@@ -14,6 +14,8 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+import { resolveAssetAsync } from "./assets";
+
 export interface BGMOptions {
   fadein?: number; // seconds
   fadeout?: number; // seconds for the *previous* track to fade out before starting
@@ -150,7 +152,14 @@ class AudioManager {
   unlock(): void {
     if (this.unlocked) return;
     this.unlocked = true;
-    console.log("[audio-debug] unlock called, bgmEl=", this.bgmEl, "paused=", this.bgmEl?.paused, "src=", this.bgmSrc);
+    console.log(
+      "[audio-debug] unlock called, bgmEl=",
+      this.bgmEl,
+      "paused=",
+      this.bgmEl?.paused,
+      "src=",
+      this.bgmSrc,
+    );
 
     // Play a silent audio to unblock autoplay policy for this page session.
     try {
@@ -162,13 +171,17 @@ class AudioManager {
       node.start(0);
       node.onended = () => ctx.close();
     } catch {
-      const el = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
+      const el = new Audio(
+        "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=",
+      );
       el.play().catch(() => {});
     }
 
     // Resume blocked BGM if element exists and is paused
     if (this.bgmEl && this.bgmEl.paused && this.bgmSrc) {
-      this.bgmEl.play().catch((err) => console.warn("[audio-debug] resume failed:", err));
+      this.bgmEl
+        .play()
+        .catch((err) => console.warn("[audio-debug] resume failed:", err));
       return;
     }
     // Play any blob-URL BGM that was queued before unlock
@@ -182,10 +195,8 @@ class AudioManager {
     if (this.pendingRawBGM) {
       const { raw, opts } = this.pendingRawBGM;
       this.pendingRawBGM = null;
-      import("./assets").then(({ resolveAssetAsync }) => {
-        resolveAssetAsync(raw).then((url) => {
-          if (url) this.playBGM(url, opts);
-        });
+      resolveAssetAsync(raw).then((url) => {
+        if (url) this.playBGM(url, opts);
       });
     }
   }
@@ -238,7 +249,16 @@ class AudioManager {
 
       // Debug: poll BGM state every 2s
       setTimeout(() => {
-        console.log("[audio-debug] BGM state: paused=", el.paused, "currentTime=", el.currentTime, "volume=", el.volume, "src=", el.src?.slice(0, 40));
+        console.log(
+          "[audio-debug] BGM state: paused=",
+          el.paused,
+          "currentTime=",
+          el.currentTime,
+          "volume=",
+          el.volume,
+          "src=",
+          el.src?.slice(0, 40),
+        );
       }, 2000);
 
       if (fadein > 0) {
@@ -272,7 +292,10 @@ class AudioManager {
 
   /** Stop the currently playing BGM, optionally with a fade-out. */
   stopBGM(opts: StopOptions = {}): void {
-    console.log("[audio-debug] stopBGM called", new Error().stack?.split('\n')[2]);
+    console.log(
+      "[audio-debug] stopBGM called",
+      new Error().stack?.split("\n")[2],
+    );
     if (!this.bgmEl) return;
     const fadeout = (opts.fadeout ?? 0) * 1000;
 

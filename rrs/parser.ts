@@ -200,6 +200,9 @@ class Parser {
         this.advance();
         return this.parseCall();
 
+      case "input":
+        this.advance();
+        return this.parseInput();
       case "return":
         this.advance();
         this.eatSemi();
@@ -499,6 +502,15 @@ class Parser {
     }
 
     return { kind: "Speak", who, lines };
+  }
+
+  // ── input varName "prompt" ;
+
+  private parseInput(): Stmt {
+    const varName = this.expectKind("Ident").value;
+    const prompt = this.expectKind("Str").value;
+    this.eatSemi();
+    return { kind: "Input", varName, prompt };
   }
 
   // ── wait(1.5) ;

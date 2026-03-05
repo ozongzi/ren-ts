@@ -60,7 +60,8 @@ function spriteTag(key: string): string {
 export type AdvanceAction =
   | { kind: "click" } // player clicked to advance
   | { kind: "choose"; index: number } // player selected a menu option
-  | { kind: "jump"; label: string }; // internal: jump to label directly
+  | { kind: "jump"; label: string } // internal: jump to label directly
+  | { kind: "input"; value: string }; // player submitted text input
 
 // ─── Factory: initial game state ──────────────────────────────────────────────
 
@@ -83,6 +84,7 @@ export function createInitialState(): GameState {
 
     dialogue: null,
     choices: null,
+    inputState: null,
 
     waitingForInput: false,
     autoAdvanceDelay: null,
@@ -189,6 +191,22 @@ export function advance(state: GameState, action: AdvanceAction): GameState {
     return runUntilBlocked(next);
   }
 
+  // ── Handle text input submission ──
+  if (action.kind === "input") {
+    if (!state.inputState) return state;
+    const next: GameState = {
+      ...state,
+      inputState: null,
+      vars: state.vars.applySet({
+        type: "set",
+        var: state.inputState.varName,
+        op: "=",
+        value: action.value,
+      }),
+    };
+    return runUntilBlocked(next);
+  }
+
   // ── Handle click (advance past dialogue / pause) ──
   if (!state.waitingForInput) return state;
 
@@ -221,6 +239,7 @@ function labelHasBlockingOrControlFlow(steps: Step[]): boolean {
       case "extend":
       case "menu":
       case "pause":
+      case "input":
       case "return":
       case "jump":
       case "call":
@@ -606,6 +625,15 @@ function executeStep(state: GameState, step: Step): StepResult {
         voiceSrc: resolvedVoice ?? prev?.voice ?? state.voiceSrc ?? null,
         waitingForInput: true,
         autoAdvanceDelay: null,
+      });
+    }
+
+    // ── Input prompt ─────────────────────────────────────────────────────────
+    case "input": {
+      return block({
+        ...state,
+        stepIndex: state.stepIndex + 1,
+        inputState: { varName: step.varName, prompt: step.prompt },
       });
     }
 

@@ -24,6 +24,7 @@ export interface GameSlice extends GameState {
   click: () => void;
   choose: (index: number) => void;
   jumpTo: (label: string) => void;
+  submitInput: (value: string) => void;
   goToTitle: () => void;
   backToSaveMenu: () => void;
 }
@@ -140,6 +141,14 @@ export const createGameSlice: StateCreator<GameSliceDeps, [], [], GameSlice> = (
     jumpTo: (label: string) => {
       const state = get();
       const action: AdvanceAction = { kind: "jump", label };
+      applyGameState(advance(state, action));
+    },
+
+    // ── submitInput ──────────────────────────────────────────────────────────
+    submitInput: (value: string) => {
+      const state = get();
+      if (!state.inputState) return;
+      const action: AdvanceAction = { kind: "input", value };
       applyGameState(advance(state, action));
     },
 

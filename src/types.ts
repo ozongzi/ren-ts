@@ -108,6 +108,12 @@ export interface PauseStep {
   duration?: number;
 }
 
+export interface InputStep {
+  type: "input";
+  varName: string;
+  prompt: string;
+}
+
 export type Step =
   | SetStep
   | SceneStep
@@ -124,7 +130,8 @@ export type Step =
   | JumpStep
   | CallStep
   | ReturnStep
-  | PauseStep;
+  | PauseStep
+  | InputStep;
 
 // ─── Script data (mirrors JSON file structure) ───────────────────────────────
 
@@ -275,6 +282,9 @@ export interface GameState {
   // ── Dialogue state ──
   dialogue: DialogueState | null;
   choices: MenuOption[] | null;
+
+  // ── Input prompt state ──
+  inputState: { varName: string; prompt: string } | null;
 
   // ── Engine flags ──
   waitingForInput: boolean; // blocking on say/narrate/extend

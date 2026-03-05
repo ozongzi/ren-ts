@@ -1022,6 +1022,20 @@ export const Tools: React.FC = () => {
               </span>
             )}
           </p>
+
+          <p className="tools-hint" style={{ marginTop: "0.5rem", color: "var(--color-warn, #e6a817)" }}>
+            ⚠ 若 game 目录内含 <code style={{ fontFamily: "var(--font-mono)" }}>.rpyc</code>{" "}
+            文件（已编译、无对应 .rpy 源码），转换质量可能不稳定。建议先用{" "}
+            <a
+              href="https://github.com/CensoredUsername/unrpyc"
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "inherit" }}
+            >
+              unrpyc
+            </a>{" "}
+            将 .rpyc 反编译为 .rpy，再用本工具转换。
+          </p>
         </div>
 
         <div className="divider" />

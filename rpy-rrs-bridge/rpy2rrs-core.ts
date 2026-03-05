@@ -784,6 +784,17 @@ class Converter {
       return;
     }
 
+    // ── $ VAR = renpy.input("prompt") ────────────────────────────────────────
+    const inputMatch = line.match(
+      /^\$\s*([\w.]+)\s*=\s*renpy\.input\s*\(\s*(['"])([\s\S]*?)\2\s*(?:,[\s\S]*)?\)/,
+    );
+    if (inputMatch) {
+      const varName = inputMatch[1];
+      const prompt = escStr(inputMatch[3]);
+      this.emit(`${this.pad()}input ${varName} "${prompt}";`);
+      return;
+    }
+
     // ── $ VAR op VALUE ────────────────────────────────────────────────────────
     const assignMatch = line.match(
       /^\$\s*([\w.]+)\s*([+\-*/]?=)\s*([\s\S]+?)\s*$/,

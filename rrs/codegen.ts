@@ -21,6 +21,7 @@ import type {
   DefineDecl,
   HideStmt,
   IfStmt,
+  InputStmt,
   JsonFile,
   JsonLabel,
   JsonStep,
@@ -220,6 +221,8 @@ class CodegenContext {
         return this.genCall(stmt);
       case "Return":
         return this.genReturn(stmt);
+      case "Input":
+        return this.genInput(stmt);
       case "Label":
         return []; // already hoisted
     }
@@ -346,5 +349,11 @@ class CodegenContext {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   private genReturn(_stmt: ReturnStmt): JsonStep[] {
     return [{ type: "return" }];
+  }
+
+  // ── Input ──────────────────────────────────────────────────────────────────
+
+  private genInput(stmt: InputStmt): JsonStep[] {
+    return [{ type: "input", varName: stmt.varName, prompt: stmt.prompt }];
   }
 }

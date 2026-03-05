@@ -73,7 +73,8 @@ export type Stmt =
   | JumpStmt
   | CallStmt
   | ReturnStmt
-  | LabelStmt;
+  | LabelStmt
+  | InputStmt;
 
 /**
  * A nested label declaration found inside a label body.
@@ -279,6 +280,13 @@ export type CallStmt = {
 /** return ; */
 export type ReturnStmt = {
   kind: "Return";
+};
+
+/** input varName "prompt" ; */
+export type InputStmt = {
+  kind: "Input";
+  varName: string;
+  prompt: string;
 };
 
 // ── JSON output types (must match engine Step expectations) ───────────────────

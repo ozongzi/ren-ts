@@ -5,6 +5,7 @@ import { Background } from "./Background";
 import { SpriteLayer } from "./SpriteLayer";
 import { DialogueBox } from "./DialogueBox";
 import { ChoiceMenu } from "./ChoiceMenu";
+import { InputOverlay } from "./InputOverlay";
 import { Toolbar } from "./Toolbar";
 
 /**
@@ -34,8 +35,11 @@ export const GameScreen: React.FC = () => {
   const showGallery = useGameStore((s) => s.showGallery);
   const showSettings = useGameStore((s) => s.showSettings);
 
+  const inputState = useGameStore((s) => s.inputState);
+
   const click = useGameStore((s) => s.click);
   const choose = useGameStore((s) => s.choose);
+  const submitInput = useGameStore((s) => s.submitInput);
   const closeGallery = useGameStore((s) => s.closeGallery);
   const closeSettings = useGameStore((s) => s.closeSettings);
 
@@ -58,8 +62,8 @@ export const GameScreen: React.FC = () => {
       // Don't intercept when a modal is open
       if (showGallery || showSettings) return;
 
-      // Don't intercept when choices are shown (ChoiceMenu handles its own keys)
-      if (choices) return;
+      // Don't intercept when choices or input overlay are shown
+      if (choices || inputState) return;
 
       // Advance dialogue
       if (
@@ -73,6 +77,7 @@ export const GameScreen: React.FC = () => {
     },
     [
       choices,
+      inputState,
       waitingForInput,
       showGallery,
       showSettings,
@@ -117,8 +122,8 @@ export const GameScreen: React.FC = () => {
     audioManager.unlock();
     // Don't advance if any modal is open
     if (showGallery || showSettings) return;
-    // Don't advance if choices are displayed (ChoiceMenu handles clicks)
-    if (choices) return;
+    // Don't advance if choices or input overlay are shown
+    if (choices || inputState) return;
     // Only advance if waiting for input
     if (waitingForInput) {
       click();
@@ -152,6 +157,11 @@ export const GameScreen: React.FC = () => {
 
       {/* ── Layer 20: Choice Menu ── */}
       {choices && <ChoiceMenu choices={choices} onChoose={choose} />}
+
+      {/* ── Layer 25: Input Overlay ── */}
+      {inputState && (
+        <InputOverlay prompt={inputState.prompt} onSubmit={submitInput} />
+      )}
 
       {/* ── Layer 30: Toolbar HUD ── */}
       {!anyModalOpen && <Toolbar />}

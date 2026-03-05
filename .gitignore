@@ -46,3 +46,4 @@ pnpm-debug.log*
 
 # ─── Type-check cache ─────────────────────────────────────────────────────────
 *.tsbuildinfo
+.claude

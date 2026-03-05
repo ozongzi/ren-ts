@@ -798,10 +798,10 @@ class AstConverter {
         const items = (state as any).items;
         if (Array.isArray(items) && items.length >= 2) {
           const pyExpr = items[1];
-          process.stderr.write(`[DEBUG Define.pyExpr] pyExpr type=${typeof pyExpr} isPickle=${isPickleObject(pyExpr)} className=${isPickleObject(pyExpr) ? (pyExpr as any).className : "n/a"} fields=${isPickleObject(pyExpr) ? JSON.stringify(Object.keys((pyExpr as any).fields ?? {})) : "n/a"}\n`);
+          console.error(`[DEBUG Define.pyExpr] pyExpr type=${typeof pyExpr} isPickle=${isPickleObject(pyExpr)} className=${isPickleObject(pyExpr) ? (pyExpr as any).className : "n/a"} fields=${isPickleObject(pyExpr) ? JSON.stringify(Object.keys((pyExpr as any).fields ?? {})) : "n/a"}`);
           if (isPickleObject(pyExpr)) {
             src = asString(getField(pyExpr, "source") ?? null);
-            process.stderr.write(`[DEBUG Define.src] src=${src}\n`);
+            console.error(`[DEBUG Define.src] src=${src}`);
           }
         }
       }
