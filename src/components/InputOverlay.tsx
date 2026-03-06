@@ -10,10 +10,16 @@ export const InputOverlay: React.FC<InputOverlayProps> = ({
   onSubmit,
 }) => {
   const [value, setValue] = useState("");
+  const [prevPrompt, setPrevPrompt] = useState(prompt);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
+  // Reset input value when the prompt changes (derived state pattern).
+  if (prevPrompt !== prompt) {
+    setPrevPrompt(prompt);
     setValue("");
+  }
+
+  useEffect(() => {
     inputRef.current?.focus();
   }, [prompt]);
 

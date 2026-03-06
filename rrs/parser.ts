@@ -268,11 +268,14 @@ class Parser {
       const afterDot = this.peek(1);
       if (afterDot.kind !== "Ident" && afterDot.kind !== "Num") break;
       this.advance(); // consume "."
-      let segment = this.advance().value; // Ident or Num
-      // Absorb any immediately following Ident (e.g. "p" after "4")
-      while (this.peek().kind === "Ident" || this.peek().kind === "Num") {
-        // Only absorb if no dot between them (i.e. same segment)
-        segment += this.advance().value;
+      const segTok = this.advance(); // Ident or Num
+      let segment = segTok.value;
+      // Absorb trailing tokens only for Num-started segments (e.g. "4" + "p" → "4p").
+      // Ident tokens like "bg_day" are self-contained — do NOT absorb the next ident.
+      if (segTok.kind === "Num") {
+        while (this.peek().kind === "Ident" || this.peek().kind === "Num") {
+          segment += this.advance().value;
+        }
       }
       name += "." + segment;
     }

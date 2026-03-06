@@ -94,10 +94,8 @@ const CompositeSprite: React.FC<SpriteElementProps> = ({
   onLoaded,
 }) => {
   const { zIndex, src, at } = sprite;
-  const layers = src.slice("composite:".length).split("|");
 
   const vars = useGameStore((s) => s.vars);
-  const screenWidth = (vars.get("config.screen_width") as number) ?? 1920;
   const screenHeight = (vars.get("config.screen_height") as number) ?? 1080;
 
   const [resolvedLayers, setResolvedLayers] = useState<string[]>([]);
@@ -105,22 +103,21 @@ const CompositeSprite: React.FC<SpriteElementProps> = ({
 
   useEffect(() => {
     let cancelled = false;
-    console.log(`[composite-debug] src="${src}" layers=`, layers);
-    Promise.all(layers.map((l) => resolveAssetAsync(l))).then((urls) => {
+    const layerPaths = src.slice("composite:".length).split("|");
+    console.log(`[composite-debug] src="${src}" layers=`, layerPaths);
+    Promise.all(layerPaths.map((l) => resolveAssetAsync(l))).then((urls) => {
       console.log(`[composite-debug] resolved urls=`, urls);
       if (!cancelled) {
-        setResolvedLayers(urls.filter(Boolean) as string[]);
+        const resolved = urls.filter(Boolean) as string[];
+        setResolvedLayers(resolved);
+        if (resolved.length > 0) {
+          setLoaded(true);
+          onLoaded(zIndex);
+        }
       }
     });
     return () => { cancelled = true; };
-  }, [src]);
-
-  useEffect(() => {
-    if (resolvedLayers.length === 0) return;
-    console.log(`[composite-debug] onLoaded zIndex=${zIndex} groupReady=${loaded}`);
-    setLoaded(true);
-    onLoaded(zIndex);
-  }, [resolvedLayers, zIndex, onLoaded]);
+  }, [src, zIndex, onLoaded]);
 
   console.log(`[composite-debug] render: resolvedLayers=${resolvedLayers.length} loaded=${loaded} groupReady=${groupReady} at=${at}`);
 
@@ -175,13 +172,8 @@ const SpriteElement: React.FC<SpriteElementProps> = ({
   onLoaded,
 }) => {
   const { zIndex, src, at } = sprite;
-  console.log(`[sprite-debug] key="${sprite.key}" src="${src}" at="${at}"`);
 
-  // Delegate composite sprites to dedicated component
-  if (src?.startsWith("composite:")) {
-    return <CompositeSprite sprite={sprite} groupReady={groupReady} onLoaded={onLoaded} />;
-  }
-
+  // All hooks must be called unconditionally (Rules of Hooks).
   const vars = useGameStore((s) => s.vars);
   const screenWidth = (vars.get("config.screen_width") as number) ?? 1920;
   const screenHeight = (vars.get("config.screen_height") as number) ?? 1080;
@@ -193,7 +185,8 @@ const SpriteElement: React.FC<SpriteElementProps> = ({
 
   // ── Step 1: resolve raw path → Blob URL ────────────────────────────────────
   useEffect(() => {
-    if (!src) return;
+    // Skip for composite sprites — CompositeSprite handles its own resolution.
+    if (!src || src.startsWith("composite:")) return;
     let cancelled = false;
     resolveAssetAsync(src).then((url) => {
       if (!cancelled) setResolvedSrc(url || null);
@@ -246,6 +239,13 @@ const SpriteElement: React.FC<SpriteElementProps> = ({
       }
     };
   }, [resolvedSrc, zIndex, onLoaded, screenWidth, screenHeight]);
+
+  console.log(`[sprite-debug] key="${sprite.key}" src="${src}" at="${at}"`);
+
+  // Delegate composite sprites to dedicated component
+  if (src?.startsWith("composite:")) {
+    return <CompositeSprite sprite={sprite} groupReady={groupReady} onLoaded={onLoaded} />;
+  }
 
   if (displaySrc === null) return null;
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   detectMinigame,
   renderMinigameStubs,
-} from "../rpy-migrate-tool/rpy-rrs-bridge/minigame-detect";
+} from "../rpy-rrs-bridge/minigame-detect";
 
 // ── Synthetic fixtures ────────────────────────────────────────────────────────
 
