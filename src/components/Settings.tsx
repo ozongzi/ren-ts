@@ -82,9 +82,9 @@ export const Settings: React.FC = () => {
         <div className="divider" />
 
         {/* ── Zip file ── */}
-        {isTauri && <ZipRow />}
+        <ZipRow />
 
-        {isTauri && <div className="divider" />}
+        <div className="divider" />
 
         {/* ── About ── */}
         <div className="settings-group">

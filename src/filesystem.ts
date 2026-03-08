@@ -17,6 +17,10 @@
 //     demand via DecompressionStream — use this for .rrs / .json text files.
 //   - Blob URLs created for binary assets are cached for the lifetime of the
 //     session; they are revoked on unmount to avoid leaking object URLs.
+//
+// Ensure we clear the assets URL cache when the filesystem is unmounted so
+// that blob: URLs from a previous ZipFS are revoked and not reused.
+import { clearUrlCache } from "./assets";
 
 // ─── Interface ────────────────────────────────────────────────────────────────
 
@@ -83,6 +87,14 @@ export function hasFilesystem(): boolean {
 export function unmountFilesystem(): void {
   if (_fs instanceof ZipFS) {
     _fs.dispose();
+  }
+  // Clear the URL cache (revokes blob: URLs created via assets.resolveAssetAsync)
+  // This ensures the browser doesn't hold onto blob URLs from the previous ZipFS.
+  try {
+    clearUrlCache();
+  } catch {
+    // defensive: clearing the cache should never throw, but swallow to avoid
+    // breaking unmount flow in any edge case.
   }
   _fs = null;
 }
